@@ -1,59 +1,65 @@
-use once_cell::sync::Lazy;
-use std::{time::Duration};
+//! GStreamer tracer that exports element latency to OpenTelemetry
+//!   * metric: histogram gstreamer.element.latency.ns   (100 ns … 1 s)
+//!   * trace:  sampled PadPush spans (1 / 1000)
 
-use glib::subclass::prelude::*;
+use once_cell::sync::Lazy;
+use std::time::Duration;
+
+// ── bring GStreamer in as `gst` so the old snippet compiles verbatim
+use gstreamer as gst;
+use gst::prelude::*;
 use gst::subclass::prelude::*;
-use gst::{glib, prelude::*};
 
 use opentelemetry::{
     metrics::{Histogram, Meter},
-    trace::{Span, Tracer},
-    KeyValue, Context,
+    trace::{Tracer, Span},
+    KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
 
-// ──────────────── OpenTelemetry bootstrap ────────────────
+// ╭─────────────────────── OTel bootstrap ───────────────────────╮
 static OTEL: Lazy<(Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
-    // 1) Tokio runtime for the exporter.
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    // Batch exporter needs an async runtime → spin a tiny Tokio RT
+    let _rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
-        .expect("tokio");
+        .expect("tokio runtime");
 
-    // 2) OTLP exporter obeys OTEL_EXPORTER_OTLP_ENDPOINT et al.
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
-        .with_env();
+        .with_env();           // honours OTEL_EXPORTER_OTLP_* env vars
 
     let provider = opentelemetry_otlp::new_pipeline()
-        .metrics(|m| m.with_exporter(exporter.clone())
-                      .with_timeout(Duration::from_secs(3)))
-        .tracing(|t| t.with_exporter(exporter))
+        .tracing(|t| t.with_exporter(exporter.clone()))
+        .metrics(|m| m
+            .with_exporter(exporter)
+            .with_timeout(Duration::from_secs(3)))
         .install_batch(opentelemetry_sdk::runtime::Tokio)
-        .expect("otel pipeline");
+        .expect("install OTel");
 
-    // 3) Meter + histogram in raw nanoseconds (starts at 100 ns).
     let meter = provider.meter("gst-otel-tracer");
     let hist = meter
         .f64_histogram("gstreamer.element.latency.ns")
-        .with_description("Per-element latency in nanoseconds")
         .with_unit("ns")
+        .with_description("Per-element latency (nanoseconds)")
         .with_explicit_bucket_boundaries(vec![
-           100., 200., 500., 1_000., 2_000., 5_000., 10_000., 20_000., 50_000.,
-           100_000., 200_000., 500_000., 1_000_000., 2_000_000., 5_000_000.,
-           10_000_000., 20_000_000., 50_000_000., 100_000_000.,
-           200_000_000., 500_000_000., 1_000_000_000.])
+            100., 200., 500., 1_000., 2_000., 5_000.,
+            10_000., 20_000., 50_000.,
+            100_000., 200_000., 500_000.,
+            1_000_000., 2_000_000., 5_000_000.,
+            10_000_000., 20_000_000., 50_000_000.,
+            100_000_000., 200_000_000., 500_000_000.,
+            1_000_000_000.])        // … 1 s
         .init();
 
-    let tracer = provider.versioned_tracer(
-        "gst-otel",
-        Some(env!("CARGO_PKG_VERSION")),
-        None);
+    let tracer = provider.versioned_tracer("gst-otel", Some(env!("CARGO_PKG_VERSION")), None);
 
     (tracer, meter, hist)
 });
+// ╰───────────────────────────────────────────────────────────────╯
 
-// ──────────────── Tracer GObject subclass ────────────────
+// ───────────────────── tracer subclass ──────────────────────────
 mod imp {
     use super::*;
     use gst::ffi;
@@ -64,22 +70,22 @@ mod imp {
     #[glib::object_subclass]
     impl ObjectSubclass for OtelTracer {
         const NAME: &'static str = "OtelTracer";
-        type Type = super::OtelTracer;
-        type ParentType = gst::Tracer;
+        type Type        = super::OtelTracer;
+        type ParentType  = gst::Tracer;
     }
+
     impl ObjectImpl    for OtelTracer {}
     impl GstObjectImpl for OtelTracer {}
-
-    impl TracerImpl for OtelTracer {
+    impl TracerImpl    for OtelTracer {
         fn constructed(&self, tracer: &Self::Type) {
             self.parent_constructed(tracer);
 
-            // Ensure OTEL static is initialised
-            let (otel_tracer, _, histogram) = &*super::OTEL;
+            // touch the Lazy so the exporter starts exactly once
+            let (_, _, _) = &*super::OTEL;
 
             unsafe {
-                // ── 1. ELEMENT_LATENCY ────────────────────────────────
-                extern "C" fn element_latency_hook(
+                // ── ELEMENT_LATENCY → histogram (with exemplars) ─────
+                extern "C" fn element_latency(
                     _tracer: *mut ffi::GstTracer,
                     element: *mut ffi::GstElement,
                     time: ffi::GstClockTime,
@@ -88,31 +94,27 @@ mod imp {
                     if time == ffi::GST_CLOCK_TIME_NONE { return; }
                     let elem = gst::Element::from_glib_borrow(element);
                     let (_, _, hist) = &*super::OTEL;
-                    let attrs = [KeyValue::new("element", elem.name())];
-
-                    // Use the current span context so OTLP exporter can attach exemplars
-                    hist.record(time as f64, &attrs);
+                    hist.record(time as f64, &[KeyValue::new("element", elem.name())]);
                 }
 
-                // ── 2. PAD_PUSH  (sampled 1 out of 1000) ─────────────
-                extern "C" fn pad_push_hook(
+                // ── PAD_PUSH sampling (1/1000) → child span ──────────
+                extern "C" fn pad_push(
                     _tracer: *mut ffi::GstTracer,
                     pad: *mut ffi::GstPad,
-                    _buffer: *mut ffi::GstBuffer,
+                    _buf: *mut ffi::GstBuffer,
                     _ud: glib::ffi::gpointer,
                 ) {
-                    let (otel_tracer, _, _) = &*super::OTEL;
-                    // Simple head-based sampler
-                    if fastrand::u32(..1000) != 0 { return; }
+                    if fastrand::u32(..1000) != 0 { return; } // head sampler
 
                     let p = gst::Pad::from_glib_borrow(pad);
-                    let attrs = [
-                        KeyValue::new("pad.direction", format!("{:?}", p.direction())),
-                        KeyValue::new("element", p.parent_element().map(|e| e.name()).unwrap_or_default()),
-                    ];
+                    let (otel_tracer, _, _) = &*super::OTEL;
+
                     let span = otel_tracer
                         .span_builder("PadPush")
-                        .with_attributes(attrs)
+                        .with_attributes(&[
+                            KeyValue::new("element", p.parent_element().map(|e| e.name()).unwrap_or_default()),
+                            KeyValue::new("direction", format!("{:?}", p.direction())),
+                        ])
                         .start(otel_tracer);
 
                     span.end();
@@ -122,14 +124,12 @@ mod imp {
                 ffi::gst_tracing_register_hook(
                     tracer.to_glib_none().0,
                     std::ptr::null(),
-                    Some(std::mem::transmute::<_, ffi::GCallback>(
-                        element_latency_hook as *const ())),
+                    Some(std::mem::transmute::<_, ffi::GCallback>(element_latency as *const ())),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer.to_glib_none().0,
                     std::ptr::null(),
-                    Some(std::mem::transmute::<_, ffi::GCallback>(
-                        pad_push_hook as *const ())),
+                    Some(std::mem::transmute::<_, ffi::GCallback>(pad_push as *const ())),
                 );
             }
         }
@@ -141,10 +141,10 @@ glib::wrapper! {
         @extends gst::Tracer, gst::Object;
 }
 
-// ──────────────── Plugin boilerplate ────────────────
+// ─────────────────── plugin boilerplate ──────────────────────────
 gst::plugin_define!(
     gst_otel,
-    "GStreamer OpenTelemetry tracer",
+    "GStreamer → OpenTelemetry tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "MIT",
@@ -154,10 +154,6 @@ gst::plugin_define!(
 );
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    gst::Tracer::register(
-        Some(plugin),
-        "otel-tracer",
-        OtelTracer::static_type(),
-    )?;
+    gst::Tracer::register(Some(plugin), "otel-tracer", OtelTracer::static_type())?;
     Ok(())
 }
