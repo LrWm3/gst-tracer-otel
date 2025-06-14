@@ -67,8 +67,7 @@ mod imp {
     use super::*;
     use gstreamer as gst;
     use gst::ffi;
-    use glib_sys::GCallback;          // <- glib-sys provides the alias
-
+    
     #[derive(Default)]
     pub struct OtelTracer;
 
