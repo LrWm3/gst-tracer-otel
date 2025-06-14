@@ -1,0 +1,55 @@
+name: build-and-test-gst-otel
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # ❶ Spin up a collector as a service container
+    services:
+      otel:
+        image: otel/opentelemetry-collector-contrib:latest
+        options: >-
+          -v ${{ github.workspace }}/.github/otel-config.yaml:/etc/otelcol-contrib/config.yaml
+        ports:
+          - 4317:4317   # gRPC
+          - 4318:4318   # HTTP (unused here)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ❷ Install Rust + GStreamer build deps
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GStreamer dev libs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yq --no-install-recommends \
+               libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+               gstreamer1.0-tools gstreamer1.0-plugins-base
+
+      # ❸ Build the plug-in in release mode
+      - name: Cargo build
+        run: cargo build --release
+
+      # ❹ Run a minimal test pipeline that emits 10 buffers
+      - name: Run gst-launch with tracer
+        env:
+          GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
+          GST_TRACERS: otel-tracer
+          OTEL_SERVICE_NAME: github-ct-test
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+        run: |
+          # Check that the plug-in is visible
+          gst-inspect-1.0 | grep -q otel-tracer
+          # Fire a headless pipeline
+          gst-launch-1.0 -q fakesrc num-buffers=10 ! fakesink sync=false
+          echo "gst-launch finished; waiting 3 s for collector to flush"
+          sleep 3
+
+      # ❺ Show collector output (metrics & spans) in job log
+      - name: Dump collector logs
+        run: docker logs ${{ job.services.otel.id }}
