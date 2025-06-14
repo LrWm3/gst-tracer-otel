@@ -1,0 +1,23 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:  # port 4317
+      http:
+
+processors:
+  batch:
+
+exporters:
+  logging:
+    verbosity: detailed   # every metric datapoint & span
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
