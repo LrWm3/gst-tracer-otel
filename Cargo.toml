@@ -9,7 +9,7 @@ crate-type  = ["cdylib"]
 [dependencies]
 # ── GStreamer stack ───────────────────────────────────────────────
 glib              = "0.18"
-gstreamer         = { version = "0.24", features = ["v1_24", "subclass"] }
+gstreamer         = { version = "0.23.6", features = ["v1_24", "subclass"] }
 gstreamer-sys     = "0.24"  # raw FFI for hook registration
 
 once_cell         = "1.19"
