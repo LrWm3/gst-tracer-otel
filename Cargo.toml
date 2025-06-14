@@ -1,18 +1,20 @@
 [package]
-name    = "gst_otel_tracer"
-version = "0.1.0"
-edition = "2021"
+name        = "gst_otel_tracer"
+version     = "0.1.0"
+edition     = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type  = ["cdylib"]
 
 [dependencies]
+# ── GStreamer stack ───────────────────────────────────────────────
 glib              = "0.18"
-gstreamer         = { version = "0.23", features = ["v1_20"] }
-gstreamer-sys     = "0.23"
-once_cell         = "1.19"
+gstreamer         = { version = "0.24", features = ["v1_24", "subclass"] }
+gstreamer-sys     = "0.24"  # raw FFI for hook registration
 
-# OpenTelemetry
+once_cell         = "1.19"
+fastrand          = "2.0"
+
 opentelemetry           = { version = "0.22", features = ["metrics"] }
 opentelemetry_sdk       = { version = "0.22", features = ["metrics"] }
 opentelemetry-otlp      = { version = "0.15", features = ["tonic", "metrics", "trace"] }
