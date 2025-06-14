@@ -1,3 +1,5 @@
+> warning; i made this on my phone with chatgpt, untested and likely doesnt work yet
+
 ## 📄 README.md ― *gst-otel-tracer*
 
 > **GStreamer ⇄ OpenTelemetry bridge**
