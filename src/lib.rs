@@ -78,7 +78,8 @@ mod imp {
             let _ = &*super::OTEL;   // ensure exporter starts
 
             // get &gst::Tracer for hook registration
-            let tracer_obj: &gst::Tracer = self.obj().upcast_ref();
+            let obj_handle = self.obj();
+            let tracer_obj: &gst::Tracer = obj_handle.upcast_ref();
 
             // -------- C callbacks ---------------------------------
             unsafe extern "C" fn elem_latency(
