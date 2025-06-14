@@ -5,6 +5,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use glib::translate::{FromGlibPtrBorrow, ToGlibPtr};
 use once_cell::sync::Lazy;
+use gobject_sys::GCallback;
 
 use opentelemetry::{
     metrics::{Histogram, Meter, MeterProvider},
