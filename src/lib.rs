@@ -157,7 +157,7 @@ mod imp {
                 // latency
                 if let Some((_, start_ts)) = PAD_TS.remove(&key) {
                     let delta = ts.saturating_sub(start_ts);
-                    hist.record(delta as f64, super::attrs_for(&p).iter().cloned());
+                    hist.record(delta as f64, super::attrs_for(&p).as_ref());
                 }
 
                 // span end
