@@ -46,7 +46,7 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
             .with_exporter(
                 opentelemetry_otlp::new_exporter()
                     .tonic()
-                    .with_export_config(Default::default()),
+                    .with_env(),
             )
             .with_trace_config(
                 sdktrace::config()
@@ -60,7 +60,7 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
             .with_exporter(
                 opentelemetry_otlp::new_exporter()
                     .tonic()
-                    .with_export_config(Default::default()),
+                    .with_env(),
             )
             .build()
             .unwrap();
