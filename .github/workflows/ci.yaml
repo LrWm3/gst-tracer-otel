@@ -59,9 +59,9 @@ jobs:
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
         run: |
           # Push 10 fake buffers through the pipeline
-          gst-launch-1.0 -q fakesrc num-buffers=10 ! fakesink sync=false
-          echo "gst-launch finished; waiting 3 s for the collector to flush"
-          sleep 3
+          gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true
+          echo "gst-launch finished; waiting 6 s for the collector to flush"
+          sleep 6
 
       # ────────────────────────────────────────────────
       # ❻ Show collector logs (metrics & spans)
