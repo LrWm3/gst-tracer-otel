@@ -46,7 +46,11 @@ jobs:
             otel/opentelemetry-collector-contrib:latest \
             --config /etc/otelcol/config.yaml
           # Give the collector a moment to start
-          sleep 3
+          # wait until the collector has opened :4317
+          for i in {1..10}; do
+            (echo > /dev/tcp/localhost/4317) >/dev/null 2>&1 && break
+            sleep 0.5
+          done
 
       # ────────────────────────────────────────────────
       # ❺ Run a head-less pipeline with the tracer
