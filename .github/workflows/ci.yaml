@@ -68,7 +68,7 @@ jobs:
       # ────────────────────────────────────────────────
       - name: gst-inspect for crash repro
         run: |
-          gst-inspect-1.0 otel-tracer >/dev/null || true
+          gst-inspect-1.0 oteltracer >/dev/null || true
 
       # ────────────────────────────────────────────────
       # ❼ Pipeline run & optional core-dump processing
