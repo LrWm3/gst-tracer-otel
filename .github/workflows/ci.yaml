@@ -90,6 +90,7 @@ jobs:
           OTEL_SERVICE_NAME: github-ci-test
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
           OTEL_TRACES_SAMPLING_RATIO: 1.0
+          OTEL_EXPORTER_OTLP_INSECURE: true
         run: |
           # Enable core dumps
           ulimit -c unlimited
