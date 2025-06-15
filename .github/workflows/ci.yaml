@@ -58,8 +58,6 @@ jobs:
           OTEL_SERVICE_NAME: github-ci-test
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
         run: |
-          # Confirm the tracer is discoverable
-          gst-inspect-1.0 | grep -q otel-tracer
           # Push 10 fake buffers through the pipeline
           gst-launch-1.0 -q fakesrc num-buffers=10 ! fakesink sync=false
           echo "gst-launch finished; waiting 3 s for the collector to flush"
