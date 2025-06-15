@@ -77,7 +77,8 @@ jobs:
         env:
           GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
         run: |
-          GST_DEBUG="GST_PLUGIN_LOADING:4" gdb -batch -ex "run" -ex "bt" -ex "quit" --args  gst-inspect-1.0 oteltracer >/dev/null || true
+          GST_DEBUG="GST_PLUGIN_LOADING:4" gdb -batch -ex "run" -ex "bt" -ex "quit" --args  gst-inspect-1.0 oteltracer || true
+          gst-inspect-1.0 -b || true
 
       # ────────────────────────────────────────────────
       # ❼ Pipeline run & optional core-dump processing
