@@ -152,7 +152,7 @@ mod imp {
 
                 let mut span = tracer
                     .span_builder("PadPush")
-                    .with_attributes(attrs.as_ref())
+                    .with_attributes(attrs.as_ref().iter().cloned())
                     .start(tracer);
 
                 span.end();
