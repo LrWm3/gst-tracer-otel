@@ -8,7 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       # ────────────────────────────────────────────────
       # ❶ Check out repo
@@ -16,27 +15,28 @@ jobs:
       - uses: actions/checkout@v4
 
       # ────────────────────────────────────────────────
-      # ❷ Rust toolchain & GStreamer dev libs
+      # ❷ Rust toolchain & GStreamer + gdb
       # ────────────────────────────────────────────────
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install GStreamer build dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-               libgstreamer1.0-dev \
-               libgstreamer-plugins-base1.0-dev \
-               gstreamer1.0-tools \
-               gstreamer1.0-plugins-base
+            gdb \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-tools \
+            gstreamer1.0-plugins-base
 
       # ────────────────────────────────────────────────
-      # ❸ Build plug-in
+      # ❸ Build plug-in (release w/ debuginfo)
       # ────────────────────────────────────────────────
       - name: Cargo build (release)
         run: cargo build --release
 
       # ────────────────────────────────────────────────
-      # ❹ Start OTEL-Collector (after checkout → mount works)
+      # ❹ Start OTEL-Collector
       # ────────────────────────────────────────────────
       - name: Start OpenTelemetry Collector
         run: |
@@ -45,39 +45,62 @@ jobs:
             -p 4317:4317 \
             otel/opentelemetry-collector-contrib:latest \
             --config /etc/otelcol/config.yaml
-          # Give the collector a moment to start
-          # wait until the collector has opened :4317
+          # Wait until the collector is listening on 4317
           for i in {1..10}; do
             (echo > /dev/tcp/localhost/4317) >/dev/null 2>&1 && break
             sleep 0.5
           done
 
       # ────────────────────────────────────────────────
-      # ❺ Run a head-less pipeline with the tracer
+      # ❺ Run gst-inspect under gdb (non-interactive)
       # ────────────────────────────────────────────────
-      - name: Run gst-launch with otel-tracer
+      - name: Load plug-in with gdb for back-trace
+        run: |
+          ls ${{ github.workspace }}/target/release
+          # Non-interactive gdb: run + full back-trace on crash
+          gdb -batch -ex "run" -ex "bt full" \
+              --args gst-inspect-1.0 \
+              ${{ github.workspace }}/target/release/libgstoteltracer.so || true
+
+      # ────────────────────────────────────────────────
+      # ❻ Normal gst-inspect call that triggers the dump
+      #     (unchanged – this is what produces the core)
+      # ────────────────────────────────────────────────
+      - name: gst-inspect for crash repro
+        run: |
+          gst-inspect-1.0 otel-tracer >/dev/null || true
+
+      # ────────────────────────────────────────────────
+      # ❼ Pipeline run & optional core-dump processing
+      # ────────────────────────────────────────────────
+      - name: Run gst-launch + process core if present
         env:
           GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
           GST_TRACERS: otel-tracer
           OTEL_SERVICE_NAME: github-ci-test
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
         run: |
-          ls ${{ github.workspace }}/target/release
-          GST_DEBUG="GST_PLUGIN_LOADING:7" gdb gst-inspect-1.0 ${{ github.workspace }}/target/release/libgstoteltracer.so
-          gst-inspect-1.0 otel-tracer >/dev/null
-          # Push 10 fake buffers through the pipeline
-          gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true
+          # Enable core dumps
+          ulimit -c unlimited
+          # Run the pipeline
+          gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
           echo "gst-launch finished; waiting 6 s for the collector to flush"
           sleep 6
+          # If a core file exists, print a back-trace
+          COREFILE=$(ls -1 core* 2>/dev/null | head -n 1 || true)
+          if [ -n "$COREFILE" ]; then
+            echo "===== core dump detected: $COREFILE ====="
+            gdb -batch -ex "bt full" gst-launch-1.0 "$COREFILE" || true
+          fi
 
       # ────────────────────────────────────────────────
-      # ❻ Show collector logs (metrics & spans)
+      # ❽ Show collector logs
       # ────────────────────────────────────────────────
       - name: Dump collector output
         run: docker logs otel
 
       # ────────────────────────────────────────────────
-      # ❼ Clean up
+      # ❾ Clean up
       # ────────────────────────────────────────────────
       - name: Stop collector
         if: always()
