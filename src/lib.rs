@@ -160,7 +160,7 @@ mod imp {
                 }
 
                 // span end
-                if let Some((_, span)) = PAD_SPANS.remove(&key) {
+                if let Some((_, mut span)) = PAD_SPANS.remove(&key) {
                     span.end();
                 }
             }
