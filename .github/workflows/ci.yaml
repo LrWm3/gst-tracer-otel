@@ -77,7 +77,7 @@ jobs:
         env:
           GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
         run: |
-          GST_DEBUG="GST_PLUGIN_LOADING:7" gst-inspect-1.0 oteltracer >/dev/null || true
+          GST_DEBUG="GST_PLUGIN_LOADING:7" gdb -batch -ex "run" -ex "bt" -ex "quit" --args  gst-inspect-1.0 oteltracer >/dev/null || true
 
       # ────────────────────────────────────────────────
       # ❼ Pipeline run & optional core-dump processing
@@ -92,7 +92,7 @@ jobs:
           # Enable core dumps
           ulimit -c unlimited
           # Run the pipeline
-          gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
+          gdb -batch -ex "run" -ex "bt" -ex "quit" --args gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
           echo "gst-launch finished; waiting 6 s for the collector to flush"
           sleep 6
           # If a core file exists, print a back-trace
