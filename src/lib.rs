@@ -126,7 +126,7 @@ mod imp {
                 time: ffi::GstClockTime,
                 _ud: glib::ffi::gpointer,
             ) {
-                if time == ffi::GST_CLOCK_TIME_NONE {
+                if time == ffi::GST_CLOCK_TIME_NONE || element.is_null() {
                     return;
                 }
 
