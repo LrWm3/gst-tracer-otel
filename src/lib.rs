@@ -116,7 +116,8 @@ mod imp {
     impl ObjectImpl for OtelTracer {
         fn constructed(&self) {
             self.parent_constructed();
-            let tracer_obj: &gst::Tracer = self.obj().upcast_ref();
+            let obj = self.obj();
+            let tracer_obj: &gst::Tracer = obj.upcast_ref();
 
             // ---------- hook fns -----------
             unsafe extern "C" fn push_pre(
