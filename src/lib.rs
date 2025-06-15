@@ -135,7 +135,7 @@ mod imp {
                 let (tracer, _, _) = &*super::OTEL;
                 let span = tracer
                     .span_builder("PadPush")
-                    .with_attributes(super::attrs_for(&p).as_ref())
+                    .with_attributes(super::attrs_for(&p).iter().cloned())
                     .start(tracer);
 
                 PAD_SPANS.insert(key, span);
@@ -156,7 +156,7 @@ mod imp {
                 // latency
                 if let Some((_, start_ts)) = PAD_TS.remove(&key) {
                     let delta = ts.saturating_sub(start_ts);
-                    hist.record(delta as f64, super::attrs_for(&p).as_ref());
+                    hist.record(delta as f64, super::attrs_for(&p).iter().cloned());
                 }
 
                 // span end
