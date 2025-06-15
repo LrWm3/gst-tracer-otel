@@ -93,7 +93,14 @@ jobs:
           # Enable core dumps
           ulimit -c unlimited
           # Run the pipeline
-          gdb -batch -ex "run" -ex "bt" -ex "quit" --args gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
+          GST_TRACERS=otel-tracer \
+          GST_PLUGIN_PATH=$(pwd)/target/release \
+          OTEL_TRACES_SAMPLING_RATIO=1.0 \
+          gdb -batch \
+            -ex "run" \
+            -ex "bt" \
+            -ex "quit" \
+           --args gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
           echo "gst-launch finished; waiting 6 s for the collector to flush"
           sleep 6
           # If a core file exists, print a back-trace
