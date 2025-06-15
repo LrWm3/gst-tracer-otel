@@ -2,7 +2,6 @@ receivers:
   otlp:
     protocols:
       grpc:  # port 4317
-      http:
 
 processors:
   batch:
