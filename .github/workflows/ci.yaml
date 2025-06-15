@@ -74,6 +74,8 @@ jobs:
       #     (unchanged – this is what produces the core)
       # ────────────────────────────────────────────────
       - name: gst-inspect for crash repro
+        env:
+          GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
         run: |
           GST_DEBUG="GST_PLUGIN_LOADING:7" gst-inspect-1.0 oteltracer >/dev/null || true
 
