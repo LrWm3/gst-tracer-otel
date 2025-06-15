@@ -1,4 +1,4 @@
-> warning; i made this on my phone with chatgpt, untested and likely doesnt work yet
+> warning; i made this on my phone with chatgpt, untested and currently core dumps. will fix when i get to a pc
 
 ## 📄 README.md ― *gst-otel-tracer*
 
