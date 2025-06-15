@@ -13,7 +13,7 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{runtime::Tokio, trace as sdktrace};
-
+use tokio::runtime::Runtime;
 use gobject_sys::GCallback;
 
 // ───────────────────────── OTel bootstrap ─────────────────────────
