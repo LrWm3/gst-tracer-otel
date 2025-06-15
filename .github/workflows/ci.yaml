@@ -62,7 +62,7 @@ jobs:
           OTEL_SERVICE_NAME: github-ci-test
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
         run: |
-          gst-inspect-1.0 oteltracer >/dev/null
+          gst-inspect-1.0 otel-tracer >/dev/null
           # Push 10 fake buffers through the pipeline
           gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true
           echo "gst-launch finished; waiting 6 s for the collector to flush"
