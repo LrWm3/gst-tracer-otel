@@ -11,6 +11,8 @@ use opentelemetry::{
     metrics::{Histogram, Meter, MeterProvider, Unit},
     KeyValue,
 };
+use opentelemetry::trace::Span;
+use opentelemetry::trace::Tracer;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     runtime::Tokio,
