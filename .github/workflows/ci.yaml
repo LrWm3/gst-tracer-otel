@@ -89,13 +89,11 @@ jobs:
           GST_TRACERS: otel-tracer
           OTEL_SERVICE_NAME: github-ci-test
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
+          OTEL_TRACES_SAMPLING_RATIO: 1.0
         run: |
           # Enable core dumps
           ulimit -c unlimited
           # Run the pipeline
-          GST_TRACERS=otel-tracer \
-          GST_PLUGIN_PATH=$(pwd)/target/release \
-          OTEL_TRACES_SAMPLING_RATIO=1.0 \
           gdb -batch \
             -ex "run" \
             -ex "bt" \
