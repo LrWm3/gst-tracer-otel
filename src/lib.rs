@@ -1,4 +1,4 @@
-//! gst-otel-tracer - glib 0.20, gstreamer 0.23, OTLP 0.15
+//! gst-otel-tracer  (glib 0.20 / gstreamer 0.23 / OTLP 0.15)
 
 use gstreamer as gst;
 use gst::prelude::*;
@@ -7,8 +7,8 @@ use glib::translate::{FromGlibPtrBorrow, ToGlibPtr};
 use once_cell::sync::Lazy;
 
 use opentelemetry::{
-    metrics::{Histogram, Meter, MeterProvider, Unit},   // ← added Unit + MeterProvider
-    trace::{Span, Tracer},                              // ← Span for .end()
+    metrics::{Histogram, Meter, MeterProvider, Unit},
+    trace::{Span, Tracer},
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
@@ -16,33 +16,34 @@ use opentelemetry_sdk::{runtime::Tokio, trace as sdktrace};
 use tokio::runtime::Runtime;
 use gobject_sys::GCallback;
 
-// ───────────────────────── OTel bootstrap ─────────────────────────
+// ─────────────── global Tokio runtime ───────────────
 static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
         .worker_threads(2)
+        .enable_all()
         .build()
         .expect("tokio runtime")
 });
 
-// ─── inside the OTEL Lazy block, replace the old _rt code ─────────
-// ─── replace the OTEL Lazy body with this — only 3 changed lines ─
+// ─────────── OpenTelemetry pipelines (lazy) ─────────
 static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
     TOKIO_RT.block_on(async {
-        // 1️⃣ we are now inside the reactor -> tonic is happy
-        let exp_traces  = opentelemetry_otlp::new_exporter().tonic()
+        // separate exporters – builder isn’t Clone
+        let exp_traces  = opentelemetry_otlp::new_exporter()
+            .tonic()
             .with_export_config(Default::default());
-        let exp_metrics = opentelemetry_otlp::new_exporter().tonic()
+        let exp_metrics = opentelemetry_otlp::new_exporter()
+            .tonic()
             .with_export_config(Default::default());
 
         let tracer = opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(exp_traces)
-            .install_batch(Tokio)        // uses the *current* runtime
+            .install_batch(Tokio)
             .unwrap();
 
         let meter_provider = opentelemetry_otlp::new_pipeline()
-            .metrics(Tokio)
+            .metrics(Tokio)           // runtime first in OTLP-0.15
             .with_exporter(exp_metrics)
             .build()
             .unwrap();
@@ -57,11 +58,9 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
     })
 });
 
-
-// ────────────────────── Tracer subclass ───────────────────────────
+// ─────────────── tracer subclass ───────────────
 mod imp {
     use super::*;
-    use gstreamer as gst;
     use gst::ffi;
 
     #[derive(Default)]
@@ -74,18 +73,15 @@ mod imp {
         type ParentType = gst::Tracer;
     }
 
-    // glib-0.20: constructed() lives on ObjectImpl and has **no args**
+    // glib-0.20: light constructed()
     impl ObjectImpl for OtelTracer {
         fn constructed(&self) {
             self.parent_constructed();
 
-            let _ = &*super::OTEL;   // ensure exporter starts
-
-            // get &gst::Tracer for hook registration
-            let obj_handle = self.obj();
+            // register hooks early
+            let obj_handle = self.obj();                // keep BorrowedObject alive
             let tracer_obj: &gst::Tracer = obj_handle.upcast_ref();
 
-            // -------- C callbacks ---------------------------------
             unsafe extern "C" fn elem_latency(
                 _tr: *mut ffi::GstTracer,
                 element: *mut ffi::GstElement,
@@ -94,10 +90,10 @@ mod imp {
             ) {
                 if time == ffi::GST_CLOCK_TIME_NONE { return; }
                 let elem = gst::Element::from_glib_borrow(element);
-                let (_, _, hist) = &*super::OTEL;
+                let (_, _, hist) = &*super::OTEL;       // OTEL forced later
                 hist.record(
                     time as f64,
-                    &[KeyValue::new("element", elem.name().to_string())], // GString→String
+                    &[KeyValue::new("element", elem.name().to_string())],
                 );
             }
 
@@ -107,11 +103,11 @@ mod imp {
                 _buf: *mut ffi::GstBuffer,
                 _ud: glib::ffi::gpointer,
             ) {
-                if fastrand::u32(..1000) != 0 { return; }  // 0.1 % sample
+                if fastrand::u32(..1000) != 0 { return; }
                 let p = gst::Pad::from_glib_borrow(pad);
                 let (tracer, _, _) = &*super::OTEL;
 
-                let mut span = tracer                 // ← mutable so we can .end()
+                let mut span = tracer
                     .span_builder("PadPush")
                     .with_attributes(vec![
                         KeyValue::new(
@@ -140,8 +136,16 @@ mod imp {
             }
         }
     }
+
     impl GstObjectImpl for OtelTracer {}
-    impl TracerImpl   for OtelTracer {}
+
+    // activate OTEL only when the tracer is *started* (GST_TRACERS=…)
+    impl TracerImpl for OtelTracer {
+        fn start(&self, _tracer: &Self::Type) -> Result<(), gst::ErrorMessage> {
+            let _ = &*super::OTEL;  // force initialisation inside Tokio runtime
+            Ok(())
+        }
+    }
 }
 
 glib::wrapper! {
@@ -149,16 +153,19 @@ glib::wrapper! {
         @extends gst::Tracer, gst::Object;
 }
 
-// ───────────────────── plugin boilerplate ────────────────────────
+// ───────────── plugin boilerplate ─────────────
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Tracer::register(Some(plugin), "otel-tracer", OtelTracer::static_type())?;
     Ok(())
 }
 
 gst::plugin_define!(
-    oteltracer,                              // name
-    "GStreamer → OpenTelemetry tracer",      // description
-    plugin_init,                             // init fn ident
-    env!("CARGO_PKG_VERSION"),               // version
-    "MIT", "gst_otel_tracer", "gst_otel_tracer", "https://example.com"
+    oteltracer,                               // shared-object name → libgstoteltracer.so
+    "GStreamer → OpenTelemetry tracer",
+    plugin_init,
+    env!("CARGO_PKG_VERSION"),
+    "MPL-2.0",
+    "gst_otel_tracer",
+    "gst_otel_tracer",
+    "https://example.com"
 );
