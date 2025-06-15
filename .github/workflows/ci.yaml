@@ -63,7 +63,7 @@ jobs:
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
         run: |
           ls ${{ github.workspace }}/target/release
-          GST_DEBUG="GST_PLUGIN_LOADING:7" gst-inspect-1.0 ${{ github.workspace }}/target/release/libgst_otel_tracer.so
+          GST_DEBUG="GST_PLUGIN_LOADING:7" gst-inspect-1.0 ${{ github.workspace }}/target/release/libgstoteltracer.so
           gst-inspect-1.0 otel-tracer >/dev/null
           # Push 10 fake buffers through the pipeline
           gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true
