@@ -168,9 +168,9 @@ mod imp {
             // ---------- register all latency-relevant hooks ----------
             unsafe {
                 for &name in &[
-                    b"pad-push-pre\0",
-                    b"pad-push-list-pre\0",
-                    b"pad-pull-range-pre\0",
+                    b"pad-push-pre\0".as_ref(),
+                    b"pad-push-list-pre\0".as_ref(),
+                    b"pad-pull-range-pre\0".as_ref(),
                 ] {
                     ffi::gst_tracing_register_hook(
                         tracer_obj.to_glib_none().0,
@@ -179,9 +179,9 @@ mod imp {
                     );
                 }
                 for &name in &[
-                    b"pad-push-post\0",
-                    b"pad-push-list-post\0",
-                    b"pad-pull-range-post\0",
+                    b"pad-push-post\0".as_ref(),
+                    b"pad-push-list-post\0".as_ref(),
+                    b"pad-pull-range-post\0".as_ref(),
                 ] {
                     ffi::gst_tracing_register_hook(
                         tracer_obj.to_glib_none().0,
