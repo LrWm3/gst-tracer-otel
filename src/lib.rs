@@ -1,4 +1,4 @@
-//! gst-otel-tracer  (glib 0.20 / gstreamer 0.23 / OTLP 0.15)
+//! gst-otel-tracer  – glib 0.20  |  gstreamer 0.23  |  OTLP 0.15
 
 use gstreamer as gst;
 use gst::prelude::*;
@@ -16,7 +16,7 @@ use opentelemetry_sdk::{runtime::Tokio, trace as sdktrace};
 use tokio::runtime::Runtime;
 use gobject_sys::GCallback;
 
-// ─────────────── global Tokio runtime ───────────────
+// ───────────── global Tokio runtime ─────────────
 static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -25,15 +25,13 @@ static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
         .expect("tokio runtime")
 });
 
-// ─────────── OpenTelemetry pipelines (lazy) ─────────
+// ───────────── OpenTelemetry pipelines ───────────
+// created the *first* time any hook fires – so gst-inspect doesn't touch tonic.
 static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
     TOKIO_RT.block_on(async {
-        // separate exporters – builder isn’t Clone
-        let exp_traces  = opentelemetry_otlp::new_exporter()
-            .tonic()
+        let exp_traces  = opentelemetry_otlp::new_exporter().tonic()
             .with_export_config(Default::default());
-        let exp_metrics = opentelemetry_otlp::new_exporter()
-            .tonic()
+        let exp_metrics = opentelemetry_otlp::new_exporter().tonic()
             .with_export_config(Default::default());
 
         let tracer = opentelemetry_otlp::new_pipeline()
@@ -43,7 +41,7 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
             .unwrap();
 
         let meter_provider = opentelemetry_otlp::new_pipeline()
-            .metrics(Tokio)           // runtime first in OTLP-0.15
+            .metrics(Tokio)           // runtime FIRST in 0.15
             .with_exporter(exp_metrics)
             .build()
             .unwrap();
@@ -58,7 +56,7 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
     })
 });
 
-// ─────────────── tracer subclass ───────────────
+// ───────────── tracer subclass ─────────────
 mod imp {
     use super::*;
     use gst::ffi;
@@ -73,15 +71,15 @@ mod imp {
         type ParentType = gst::Tracer;
     }
 
-    // glib-0.20: light constructed()
     impl ObjectImpl for OtelTracer {
         fn constructed(&self) {
             self.parent_constructed();
 
-            // register hooks early
-            let obj_handle = self.obj();                // keep BorrowedObject alive
+            // keep the BorrowedObject alive so tracer_obj lives long enough
+            let obj_handle = self.obj();
             let tracer_obj: &gst::Tracer = obj_handle.upcast_ref();
 
+            // ---- C callbacks ------------------------------------------------
             unsafe extern "C" fn elem_latency(
                 _tr: *mut ffi::GstTracer,
                 element: *mut ffi::GstElement,
@@ -90,7 +88,7 @@ mod imp {
             ) {
                 if time == ffi::GST_CLOCK_TIME_NONE { return; }
                 let elem = gst::Element::from_glib_borrow(element);
-                let (_, _, hist) = &*super::OTEL;       // OTEL forced later
+                let (_, _, hist) = &*super::OTEL;
                 hist.record(
                     time as f64,
                     &[KeyValue::new("element", elem.name().to_string())],
@@ -103,7 +101,7 @@ mod imp {
                 _buf: *mut ffi::GstBuffer,
                 _ud: glib::ffi::gpointer,
             ) {
-                if fastrand::u32(..1000) != 0 { return; }
+                if fastrand::u32(..1000) != 0 { return; }   // 0.1 % sample
                 let p = gst::Pad::from_glib_borrow(pad);
                 let (tracer, _, _) = &*super::OTEL;
 
@@ -122,6 +120,7 @@ mod imp {
                 span.end();
             }
 
+            // register hooks
             unsafe {
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
@@ -138,14 +137,7 @@ mod imp {
     }
 
     impl GstObjectImpl for OtelTracer {}
-
-    // activate OTEL only when the tracer is *started* (GST_TRACERS=…)
-    impl TracerImpl for OtelTracer {
-        fn start(&self, _tracer: &Self::Type) -> Result<(), gst::ErrorMessage> {
-            let _ = &*super::OTEL;  // force initialisation inside Tokio runtime
-            Ok(())
-        }
-    }
+    impl TracerImpl   for OtelTracer {}   // no extra vfuncs in 0.23
 }
 
 glib::wrapper! {
@@ -160,11 +152,11 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 }
 
 gst::plugin_define!(
-    oteltracer,                               // shared-object name → libgstoteltracer.so
+    oteltracer,                               // => libgstoteltracer.so
     "GStreamer → OpenTelemetry tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
-    "MPL-2.0",
+    "MIT",
     "gst_otel_tracer",
     "gst_otel_tracer",
     "https://example.com"
