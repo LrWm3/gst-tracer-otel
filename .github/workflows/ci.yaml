@@ -70,23 +70,12 @@ jobs:
           done
 
       # ────────────────────────────────────────────────
-      # ❺ Run gst-inspect under gdb (non-interactive)
-      # ────────────────────────────────────────────────
-      - name: Load plug-in with gdb for back-trace
-        run: |
-          ls ${{ github.workspace }}/target/release
-          # Non-interactive gdb: run + full back-trace on crash
-          gdb -batch -ex "run" -ex "bt full" \
-              --args gst-inspect-1.0 \
-              ${{ github.workspace }}/target/release/libgstoteltracer.so || true
-
-      # ────────────────────────────────────────────────
       # ❻ Normal gst-inspect call that triggers the dump
       #     (unchanged – this is what produces the core)
       # ────────────────────────────────────────────────
       - name: gst-inspect for crash repro
         run: |
-          gst-inspect-1.0 oteltracer >/dev/null || true
+          GST_DEBUG="GST_PLUGIN_LOADING:7" gst-inspect-1.0 oteltracer >/dev/null || true
 
       # ────────────────────────────────────────────────
       # ❼ Pipeline run & optional core-dump processing
