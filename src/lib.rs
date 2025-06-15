@@ -26,37 +26,35 @@ static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
 });
 
 // ─── inside the OTEL Lazy block, replace the old _rt code ─────────
+// ─── replace the OTEL Lazy body with this — only 3 changed lines ─
 static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
-    // enter the global runtime so everything below sees a reactor
-    let _guard = TOKIO_RT.enter();
+    TOKIO_RT.block_on(async {
+        // 1️⃣ we are now inside the reactor -> tonic is happy
+        let exp_traces  = opentelemetry_otlp::new_exporter().tonic()
+            .with_export_config(Default::default());
+        let exp_metrics = opentelemetry_otlp::new_exporter().tonic()
+            .with_export_config(Default::default());
 
-    // separate exporters – builder isn’t Clone
-    let exp_traces  = opentelemetry_otlp::new_exporter().tonic()
-        .with_export_config(Default::default());
-    let exp_metrics = opentelemetry_otlp::new_exporter().tonic()
-        .with_export_config(Default::default());
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(exp_traces)
+            .install_batch(Tokio)        // uses the *current* runtime
+            .unwrap();
 
-    // tracing pipeline
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(exp_traces)
-        .install_batch(Tokio)      // Tokio adapter now finds the reactor
-        .unwrap();
+        let meter_provider = opentelemetry_otlp::new_pipeline()
+            .metrics(Tokio)
+            .with_exporter(exp_metrics)
+            .build()
+            .unwrap();
 
-    // metrics pipeline
-    let meter_provider = opentelemetry_otlp::new_pipeline()
-        .metrics(Tokio)
-        .with_exporter(exp_metrics)
-        .build()
-        .unwrap();
+        let meter = meter_provider.meter("gst-tracer");
+        let hist  = meter
+            .f64_histogram("gstreamer.element.latency.ns")
+            .with_unit(Unit::new("ns"))
+            .init();
 
-    let meter = meter_provider.meter("gst-tracer");
-    let hist  = meter
-        .f64_histogram("gstreamer.element.latency.ns")
-        .with_unit(Unit::new("ns"))
-        .init();
-
-    (tracer, meter, hist)
+        (tracer, meter, hist)
+    })
 });
 
 
