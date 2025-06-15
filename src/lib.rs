@@ -204,7 +204,7 @@ gst::plugin_define!(
     "GStreamer → OpenTelemetry tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
-    "MIT",
+    "MPL-2.0",
     "gst_otel_tracer",
     "gst_otel_tracer",
     "https://example.com"
