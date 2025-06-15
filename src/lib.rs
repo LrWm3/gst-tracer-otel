@@ -14,33 +14,38 @@ use opentelemetry::{
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{runtime::Tokio, trace as sdktrace};
 
-use gobject_sys::GCallback;   // ← correct GLib C-callback alias
+use gobject_sys::GCallback;
 
 // ───────────────────────── OTel bootstrap ─────────────────────────
-static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
-    // tiny Tokio runtime for batch exporters
-    let _rt = tokio::runtime::Builder::new_multi_thread()
+static TOKIO_RT: Lazy<Runtime> = Lazy::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
         .build()
-        .unwrap();
+        .expect("tokio runtime")
+});
 
-    // NOTE: Tonic exporter builder is NOT Clone → make one per signal
+// ─── inside the OTEL Lazy block, replace the old _rt code ─────────
+static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
+    // enter the global runtime so everything below sees a reactor
+    let _guard = TOKIO_RT.enter();
+
+    // separate exporters – builder isn’t Clone
     let exp_traces  = opentelemetry_otlp::new_exporter().tonic()
         .with_export_config(Default::default());
     let exp_metrics = opentelemetry_otlp::new_exporter().tonic()
         .with_export_config(Default::default());
 
-    // ── Traces ────────────────────────────────────────────────────
+    // tracing pipeline
     let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()                       // param-less in 0.15
+        .tracing()
         .with_exporter(exp_traces)
-        .install_batch(Tokio)
+        .install_batch(Tokio)      // Tokio adapter now finds the reactor
         .unwrap();
 
-    // ── Metrics ───────────────────────────────────────────────────
+    // metrics pipeline
     let meter_provider = opentelemetry_otlp::new_pipeline()
-        .metrics(Tokio)                  // runtime FIRST in 0.15
+        .metrics(Tokio)
         .with_exporter(exp_metrics)
         .build()
         .unwrap();
@@ -48,11 +53,12 @@ static OTEL: Lazy<(sdktrace::Tracer, Meter, Histogram<f64>)> = Lazy::new(|| {
     let meter = meter_provider.meter("gst-tracer");
     let hist  = meter
         .f64_histogram("gstreamer.element.latency.ns")
-        .with_unit(Unit::new("ns"))      // ← Unit, NOT &str
-        .init();                         // explicit-bucket API not in 0.22
+        .with_unit(Unit::new("ns"))
+        .init();
 
     (tracer, meter, hist)
 });
+
 
 // ────────────────────── Tracer subclass ───────────────────────────
 mod imp {
