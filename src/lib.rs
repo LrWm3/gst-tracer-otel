@@ -259,20 +259,22 @@ mod imp {
     /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
     fn get_real_pad_parent(pad: &gst::Pad) -> Option<gst::Element> {
         // 1. Grab its parent as a generic `Object`.
-        let parent_obj = pad.parent().map(|o| o.upcast::<gst::Object>())?;
+        let parent_obj = pad.parent()?;
 
         // 2. If that parent is actually a `GhostPad`, unwrap one level further.
         let real_parent_obj = if parent_obj.is::<gst::GhostPad>() {
             // If it's a GhostPad, get the real pad and then its parent
+            // Just in case its a GhostPad targetting another GhostPad, we keep unwrapping.
+            // This is fairly atypical but can happen 2 or 3 levels deep occasionally.
             parent_obj
                 .downcast::<gst::GhostPad>()
                 .ok()?
                 .target()
-                .and_then(|p| p.parent().map(|o| o.upcast::<gst::Object>()))
+                .and_then(|p| p.parent())?
         } else {
             // Otherwise, just use the parent directly
-            Some(parent_obj)
-        }?;
+            parent_obj
+        };
 
         // 3. Finally, cast the resulting object to an Element.
         real_parent_obj.downcast::<gst::Element>().ok()
