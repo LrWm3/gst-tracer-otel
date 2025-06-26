@@ -15,7 +15,6 @@
  * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
  * Boston, MA 02110-1301, USA.
  */
-use std::cell::OnceCell;
 use std::env;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
@@ -51,19 +50,19 @@ lazy_static! {
     static ref LATENCY_LAST: GaugeVec = register_gauge_vec!(
         "gstreamer_element_latency_last_gauge",
         "Last latency in nanoseconds per element",
-        &["element"]
+        &["element", "src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_SUM: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_sum_count",
         "Sum of latencies in nanoseconds per element",
-        &["element"]
+        &["element", "src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_COUNT: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_count_count",
         "Count of latency measurements per element",
-        &["element"]
+        &["element", "src_pad", "sink_pad"]
     )
     .unwrap();
 }
@@ -174,7 +173,7 @@ mod imp {
                 let peer = gst::Pad::from_glib_ptr_borrow(&pad).peer();
                 if let Some(peer) = peer {
                     let parent = get_real_pad_parent(&peer);
-                    if let Some(parent) = parent {
+                    if let Some(_parent) = parent {
                         let ev = gst::Event::from_glib_borrow(ev);
                         if ev.type_() == gst::EventType::CustomDownstream {
                             if let Some(structure) = ev.structure() {
@@ -218,10 +217,44 @@ mod imp {
                 );
             }
         }
+
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
+            // Allow the application layer to request metrics via a signal
+            SIGNALS.get_or_init(|| {
+                vec![glib::subclass::Signal::builder("request-metrics")
+                    // The ACTION flag is key for signals meant to be called by apps
+                    .flags(glib::SignalFlags::ACTION)
+                    // The signal will return a string (gchar* in C)
+                    .return_type::<Option<String>>()
+                    .class_handler(|_, _args| {
+                        // Call the request_metrics function when the signal is emitted
+                        Some(request_metrics().to_value())
+                    })
+                    .accumulator(|_hint, _acc, _value| {
+                        // First signal handler wins
+                        true
+                    })
+                    .build()]
+            })
+        }
     }
 
     impl GstObjectImpl for PrometheusLatencyTracer {}
     impl TracerImpl for PrometheusLatencyTracer {}
+
+    // Add this function, which is the handler for the "request-metrics" signal
+    fn request_metrics() -> String {
+        gst::info!(CAT, "Metrics requested via signal");
+        let metric_families = gather();
+        let mut buffer = Vec::new();
+        let encoder = TextEncoder::new();
+        encoder
+            .encode(&metric_families, &mut buffer)
+            .expect("Failed to encode metrics");
+
+        String::from_utf8(buffer).expect("Metrics buffer is not valid UTF-8")
+    }
 
     /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
     fn get_real_pad_parent(pad: &gst::Pad) -> Option<gst::Element> {
@@ -262,7 +295,7 @@ mod imp {
         data: &gst::StructureRef,
         sink_pad: &gst::Pad,
         sink_ts: u64,
-        parent: &gst::Element,
+        _parent: &gst::Element,
     ) {
         // Extract source pad and timestamp
         let src_pad: gst::Pad = data.get_by_quark::<gst::Pad>("pad".into()).unwrap();
@@ -274,13 +307,25 @@ mod imp {
             .map(|p| p.name())
             .unwrap_or_else(|| sink_pad.name());
 
+        // format as  "element_name.src_pad_name, if we have a parent, otherwise just "pad_name"
+        let src_pad_name = src_pad
+            .parent()
+            .map(|p| format!("{}.{}", p.name(), src_pad.name()).into())
+            .unwrap_or_else(|| src_pad.name());
+        let sink_pad_name = sink_pad
+            .parent()
+            .map(|p| format!("{}.{}", p.name(), sink_pad.name()).into())
+            .unwrap_or_else(|| sink_pad.name());
+
         LATENCY_LAST
-            .with_label_values(&[&element_latency])
+            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
             .set(diff as f64);
         LATENCY_SUM
-            .with_label_values(&[&element_latency])
+            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
             .inc_by(diff as f64);
-        LATENCY_COUNT.with_label_values(&[&element_latency]).inc();
+        LATENCY_COUNT
+            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
+            .inc();
     }
 
     /// If the env var is set and valid, spawn the HTTP server in a new thread.
