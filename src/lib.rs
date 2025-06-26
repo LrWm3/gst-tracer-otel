@@ -20,6 +20,7 @@ use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::thread;
 
+use dashmap::DashMap;
 use glib;
 use glib::subclass::prelude::*;
 use gobject_sys::GCallback;
@@ -28,10 +29,11 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
 use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use prometheus::{
-    gather, register_counter_vec, register_gauge_vec, CounterVec, Encoder, GaugeVec, TextEncoder,
+    gather, register_counter_vec, register_gauge_vec, Counter, CounterVec, Encoder, Gauge,
+    GaugeVec, TextEncoder,
 };
-
 use tiny_http::{Header, Response, Server};
 
 /// Guarantee we only start the server once, even if `plugin_init`
@@ -44,6 +46,9 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         Some("Prometheus tracer"),
     )
 });
+
+// A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
+static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
 
 // Define Prometheus metrics, all in nanoseconds
 lazy_static! {
@@ -304,30 +309,43 @@ mod imp {
         let src_ts: u64 = data.get_by_quark::<u64>("ts".into()).unwrap();
         let diff = sink_ts.saturating_sub(src_ts);
 
-        let element_latency = sink_pad
-            .parent()
-            .map(|p| p.name())
-            .unwrap_or_else(|| sink_pad.name());
+        // Create a unique key for the metric cache
+        // This may not be safe in highly dynamic pipelines, as pads may be added/removed frequently resulting in the same key being reused.
+        // However, this should still return the correct metrics for the same pad pair.
+        // I guess this does eventually leak memory though if this continues on for too long.
+        // Would be nice to use a better identity that's tied to the pad pair (element name + pad name + pipeline name)
+        let key = src_pad.as_ptr() as usize + sink_pad.as_ptr() as usize;
 
-        // format as  "element_name.src_pad_name, if we have a parent, otherwise just "pad_name"
-        let src_pad_name = src_pad
-            .parent()
-            .map(|p| format!("{}.{}", p.name(), src_pad.name()).into())
-            .unwrap_or_else(|| src_pad.name());
-        let sink_pad_name = sink_pad
-            .parent()
-            .map(|p| format!("{}.{}", p.name(), sink_pad.name()).into())
-            .unwrap_or_else(|| sink_pad.name());
+        // Insert if absent, then get a reference
+        let metrics = METRIC_CACHE.entry(key).or_insert_with(|| {
+            let element_latency = sink_pad
+                .parent()
+                .map(|p| p.name())
+                .unwrap_or_else(|| sink_pad.name());
 
-        LATENCY_LAST
-            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
-            .set(diff as f64);
-        LATENCY_SUM
-            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
-            .inc_by(diff as f64);
-        LATENCY_COUNT
-            .with_label_values(&[&element_latency, &src_pad_name, &sink_pad_name])
-            .inc();
+            // format as  "element_name.src_pad_name, if we have a parent, otherwise just "pad_name"
+            let src_pad_name = src_pad
+                .parent()
+                .map(|p| format!("{}.{}", p.name(), src_pad.name()).into())
+                .unwrap_or_else(|| src_pad.name());
+            let sink_pad_name = sink_pad
+                .parent()
+                .map(|p| format!("{}.{}", p.name(), sink_pad.name()).into())
+                .unwrap_or_else(|| sink_pad.name());
+
+            let labels = &[&element_latency, &src_pad_name, &sink_pad_name];
+            (
+                LATENCY_LAST.with_label_values(labels),
+                LATENCY_SUM.with_label_values(labels),
+                LATENCY_COUNT.with_label_values(labels),
+            )
+        });
+
+        // metrics is a &mut (Gauge, Counter, Counter)
+        let (last_g, sum_c, cnt_c) = metrics.value();
+        last_g.set(diff as f64);
+        sum_c.inc_by(diff as f64);
+        cnt_c.inc();
     }
 
     /// If the env var is set and valid, spawn the HTTP server in a new thread.
