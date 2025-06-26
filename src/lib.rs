@@ -51,19 +51,19 @@ lazy_static! {
     static ref LATENCY_LAST: GaugeVec = register_gauge_vec!(
         "gstreamer_element_latency_last_gauge",
         "Last latency in nanoseconds per element",
-        &["src_pad", "sink_pad"]
+        &["element"]
     )
     .unwrap();
     static ref LATENCY_SUM: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_sum_count",
         "Sum of latencies in nanoseconds per element",
-        &["src_pad", "sink_pad"]
+        &["element"]
     )
     .unwrap();
     static ref LATENCY_COUNT: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_count_count",
         "Count of latency measurements per element",
-        &["src_pad", "sink_pad"]
+        &["element"]
     )
     .unwrap();
 }
@@ -131,14 +131,12 @@ mod imp {
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(peer) = pad.peer() {
                     if let Some(parent) = get_real_pad_parent(&peer) {
-                        if !parent.is::<gst::Bin>()
-                            && parent.element_flags().contains(gst::ElementFlags::SINK)
-                        {
+                        if !parent.is::<gst::Bin>() && peer.direction() == gst::PadDirection::Sink {
                             if let Some(ev) = peer.qdata::<gst::Event>("latency_probe.id".into()) {
                                 if let Some(structure) = ev.as_ref().structure() {
                                     log_latency(&structure, &peer, ts, &parent);
                                 }
-                                // attempt to deref
+                                // perhaps I only attempt to deref if this is a sink element?
                                 let _ = ev.as_ref().deref();
                             }
                         }
@@ -154,9 +152,7 @@ mod imp {
                 // Calculate latency when buffer arrives at sink
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(parent) = get_real_pad_parent(&pad) {
-                    if !parent.is::<gst::Bin>()
-                        && parent.element_flags().contains(gst::ElementFlags::SINK)
-                    {
+                    if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Sink {
                         if let Some(ev) = pad.qdata::<gst::Event>("latency_probe.id".into()) {
                             if let Some(structure) = ev.as_ref().structure() {
                                 log_latency(&structure, &pad, ts, &parent);
@@ -250,7 +246,7 @@ mod imp {
     }
 
     fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
-        if !parent.is::<gst::Bin>() && parent.element_flags().contains(gst::ElementFlags::SOURCE) {
+        if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
             let ev = gst::event::CustomDownstream::builder(
                 gst::Structure::from_str("latency_probe.id").unwrap(),
             )
@@ -273,25 +269,18 @@ mod imp {
         let src_ts: u64 = data.get_by_quark::<u64>("ts".into()).unwrap();
         let diff = sink_ts.saturating_sub(src_ts);
 
-        // format pad string as parent.pad
-        let src_pad_str = src_pad
+        let element_latency = sink_pad
             .parent()
-            .map(|p| format!("{}.{}", p.name(), src_pad.name()))
-            .unwrap_or_else(|| src_pad.name().to_string());
-        let sink_pad_str = sink_pad
-            .parent()
-            .map(|p| format!("{}.{}", p.name(), sink_pad.name()))
-            .unwrap_or_else(|| sink_pad.name().to_string());
+            .map(|p| p.name())
+            .unwrap_or_else(|| sink_pad.name());
 
         LATENCY_LAST
-            .with_label_values(&[&src_pad_str, &sink_pad_str])
+            .with_label_values(&[&element_latency])
             .set(diff as f64);
         LATENCY_SUM
-            .with_label_values(&[&src_pad_str, &sink_pad_str])
+            .with_label_values(&[&element_latency])
             .inc_by(diff as f64);
-        LATENCY_COUNT
-            .with_label_values(&[&src_pad_str, &sink_pad_str])
-            .inc();
+        LATENCY_COUNT.with_label_values(&[&element_latency]).inc();
     }
 
     /// If the env var is set and valid, spawn the HTTP server in a new thread.
