@@ -2,6 +2,8 @@
 
 A GStreamer `Tracer` plugin that measures per-element pad buffer processing latency and exports these metrics in Prometheus format.
 
+A rust port of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus compatibility.
+
 ## Building
 
 ### Prerequisites
@@ -112,6 +114,10 @@ if let Some(tracer) = gst::Tracer::get_by_name("prometheus-latency-tracer") {
     }
 }
 ```
+
+## Future work
+
+Would like to switch to otel from prometheus.
 
 ## License
 
