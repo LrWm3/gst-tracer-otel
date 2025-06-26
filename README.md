@@ -44,7 +44,7 @@ Enable the tracer by setting the following environment variables before running 
 
 ```bash
 export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
-export GST_DEBUG=GST_TRACER:7
+export GST_DEBUG=GST_TRACER:5
 
 # Optionally, set the tracer to expose metrics over a specific port
 # If not set, it will not expose metrics over HTTP
@@ -113,6 +113,24 @@ if let Some(tracer) = gst::Tracer::get_by_name("prometheus-latency-tracer") {
         println!("{}", output);
     }
 }
+```
+
+## Hotloop Test
+
+To test the performance of the tracer, you can run a hotloop test. This will create a GStreamer pipeline that continuously processes buffers and measures the latency.
+
+```bash
+cargo run --release
+
+# run without
+gst-launch-1.0 fakesrc num-buffers=1000000 ! identity name=id ! fakesink
+
+# run with
+export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
+export GST_DEBUG=GST_TRACER:5,prometheus-latency-tracer:5
+export GST_PLUGIN_PATH=target/release/
+export GST_PROMETHEUS_TRACER_PORT=9092
+gst-launch-1.0 fakesrc num-buffers=1000000 ! identity name=id ! fakesink
 ```
 
 ## Future work
