@@ -1,193 +1,364 @@
+/* Derived from gstlatency.c: tracing module that logs processing latency stats
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Library General Public License for more details.
+ *
+ * You should have received a copy of the GNU Library General Public
+ * License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
+ * Boston, MA 02110-1301, USA.
+ */
+use std::cell::OnceCell;
+use std::env;
+use std::sync::LazyLock;
+use std::sync::OnceLock;
+use std::thread;
+
 use glib;
 use glib::subclass::prelude::*;
+use gobject_sys::GCallback;
+use gst::ffi;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gstreamer as gst;
 use lazy_static::lazy_static;
-use prometheus::{register_counter_vec, register_gauge_vec, CounterVec, GaugeVec};
+use prometheus::{
+    gather, register_counter_vec, register_gauge_vec, CounterVec, Encoder, GaugeVec, TextEncoder,
+};
+
+use tiny_http::{Header, Response, Server};
+
+/// Guarantee we only start the server once, even if `plugin_init`
+/// gets called multiple times by GStreamer.
+static METRICS_SERVER_ONCE: OnceLock<()> = OnceLock::new();
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new(
+        "prometheus-latency-tracer",
+        gst::DebugColorFlags::empty(),
+        Some("Prometheus tracer"),
+    )
+});
 
 // Define Prometheus metrics, all in nanoseconds
 lazy_static! {
     static ref LATENCY_LAST: GaugeVec = register_gauge_vec!(
         "gstreamer_element_latency_last_gauge",
         "Last latency in nanoseconds per element",
-        &["el"]
+        &["src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_SUM: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_sum_count",
         "Sum of latencies in nanoseconds per element",
-        &["el"]
+        &["src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_COUNT: CounterVec = register_counter_vec!(
         "gstreamer_element_latency_count_count",
         "Count of latency measurements per element",
-        &["el"]
+        &["src_pad", "sink_pad"]
     )
     .unwrap();
 }
 
 // Our Tracer subclass
 mod imp {
+    use std::{ops::Deref, str::FromStr};
+
     use super::*;
     use glib::translate::ToGlibPtr;
-    use gst_tracing_sys;
 
-    pub struct LatencyTracer;
+    #[derive(Default)]
+    pub struct PrometheusLatencyTracer;
 
     #[glib::object_subclass]
-    impl ObjectSubclass for LatencyTracer {
-        const NAME: &'static str = "GstLatencyTracerRust";
-        type Type = super::LatencyTracer;
-        type ParentType = gst_tracing::Tracer;
+    impl ObjectSubclass for PrometheusLatencyTracer {
+        const NAME: &'static str = "PrometheusLatencyTracer";
+        type Type = super::PrometheusLatencyTracer;
+        type ParentType = gst::Tracer;
+    }
 
+    impl ObjectImpl for PrometheusLatencyTracer {
         // Called once when the class is initialized
-        fn class_init(klass: &mut Self::Class) {
-            // Register hooks for tracing
-            unsafe {
-                let klass_ptr = klass.to_glib_none().0;
-                gst_tracing_sys::gst_tracer_register_hook(
-                    klass_ptr,
-                    b"pad-push-pre\0".as_ptr() as *const _,
-                    Some(do_push_buffer_pre),
-                );
-                gst_tracing_sys::gst_tracer_register_hook(
-                    klass_ptr,
-                    b"pad-push-post\0".as_ptr() as *const _,
-                    Some(do_push_buffer_post),
-                );
-                gst_tracing_sys::gst_tracer_register_hook(
-                    klass_ptr,
-                    b"pad-pull-range-pre\0".as_ptr() as *const _,
-                    Some(do_pull_range_pre),
-                );
-                gst_tracing_sys::gst_tracer_register_hook(
-                    klass_ptr,
-                    b"pad-pull-range-post\0".as_ptr() as *const _,
-                    Some(do_pull_range_post),
-                );
-                gst_tracing_sys::gst_tracer_register_hook(
-                    klass_ptr,
-                    b"pad-push-event-pre\0".as_ptr() as *const _,
-                    Some(do_push_event_pre),
-                );
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+            let tracer_obj: &gst::Tracer = obj.upcast_ref();
+
+            // Start the metrics server if not already started
+            METRICS_SERVER_ONCE.get_or_init(|| maybe_start_metrics_server());
+
+            // Hook callbacks
+            unsafe extern "C" fn do_push_buffer_pre(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+            ) {
+                // Send a custom downstream event with timestamp
+                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
+                if let Some(parent) = get_real_pad_parent(pad) {
+                    send_latency_probe(&parent, &pad, ts);
+                }
             }
-        }
-    }
 
-    impl ObjectImpl for LatencyTracer {}
-    impl GstObjectImpl for LatencyTracer {}
-    impl gst_tracing::TracerImpl for LatencyTracer {}
-
-    // Hook callbacks
-    unsafe extern "C" fn do_push_buffer_pre(
-        _tracer: *mut gst_tracing_sys::GstTracer,
-        ts: u64,
-        pad: *mut gst::ffi::GstPad,
-    ) {
-        // Send a custom downstream event with timestamp
-        let pad = gst::Pad::from_glib_borrow(pad);
-        if let Some(parent) = pad.parent_element() {
-            if !parent.is::<gst::Bin>() && parent.flags().contains(gst::ElementFlags::SOURCE) {
-                let ev = gst::event::CustomDownstream::builder("latency_probe.id")
-                    .field("pad", &pad)
-                    .field("ts", &ts)
-                    .build();
-                let _ = pad.send_event(ev);
-            }
-        }
-    }
-
-    unsafe extern "C" fn do_push_buffer_post(
-        _tracer: *mut gst_tracing_sys::GstTracer,
-        ts: u64,
-        pad: *mut gst::ffi::GstPad,
-    ) {
-        // Calculate latency when buffer arrives at sink
-        let pad = gst::Pad::from_glib_borrow(pad);
-        if let Some(peer) = pad.peer() {
-            if let Some(parent) = peer.parent_element() {
-                if !parent.is::<gst::Bin>() && parent.flags().contains(gst::ElementFlags::SINK) {
-                    if let Some(ev) = peer.qdata::<gst::Event>("latency_probe.id") {
-                        if let Some(structure) = ev.structure() {
-                            super::log_latency(&structure, &peer, ts, &parent);
-                        }
-                        peer.set_qdata::<gst::Event>("latency_probe.id", None);
+            unsafe extern "C" fn do_pull_range_pre(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+            ) {
+                // Calculate latency when buffer arrives at sink
+                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
+                if let Some(peer) = pad.peer() {
+                    if let Some(parent) = get_real_pad_parent(&peer) {
+                        send_latency_probe(&parent, pad, ts);
                     }
                 }
             }
+
+            unsafe extern "C" fn do_push_buffer_post(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+            ) {
+                // Calculate latency when buffer arrives at sink
+                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
+                if let Some(peer) = pad.peer() {
+                    if let Some(parent) = get_real_pad_parent(&peer) {
+                        if !parent.is::<gst::Bin>()
+                            && parent.element_flags().contains(gst::ElementFlags::SINK)
+                        {
+                            if let Some(ev) = peer.qdata::<gst::Event>("latency_probe.id".into()) {
+                                if let Some(structure) = ev.as_ref().structure() {
+                                    log_latency(&structure, &peer, ts, &parent);
+                                }
+                                // attempt to deref
+                                let _ = ev.as_ref().deref();
+                            }
+                        }
+                    }
+                }
+            }
+
+            unsafe extern "C" fn do_pull_range_post(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+            ) {
+                // Calculate latency when buffer arrives at sink
+                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
+                if let Some(parent) = get_real_pad_parent(&pad) {
+                    if !parent.is::<gst::Bin>()
+                        && parent.element_flags().contains(gst::ElementFlags::SINK)
+                    {
+                        if let Some(ev) = pad.qdata::<gst::Event>("latency_probe.id".into()) {
+                            if let Some(structure) = ev.as_ref().structure() {
+                                log_latency(&structure, &pad, ts, &parent);
+                            }
+                            // attempt to deref
+                            let _ = ev.as_ref().deref();
+                        }
+                    }
+                }
+            }
+
+            unsafe extern "C" fn do_push_event_pre(
+                _tracer: *mut gst::Tracer,
+                _ts: u64,
+                pad: *mut gst::ffi::GstPad,
+                ev: *mut gst::ffi::GstEvent,
+            ) {
+                // Store the custom event on the pad for later
+                let peer = gst::Pad::from_glib_ptr_borrow(&pad).peer();
+                if let Some(peer) = peer {
+                    let parent = get_real_pad_parent(&peer);
+                    if let Some(parent) = parent {
+                        let ev = gst::Event::from_glib_borrow(ev);
+                        if ev.type_() == gst::EventType::CustomDownstream {
+                            if let Some(structure) = ev.structure() {
+                                if structure.name() == "latency_probe.id" {
+                                    peer.set_qdata::<gst::Event>(
+                                        "latency_probe.id".into(),
+                                        ev.clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Register hooks for tracing
+            unsafe {
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    b"pad-push-pre\0".as_ptr() as *const _,
+                    std::mem::transmute::<_, GCallback>(do_push_buffer_pre as *const ()),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    b"pad-push-post\0".as_ptr() as *const _,
+                    std::mem::transmute::<_, GCallback>(do_push_buffer_post as *const ()),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    b"pad-pull-range-pre\0".as_ptr() as *const _,
+                    std::mem::transmute::<_, GCallback>(do_pull_range_pre as *const ()),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    b"pad-pull-range-post\0".as_ptr() as *const _,
+                    std::mem::transmute::<_, GCallback>(do_pull_range_post as *const ()),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    b"pad-push-event-pre\0".as_ptr() as *const _,
+                    std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
+                );
+            }
         }
     }
 
-    unsafe extern "C" fn do_pull_range_pre(
-        tracer: *mut gst_tracing_sys::GstTracer,
-        ts: u64,
-        pad: *mut gst::ffi::GstPad,
-    ) {
-        // Similar to push_pre but for pull ranges
-        do_push_buffer_pre(tracer, ts, pad);
+    impl GstObjectImpl for PrometheusLatencyTracer {}
+    impl TracerImpl for PrometheusLatencyTracer {}
+
+    /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
+    fn get_real_pad_parent(pad: &gst::Pad) -> Option<gst::Element> {
+        // 1. Grab its parent as a generic `Object`.
+        let parent_obj = pad.parent().map(|o| o.upcast::<gst::Object>())?;
+
+        // 2. If that parent is actually a `GhostPad`, unwrap one level further.
+        let real_parent_obj = if parent_obj.is::<gst::GhostPad>() {
+            // If it's a GhostPad, get the real pad and then its parent
+            parent_obj
+                .downcast::<gst::GhostPad>()
+                .ok()?
+                .target()
+                .and_then(|p| p.parent().map(|o| o.upcast::<gst::Object>()))
+        } else {
+            // Otherwise, just use the parent directly
+            Some(parent_obj)
+        }?;
+
+        // 3. Finally, cast the resulting object to an Element.
+        real_parent_obj.downcast::<gst::Element>().ok()
     }
 
-    unsafe extern "C" fn do_pull_range_post(
-        tracer: *mut gst_tracing_sys::GstTracer,
-        ts: u64,
-        pad: *mut gst::ffi::GstPad,
-    ) {
-        do_push_buffer_post(tracer, ts, pad);
+    fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
+        if !parent.is::<gst::Bin>() && parent.element_flags().contains(gst::ElementFlags::SOURCE) {
+            let ev = gst::event::CustomDownstream::builder(
+                gst::Structure::from_str("latency_probe.id").unwrap(),
+            )
+            .other_field("pad", pad)
+            .other_field("ts", ts)
+            .build();
+            let _ = pad.push_event(ev);
+        }
     }
 
-    unsafe extern "C" fn do_push_event_pre(
-        _tracer: *mut gst_tracing_sys::GstTracer,
-        ts: u64,
-        pad: *mut gst::ffi::GstPad,
-        ev: *mut gst::ffi::GstEvent,
+    // Log and update Prometheus metrics
+    fn log_latency(
+        data: &gst::StructureRef,
+        sink_pad: &gst::Pad,
+        sink_ts: u64,
+        parent: &gst::Element,
     ) {
-        // Store the custom event on the pad for later
-        let ev = gst::Event::from_glib_borrow(ev);
-        if ev.type_() == gst::EventType::CustomDownstream {
-            if let Some(structure) = ev.structure() {
-                if structure.name() == "latency_probe.id" {
-                    let pad = gst::Pad::from_glib_borrow(pad);
-                    pad.set_qdata::<gst::Event>("latency_probe.id", Some(ev.clone()));
+        // Extract source pad and timestamp
+        let src_pad: gst::Pad = data.get_by_quark::<gst::Pad>("pad".into()).unwrap();
+        let src_ts: u64 = data.get_by_quark::<u64>("ts".into()).unwrap();
+        let diff = sink_ts.saturating_sub(src_ts);
+
+        // format pad string as parent.pad
+        let src_pad_str = src_pad
+            .parent()
+            .map(|p| format!("{}.{}", p.name(), src_pad.name()))
+            .unwrap_or_else(|| src_pad.name().to_string());
+        let sink_pad_str = sink_pad
+            .parent()
+            .map(|p| format!("{}.{}", p.name(), sink_pad.name()))
+            .unwrap_or_else(|| sink_pad.name().to_string());
+
+        LATENCY_LAST
+            .with_label_values(&[&src_pad_str, &sink_pad_str])
+            .set(diff as f64);
+        LATENCY_SUM
+            .with_label_values(&[&src_pad_str, &sink_pad_str])
+            .inc_by(diff as f64);
+        LATENCY_COUNT
+            .with_label_values(&[&src_pad_str, &sink_pad_str])
+            .inc();
+    }
+
+    /// If the env var is set and valid, spawn the HTTP server in a new thread.
+    fn maybe_start_metrics_server() {
+        if let Ok(port_str) = env::var("GST_PROMETHEUS_TRACER_PORT") {
+            match port_str.parse::<u16>() {
+                Ok(port) => {
+                    // spawn the server
+                    thread::spawn(move || {
+                        let addr = ("0.0.0.0", port);
+                        let server =
+                            Server::http(addr).expect("Failed to bind Prometheus metrics server");
+                        println!("Prometheus metrics server listening on 0.0.0.0:{}", port);
+
+                        for request in server.incoming_requests() {
+                            // Gather and encode all registered metrics
+                            let metric_families = gather();
+                            let mut buffer = Vec::new();
+                            TextEncoder::new()
+                                .encode(&metric_families, &mut buffer)
+                                .expect("Failed to encode metrics");
+
+                            // Build and send HTTP response
+                            let response = Response::from_data(buffer).with_header(
+                                Header::from_bytes(
+                                    &b"Content-Type"[..],
+                                    &b"text/plain; charset=utf-8"[..],
+                                )
+                                .unwrap(),
+                            );
+                            let _ = request.respond(response);
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!(
+                        "GST_PROMETHEUS_TRACER_PORT is not a valid port number (`{}`): {}",
+                        port_str, e
+                    );
                 }
             }
         }
     }
 }
 
-// Log and update Prometheus metrics
-fn log_latency(
-    data: &gst::StructureRef,
-    _sink_pad: &gst::Pad,
-    sink_ts: u64,
-    parent: &gst::Element,
-) {
-    // Extract source pad and timestamp
-    let src_pad: gst::Pad = data.get_value("pad").unwrap().get().unwrap();
-    let src_ts: u64 = data.get_value("ts").unwrap().get().unwrap();
-    let diff = sink_ts.saturating_sub(src_ts);
-    let el = parent.name();
-
-    LATENCY_LAST.with_label_values(&[&el]).set(diff as f64);
-    LATENCY_SUM.with_label_values(&[&el]).inc_by(diff as f64);
-    LATENCY_COUNT.with_label_values(&[&el]).inc();
+glib::wrapper! {
+    pub struct PrometheusLatencyTracer(ObjectSubclass<imp::PrometheusLatencyTracer>)
+        @extends gst::Tracer, gst::Object;
 }
 
-// Plugin registration
+// ───────────────── plugin boilerplate ──────────────────
+fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    gst::Tracer::register(
+        Some(plugin),
+        "prometheus-latency-tracer",
+        PrometheusLatencyTracer::static_type(),
+    )?;
+    Ok(())
+}
+
 gst::plugin_define!(
-    latency_tracer,
-    "Latency tracer with Prometheus metrics",
+    prometheuslatencytracer, // → libgstprometheuslatencytracer.so
+    "GStreamer Prometheus latency tracer",
     plugin_init,
-    "0.1",
-    "MIT/X11",
-    "latency_tracer",
-    "latency_tracer",
-    "https://example.com",
-    "2025-06-26"
+    env!("CARGO_PKG_VERSION"),
+    "MPL-2.0",
+    "gst_prometheus_latency_tracer",
+    "gst_prometheus_latency_tracer",
+    "https://example.com"
 );
-
-fn plugin_init(plugin: &gst::Plugin) -> bool {
-    gst::TracePlugin::register::<LatencyTracer>(plugin);
-    gst::info!("Registered LatencyTracerRust with Prometheus metrics");
-    true
-}

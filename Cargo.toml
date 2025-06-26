@@ -1,10 +1,10 @@
 [package]
-name        = "gst_otel_tracer"
+name        = "gst_prometheus_latency_tracer"
 version     = "0.1.0"
 edition     = "2021"
 
 [lib]
-name = "gstoteltracer"
+name = "gstprometheuslatencytracer"
 crate-type  = ["cdylib"]
 
 [dependencies]
@@ -15,3 +15,4 @@ gstreamer         = { version = "0.23.6", features = ["v1_24"] }
 gstreamer-sys     = "0.23.6"  # raw FFI for hook registration
 lazy_static = "1.4.0"
 prometheus =  "0.14.0"
+tiny_http = "0.12.0"
