@@ -74,7 +74,7 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
-    use std::ops::Deref;
+    use std::{ops::Deref, str::FromStr};
 
     use super::*;
     use glib::translate::ToGlibPtr;
@@ -140,6 +140,8 @@ mod imp {
                                 if let Some(structure) = ev.as_ref().structure() {
                                     log_latency(&structure, &peer, ts, &parent);
                                 }
+                                // perhaps I only attempt to deref if this is a sink element?
+                                let _ = ev.as_ref().deref();
                             }
                         }
                     }
@@ -285,10 +287,12 @@ mod imp {
 
     fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
         if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
-            let ev = gst::event::CustomDownstream::builder(LATENCY_STRUCT_TEMPLATE.clone())
-                .other_field("pad", pad)
-                .other_field("ts", ts)
-                .build();
+            let ev = gst::event::CustomDownstream::builder(
+                gst::Structure::from_str("latency_probe.id").unwrap(),
+            )
+            .other_field("pad", pad)
+            .other_field("ts", ts)
+            .build();
             let _ = pad.push_event(ev);
         }
     }
