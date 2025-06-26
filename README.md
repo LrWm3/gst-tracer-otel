@@ -1,4 +1,4 @@
-# Prometheus Latency Tracer
+# Gstreamer Prometheus Latency Tracer
 
 A GStreamer `Tracer` plugin that measures per-element pad buffer processing latency and exports these metrics in Prometheus format.
 
@@ -67,6 +67,23 @@ The plugin will spawn an HTTP server on `0.0.0.0:9092`. To retrieve metrics:
 
 ```bash
 curl http://localhost:9092
+```
+
+### Example Output
+
+```plaintext
+# HELP gstreamer_element_latency_count_count Count of latency measurements per element
+# TYPE gstreamer_element_latency_count_count counter
+gstreamer_element_latency_count_count{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 98
+gstreamer_element_latency_count_count{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 98
+# HELP gstreamer_element_latency_last_gauge Last latency in nanoseconds per element
+# TYPE gstreamer_element_latency_last_gauge gauge
+gstreamer_element_latency_last_gauge{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 33365287
+gstreamer_element_latency_last_gauge{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 33477828
+# HELP gstreamer_element_latency_sum_count Sum of latencies in nanoseconds per element
+# TYPE gstreamer_element_latency_sum_count counter
+gstreamer_element_latency_sum_count{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 3202017345
+gstreamer_element_latency_sum_count{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 3213088807
 ```
 
 ## Collecting Metrics via the `request-metrics` Signal
