@@ -23,6 +23,7 @@ use std::thread;
 use dashmap::DashMap;
 use glib;
 use glib::subclass::prelude::*;
+use glib::Quark;
 use gobject_sys::GCallback;
 use gst::ffi;
 use gst::prelude::*;
@@ -49,6 +50,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 // A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
 static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
+static LATENCY_QUARK: Lazy<Quark> = Lazy::new(|| Quark::from_str("latency_probe.ts"));
 
 // Define Prometheus metrics, all in nanoseconds
 lazy_static! {
@@ -108,7 +110,7 @@ mod imp {
                 if let Some(parent) = get_real_pad_parent(pad) {
                     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
                         if let Some(sink_pad) = pad.peer() {
-                            sink_pad.set_qdata::<u64>("latency_probe.id".into(), ts);
+                            sink_pad.set_qdata::<u64>(*LATENCY_QUARK, ts);
                         }
                     }
                 }
@@ -125,7 +127,7 @@ mod imp {
                     if let Some(parent) = get_real_pad_parent(&peer) {
                         if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
                             if let Some(sink_pad) = pad.peer() {
-                                sink_pad.set_qdata::<u64>("latency_probe.id".into(), ts);
+                                sink_pad.set_qdata::<u64>(*LATENCY_QUARK, ts);
                             }
                         }
                     }
@@ -142,8 +144,7 @@ mod imp {
                 if let Some(peer) = pad.peer() {
                     if let Some(parent) = get_real_pad_parent(&peer) {
                         if !parent.is::<gst::Bin>() && peer.direction() == gst::PadDirection::Sink {
-                            if let Some(src_ts) = peer.steal_qdata::<u64>("latency_probe.id".into())
-                            {
+                            if let Some(src_ts) = peer.steal_qdata::<u64>(*LATENCY_QUARK) {
                                 log_latency(src_ts, &peer, ts, &parent);
                             }
                         }
@@ -185,7 +186,7 @@ mod imp {
             //                 if let Some(structure) = ev.structure() {
             //                     if structure.name() == "latency_probe.id" {
             //                         peer.set_qdata::<gst::Event>(
-            //                             "latency_probe.id".into(),
+            //                             *LATENCY_QUARK,
             //                             ev.clone(),
             //                         );
             //                     }
