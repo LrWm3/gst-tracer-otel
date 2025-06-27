@@ -80,16 +80,16 @@ mod imp {
     use glib::translate::ToGlibPtr;
 
     #[derive(Default)]
-    pub struct PrometheusLatencyTracer;
+    pub struct TelemetyTracer;
 
     #[glib::object_subclass]
-    impl ObjectSubclass for PrometheusLatencyTracer {
-        const NAME: &'static str = "PrometheusLatencyTracer";
-        type Type = super::PrometheusLatencyTracer;
+    impl ObjectSubclass for TelemetyTracer {
+        const NAME: &'static str = "telemetytracer";
+        type Type = super::TelemetyTracer;
         type ParentType = gst::Tracer;
     }
 
-    impl ObjectImpl for PrometheusLatencyTracer {
+    impl ObjectImpl for TelemetyTracer {
         // Called once when the class is initialized
         fn constructed(&self) {
             self.parent_constructed();
@@ -248,8 +248,8 @@ mod imp {
         }
     }
 
-    impl GstObjectImpl for PrometheusLatencyTracer {}
-    impl TracerImpl for PrometheusLatencyTracer {}
+    impl GstObjectImpl for TelemetyTracer {}
+    impl TracerImpl for TelemetyTracer {}
 
     // Add this function, which is the handler for the "request-metrics" signal
     fn request_metrics() -> String {
@@ -389,18 +389,14 @@ mod imp {
 }
 
 glib::wrapper! {
-    pub struct PrometheusLatencyTracer(ObjectSubclass<imp::PrometheusLatencyTracer>)
+    pub struct TelemetyTracer(ObjectSubclass<imp::TelemetyTracer>)
         @extends gst::Tracer, gst::Object;
 }
 
 // Register the plugin with GStreamer
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
-    gst::Tracer::register(
-        Some(plugin),
-        "prom-latency",
-        PrometheusLatencyTracer::static_type(),
-    )?;
+    gst::Tracer::register(Some(plugin), "prom-latency", TelemetyTracer::static_type())?;
 
     // Initialize the plugin
     plugin_init(plugin)?;
@@ -416,12 +412,12 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 }
 
 gst::plugin_define!(
-    prometheuslatencytracer, // → libgstprometheuslatencytracer.so
-    "GStreamer Prometheus latency tracer",
+    telemetytracer, // → libgsttelemetytracer.so
+    "GStreamer telemetry latency tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "MPL-2.0",
-    "gst_prometheus_latency_tracer",
-    "gst_prometheus_latency_tracer",
+    "gst_telemetry_latency_tracer",
+    "gst_telemetry_latency_tracer",
     "https://example.com"
 );

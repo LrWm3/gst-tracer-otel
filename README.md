@@ -20,7 +20,7 @@ cargo build
 # Build in release mode
 cargo build --release
 # The plugin library is generated at:
-# target/release/libgstprometheuslatencytracer.so
+# target/release/libgsttelemetytracer.so
 ```
 
 ## Installation
@@ -29,7 +29,7 @@ Copy the built plugin into a directory on your GStreamer plugin search path, or 
 
 ```bash
 # System-wide install (requires permissions)
-sudo cp target/release/libgstprometheuslatencytracer.so /usr/lib/gstreamer-1.0/
+sudo cp target/release/libgsttelemetytracer.so /usr/lib/gstreamer-1.0/
 
 # Or for a local setup (debug)
 export GST_PLUGIN_PATH="$PWD/target/debug/:$GST_PLUGIN_PATH"
