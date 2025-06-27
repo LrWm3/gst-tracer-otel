@@ -124,13 +124,13 @@ cargo run --release
 
 # run with no tracer to baseline
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:02.203562625
+# Execution ended after 0:00:00.864097614
 
 # run gstlatency to get a sense of the overhead
 export GST_TRACERS='latency(flags=pipeline+element+reported)'
 export GST_DEBUG=GST_TRACER:5
 export GST_PLUGIN_PATH=target/debug/
-# Execution ended after 0:00:07.668365927
+# Execution ended after 0:00:05.805076558
 
 # run with
 export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
@@ -138,7 +138,7 @@ export GST_DEBUG=GST_TRACER:5,prometheus-latency-tracer:5
 export GST_PLUGIN_PATH=target/release/
 export GST_PROMETHEUS_TRACER_PORT=9092
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:07.136929550
+# Execution ended after 0:00:03.027939182
 ```
 
 ## Future work
