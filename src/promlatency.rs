@@ -109,14 +109,13 @@ mod imp {
             ) {
                 // Calculate latency when buffer arrives at sink
                 let peer = ffi::gst_pad_get_peer(pad);
-                if !peer.is_null() {
+                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(peer) {
                         if !parent.is_null() {
-                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                            if glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE
-                                && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK
+                            ) == glib::ffi::GFALSE
                             {
                                 unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
                                     debug_assert!(!ptr.is_null());
@@ -148,10 +147,10 @@ mod imp {
                 if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(peer) {
                         if !parent.is_null() {
-                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
+                            if glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE)
+                            ) == glib::ffi::GFALSE
                             {
                                 unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
                                     debug_assert!(!ptr.is_null());
@@ -183,10 +182,10 @@ mod imp {
                 if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(peer) {
                         if !parent.is_null() {
-                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
+                            if glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE)
+                            ) == glib::ffi::GFALSE
                             {
                                 let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                                     peer as *mut gobject_sys::GObject,
@@ -210,10 +209,10 @@ mod imp {
                 if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(pad) {
                         if !parent.is_null() {
-                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
+                            if glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE)
+                            ) == glib::ffi::GFALSE
                             {
                                 let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                                     pad as *mut gobject_sys::GObject,
@@ -221,6 +220,7 @@ mod imp {
                                 ) as *const u64;
                                 if !src_ts.is_null() {
                                     log_latency_ffi(*src_ts, pad, ts, parent);
+                                    // Log the latency
                                 }
                             }
                         }
@@ -410,31 +410,34 @@ mod imp {
 
             // back to string for now
             let sink_pad_name = if !element_latency.is_null() {
-                format!("{:?}.{:?}", element_latency_name, sink_name)
+                element_latency_name.clone()
+                    + "."
+                    + sink_name.to_str().unwrap_or("unknown_sink_pad")
             } else {
-                format!("{:?}", sink_name)
+                sink_name.to_str().unwrap_or("unknown_sink_pad").to_string()
             };
 
             // do the same for the source pad
             let src_pad_name = if !src_pad.is_null() {
                 let parent = ffi::gst_pad_get_parent_element(src_pad);
                 if !parent.is_null() {
-                    format!(
-                        "{:?}.{:?}",
-                        CStr::from_ptr(ffi::gst_object_get_name(
-                            parent as *mut gst::ffi::GstObject
-                        )),
-                        CStr::from_ptr(ffi::gst_object_get_name(
-                            src_pad as *mut gst::ffi::GstObject
+                    CStr::from_ptr(ffi::gst_object_get_name(parent as *mut gst::ffi::GstObject))
+                        .to_str()
+                        .unwrap_or("unknown_src_pad")
+                        .to_string()
+                        + "."
+                        + CStr::from_ptr(ffi::gst_object_get_name(
+                            src_pad as *mut gst::ffi::GstObject,
                         ))
-                    )
+                        .to_str()
+                        .unwrap_or("unknown_src_pad")
                 } else {
-                    format!(
-                        "{:?}",
-                        CStr::from_ptr(ffi::gst_object_get_name(
-                            src_pad as *mut gst::ffi::GstObject
-                        ))
-                    )
+                    CStr::from_ptr(ffi::gst_object_get_name(
+                        src_pad as *mut gst::ffi::GstObject,
+                    ))
+                    .to_str()
+                    .unwrap_or("unknown_src_pad")
+                    .to_string()
                 }
             } else {
                 "unknown_src_pad".into()
