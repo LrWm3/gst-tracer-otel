@@ -17,14 +17,21 @@
  */
 use glib;
 use gstreamer as gst;
+#[cfg(feature = "noop")]
 mod nooplatency;
+#[cfg(not(feature = "noop"))]
 mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    // Register the tracer factory
-    promlatency::register(plugin)?;
-    nooplatency::register(plugin)?;
+    #[cfg(feature = "noop")]
+    {
+        nooplatency::register(plugin)?;
+    }
+    #[cfg(not(feature = "noop"))]
+    {
+        promlatency::register(plugin)?;
+    }
     Ok(())
 }
 
