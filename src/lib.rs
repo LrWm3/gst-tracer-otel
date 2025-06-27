@@ -47,9 +47,6 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-static LATENCY_STRUCT_TEMPLATE: Lazy<gst::Structure> =
-    Lazy::new(|| gst::Structure::builder("latency_probe.id").build());
-
 // A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
 static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
 
@@ -77,8 +74,6 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
-    use std::ops::Deref;
-
     use super::*;
     use glib::translate::ToGlibPtr;
 
@@ -128,7 +123,11 @@ mod imp {
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(peer) = pad.peer() {
                     if let Some(parent) = get_real_pad_parent(&peer) {
-                        send_latency_probe(&parent, pad, ts);
+                        if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
+                            if let Some(sink_pad) = pad.peer() {
+                                sink_pad.set_qdata::<u64>("latency_probe.id".into(), ts);
+                            }
+                        }
                     }
                 }
             }
@@ -160,38 +159,40 @@ mod imp {
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(parent) = get_real_pad_parent(&pad) {
                     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Sink {
-                        if let Some(ev) = pad.qdata::<u64>("latency_probe.id".into()) {
-                            log_latency(ev.as_ref().clone(), &pad, ts, &parent);
+                        if let Some(src_ts) = pad.qdata::<u64>("latency_probe.id".into()) {
+                            log_latency(src_ts.as_ref().clone(), &pad, ts, &parent);
                         }
                     }
                 }
             }
 
-            unsafe extern "C" fn do_push_event_pre(
-                _tracer: *mut gst::Tracer,
-                _ts: u64,
-                pad: *mut gst::ffi::GstPad,
-                ev: *mut gst::ffi::GstEvent,
-            ) {
-                // Store the custom event on the pad for later
-                let peer = gst::Pad::from_glib_ptr_borrow(&pad).peer();
-                if let Some(peer) = peer {
-                    let parent = get_real_pad_parent(&peer);
-                    if let Some(_parent) = parent {
-                        let ev = gst::Event::from_glib_borrow(ev);
-                        if ev.type_() == gst::EventType::CustomDownstream {
-                            if let Some(structure) = ev.structure() {
-                                if structure.name() == "latency_probe.id" {
-                                    peer.set_qdata::<gst::Event>(
-                                        "latency_probe.id".into(),
-                                        ev.clone(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // We are not using events at the moment to measure latency
+            //
+            // unsafe extern "C" fn do_push_event_pre(
+            //     _tracer: *mut gst::Tracer,
+            //     _ts: u64,
+            //     pad: *mut gst::ffi::GstPad,
+            //     ev: *mut gst::ffi::GstEvent,
+            // ) {
+            //     // Store the custom event on the pad for later
+            //     let peer = gst::Pad::from_glib_ptr_borrow(&pad).peer();
+            //     if let Some(peer) = peer {
+            //         let parent = get_real_pad_parent(&peer);
+            //         if let Some(_parent) = parent {
+            //             let ev = gst::Event::from_glib_borrow(ev);
+            //             if ev.type_() == gst::EventType::CustomDownstream {
+            //                 if let Some(structure) = ev.structure() {
+            //                     if structure.name() == "latency_probe.id" {
+            //                         peer.set_qdata::<gst::Event>(
+            //                             "latency_probe.id".into(),
+            //                             ev.clone(),
+            //                         );
+            //                     }
+            //                 }
+            //             }
+            //         }
+            //     }
+            // }
             // Register hooks for tracing
             unsafe {
                 ffi::gst_tracing_register_hook(
@@ -214,11 +215,12 @@ mod imp {
                     b"pad-pull-range-post\0".as_ptr() as *const _,
                     std::mem::transmute::<_, GCallback>(do_pull_range_post as *const ()),
                 );
-                ffi::gst_tracing_register_hook(
-                    tracer_obj.to_glib_none().0,
-                    b"pad-push-event-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
-                );
+                // Not using the event method at the moment
+                // ffi::gst_tracing_register_hook(
+                //     tracer_obj.to_glib_none().0,
+                //     b"pad-push-event-pre\0".as_ptr() as *const _,
+                //     std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
+                // );
             }
         }
 
@@ -284,15 +286,17 @@ mod imp {
         real_parent_obj.downcast::<gst::Element>().ok()
     }
 
-    fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
-        if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
-            let ev = gst::event::CustomDownstream::builder(LATENCY_STRUCT_TEMPLATE.clone())
-                .other_field("pad", pad)
-                .other_field("ts", ts)
-                .build();
-            let _ = pad.push_event(ev);
-        }
-    }
+    // Helper for sending latency probes. useful for tracing across entire bins.
+    //
+    // fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
+    //     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
+    //         let ev = gst::event::CustomDownstream::builder(LATENCY_STRUCT_TEMPLATE.clone())
+    //             .other_field("pad", pad)
+    //             .other_field("ts", ts)
+    //             .build();
+    //         let _ = pad.push_event(ev);
+    //     }
+    // }
 
     // Log and update Prometheus metrics
     fn log_latency(src_ts: u64, sink_pad: &gst::Pad, sink_ts: u64, _parent: &gst::Element) {

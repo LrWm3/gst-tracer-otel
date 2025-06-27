@@ -2,7 +2,7 @@
 
 A GStreamer `Tracer` plugin that measures per-element pad buffer processing latency and exports these metrics in Prometheus format.
 
-A rust port of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus compatibility.
+A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus compatibility.
 
 ## Building
 
@@ -76,16 +76,16 @@ curl http://localhost:9092
 ```plaintext
 # HELP gstreamer_element_latency_count_count Count of latency measurements per element
 # TYPE gstreamer_element_latency_count_count counter
-gstreamer_element_latency_count_count{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 98
-gstreamer_element_latency_count_count{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 98
+gstreamer_element_latency_count_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 591573
+gstreamer_element_latency_count_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 591573
 # HELP gstreamer_element_latency_last_gauge Last latency in nanoseconds per element
 # TYPE gstreamer_element_latency_last_gauge gauge
-gstreamer_element_latency_last_gauge{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 33365287
-gstreamer_element_latency_last_gauge{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 33477828
+gstreamer_element_latency_last_gauge{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 5104
+gstreamer_element_latency_last_gauge{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 14423
 # HELP gstreamer_element_latency_sum_count Sum of latencies in nanoseconds per element
 # TYPE gstreamer_element_latency_sum_count counter
-gstreamer_element_latency_sum_count{element="autovideosink0-actual-sink-xvimage",sink_pad="autovideosink0-actual-sink-xvimage.sink",src_pad="sink.proxypad0"} 3202017345
-gstreamer_element_latency_sum_count{element="videoconvert0",sink_pad="videoconvert0.sink",src_pad="videotestsrc0.src"} 3213088807
+gstreamer_element_latency_sum_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 3036567246
+gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7819315483
 ```
 
 ## Collecting Metrics via the `request-metrics` Signal
@@ -122,15 +122,23 @@ To test the performance of the tracer, you can run a hotloop test. This will cre
 ```bash
 cargo run --release
 
-# run without
-gst-launch-1.0 fakesrc num-buffers=1000000 ! identity name=id ! fakesink
+# run with no tracer to baseline
+gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
+# Execution ended after 0:00:02.203562625
+
+# run gstlatency to get a sense of the overhead
+export GST_TRACERS='latency(flags=pipeline+element+reported)'
+export GST_DEBUG=GST_TRACER:5
+export GST_PLUGIN_PATH=target/debug/
+# Execution ended after 0:00:07.668365927
 
 # run with
 export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
 export GST_DEBUG=GST_TRACER:5,prometheus-latency-tracer:5
 export GST_PLUGIN_PATH=target/release/
 export GST_PROMETHEUS_TRACER_PORT=9092
-gst-launch-1.0 fakesrc num-buffers=1000000 ! identity name=id ! fakesink
+gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
+# Execution ended after 0:00:07.136929550
 ```
 
 ## Future work
