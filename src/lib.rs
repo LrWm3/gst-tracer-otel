@@ -142,8 +142,9 @@ mod imp {
                 if let Some(peer) = pad.peer() {
                     if let Some(parent) = get_real_pad_parent(&peer) {
                         if !parent.is::<gst::Bin>() && peer.direction() == gst::PadDirection::Sink {
-                            if let Some(src_ts) = peer.qdata::<u64>("latency_probe.id".into()) {
-                                log_latency(src_ts.as_ref().clone(), &peer, ts, &parent);
+                            if let Some(src_ts) = peer.steal_qdata::<u64>("latency_probe.id".into())
+                            {
+                                log_latency(src_ts, &peer, ts, &parent);
                             }
                         }
                     }
@@ -159,9 +160,9 @@ mod imp {
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(parent) = get_real_pad_parent(&pad) {
                     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Sink {
-                        if let Some(src_ts) = pad.qdata::<u64>("latency_probe.id".into()) {
-                            log_latency(src_ts.as_ref().clone(), &pad, ts, &parent);
-                        }
+                        if let Some(src_ts) = pad.steal_qdata::<u64>("latency_probe.ts".into()) {
+                            log_latency(src_ts, &pad, ts, &parent);
+                        };
                     }
                 }
             }
