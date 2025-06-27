@@ -76,8 +76,10 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
+    use std::ffi::CStr;
+
     use super::*;
-    use glib::translate::ToGlibPtr;
+    use glib::translate::{IntoGlib, ToGlibPtr};
 
     #[derive(Default)]
     pub struct TelemetyTracer;
@@ -105,12 +107,24 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // Send a custom downstream event with timestamp
-                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
-                if let Some(parent) = get_real_pad_parent(pad) {
-                    if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
-                        if let Some(sink_pad) = pad.peer() {
-                            sink_pad.set_qdata::<u64>(*LATENCY_QUARK, ts);
+                // Calculate latency when buffer arrives at sink
+                let peer = ffi::gst_pad_get_peer(pad);
+                if !peer.is_null() {
+                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
+                        if !parent.is_null() {
+                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                                parent as *mut gobject_sys::GTypeInstance,
+                                ffi::gst_bin_get_type(),
+                            ) == glib::ffi::GTRUE
+                                && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK
+                            {
+                                // Store the timestamp on the pad for later
+                                glib::gobject_ffi::g_object_set_qdata(
+                                    peer as *mut gobject_sys::GObject,
+                                    (*LATENCY_QUARK).into_glib(),
+                                    ts as *mut std::ffi::c_void,
+                                );
+                            }
                         }
                     }
                 }
@@ -122,12 +136,21 @@ mod imp {
                 pad: *mut gst::ffi::GstPad,
             ) {
                 // Calculate latency when buffer arrives at sink
-                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
-                if let Some(peer) = pad.peer() {
-                    if let Some(parent) = get_real_pad_parent(&peer) {
-                        if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
-                            if let Some(sink_pad) = pad.peer() {
-                                sink_pad.set_qdata::<u64>(*LATENCY_QUARK, ts);
+                let peer = ffi::gst_pad_get_peer(pad);
+                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
+                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
+                        if !parent.is_null() {
+                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                                parent as *mut gobject_sys::GTypeInstance,
+                                ffi::gst_bin_get_type(),
+                            ) == glib::ffi::GTRUE
+                            {
+                                // Store the timestamp on the pad for later
+                                glib::gobject_ffi::g_object_set_qdata(
+                                    peer as *mut gobject_sys::GObject,
+                                    (*LATENCY_QUARK).into_glib(),
+                                    ts as *mut std::ffi::c_void,
+                                );
                             }
                         }
                     }
@@ -140,12 +163,20 @@ mod imp {
                 pad: *mut gst::ffi::GstPad,
             ) {
                 // Calculate latency when buffer arrives at sink
-                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
-                if let Some(peer) = pad.peer() {
-                    if let Some(parent) = get_real_pad_parent(&peer) {
-                        if !parent.is::<gst::Bin>() && peer.direction() == gst::PadDirection::Sink {
-                            if let Some(src_ts) = peer.steal_qdata::<u64>(*LATENCY_QUARK) {
-                                log_latency(src_ts, &peer, ts, &parent);
+                let peer = ffi::gst_pad_get_peer(pad);
+                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
+                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
+                        if !parent.is_null() {
+                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                                parent as *mut gobject_sys::GTypeInstance,
+                                ffi::gst_bin_get_type(),
+                            ) == glib::ffi::GTRUE
+                            {
+                                let src_ts = glib::gobject_ffi::g_object_steal_qdata(
+                                    peer as *mut gobject_sys::GObject,
+                                    (*LATENCY_QUARK).into_glib(),
+                                ) as *const u64;
+                                log_latency_ffi(*src_ts, peer, ts, parent);
                             }
                         }
                     }
@@ -158,12 +189,21 @@ mod imp {
                 pad: *mut gst::ffi::GstPad,
             ) {
                 // Calculate latency when buffer arrives at sink
-                let pad = gst::Pad::from_glib_ptr_borrow(&pad);
-                if let Some(parent) = get_real_pad_parent(&pad) {
-                    if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Sink {
-                        if let Some(src_ts) = pad.steal_qdata::<u64>("latency_probe.ts".into()) {
-                            log_latency(src_ts, &pad, ts, &parent);
-                        };
+                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
+                    if let Some(parent) = get_real_pad_parent_ffi(pad) {
+                        if !parent.is_null() {
+                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                                parent as *mut gobject_sys::GTypeInstance,
+                                ffi::gst_bin_get_type(),
+                            ) == glib::ffi::GTRUE
+                            {
+                                let src_ts = glib::gobject_ffi::g_object_steal_qdata(
+                                    pad as *mut gobject_sys::GObject,
+                                    (*LATENCY_QUARK).into_glib(),
+                                ) as *const u64;
+                                log_latency_ffi(*src_ts, pad, ts, parent);
+                            }
+                        }
                     }
                 }
             }
@@ -265,27 +305,36 @@ mod imp {
     }
 
     /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
-    fn get_real_pad_parent(pad: &gst::Pad) -> Option<gst::Element> {
+    fn get_real_pad_parent_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstElement> {
         // 1. Grab its parent as a generic `Object`.
-        let parent_obj = pad.parent()?;
-
-        // 2. If that parent is actually a `GhostPad`, unwrap one level further.
-        let real_parent_obj = if parent_obj.is::<gst::GhostPad>() {
+        let parent_obj = unsafe { ffi::gst_object_get_parent(pad as *mut ffi::GstObject) };
+        if parent_obj.is_null() {
+            return None;
+        }
+        let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
+        let is_ghost_pad = unsafe {
+            glib::gobject_ffi::g_type_check_instance_is_a(
+                parent_obj as *mut glib::gobject_ffi::GTypeInstance,
+                ghost_pad_type,
+            )
+        };
+        let real_parent_obj = if is_ghost_pad == glib::ffi::GTRUE {
             // If it's a GhostPad, get the real pad and then its parent
             // Just in case its a GhostPad targetting another GhostPad, we keep unwrapping.
             // This is fairly atypical but can happen 2 or 3 levels deep occasionally.
-            parent_obj
-                .downcast::<gst::GhostPad>()
-                .ok()?
-                .target()
-                .and_then(|p| p.parent())?
+            let real_pad =
+                unsafe { ffi::gst_ghost_pad_get_target(parent_obj as *mut ffi::GstGhostPad) };
+            if real_pad.is_null() {
+                gst::error!(CAT, "GhostPad target is null, but parent is a GhostPad");
+                return None;
+            }
+            unsafe { ffi::gst_object_get_parent(real_pad as *mut ffi::GstObject) }
         } else {
-            // Otherwise, just use the parent directly
             parent_obj
         };
 
         // 3. Finally, cast the resulting object to an Element.
-        real_parent_obj.downcast::<gst::Element>().ok()
+        Some(real_parent_obj as *mut ffi::GstElement)
     }
 
     // Helper for sending latency probes. useful for tracing across entire bins.
@@ -299,38 +348,78 @@ mod imp {
     //         let _ = pad.push_event(ev);
     //     }
     // }
-
-    // Log and update Prometheus metrics
-    fn log_latency(src_ts: u64, sink_pad: &gst::Pad, sink_ts: u64, _parent: &gst::Element) {
-        // Extract source pad and timestamp
-        let src_pad = sink_pad.peer().expect("Sink pad must have a peer");
+    unsafe fn log_latency_ffi(
+        src_ts: u64,
+        sink_pad: *mut gst::ffi::GstPad,
+        sink_ts: u64,
+        _parent: *mut gst::ffi::GstElement,
+    ) {
+        // ffi version which is intended to be faster
+        let src_pad = ffi::gst_pad_get_peer(sink_pad);
         let diff = sink_ts.saturating_sub(src_ts);
 
-        // Create a unique key for the metric cache
-        // This may not be safe in highly dynamic pipelines, as pads may be added/removed frequently resulting in the same key being reused.
-        // However, this should still return the correct metrics for the same pad pair.
-        // I guess this does eventually leak memory though if this continues on for too long.
-        // Would be nice to use a better identity that's tied to the pad pair (element name + pad name + pipeline name)
-        let key = src_pad.as_ptr() as usize + sink_pad.as_ptr() as usize;
+        // I am not sure how unsafe this is, but we do it anyways
+        let key = src_pad as usize + sink_pad as usize;
 
         // Insert if absent, then get a reference
         let metrics = METRIC_CACHE.entry(key).or_insert_with(|| {
-            let element_latency = sink_pad
-                .parent()
-                .map(|p| p.name())
-                .unwrap_or_else(|| sink_pad.name());
+            let element_latency = ffi::gst_pad_get_parent_element(sink_pad);
+            let element_latency_name = if !element_latency.is_null() {
+                // If we have a parent element, use its name
+                CStr::from_ptr(ffi::gst_object_get_name(
+                    element_latency as *mut gst::ffi::GstObject,
+                ))
+                .to_str()
+                .unwrap_or("unknown_element")
+                .to_string()
+            } else {
+                // Otherwise, use the pad name directly
+                CStr::from_ptr(ffi::gst_object_get_name(
+                    sink_pad as *mut gst::ffi::GstObject,
+                ))
+                .to_str()
+                .unwrap_or("unknown_pad")
+                .to_string()
+            };
 
-            // format as  "element_name.src_pad_name, if we have a parent, otherwise just "pad_name"
-            let src_pad_name = src_pad
-                .parent()
-                .map(|p| format!("{}.{}", p.name(), src_pad.name()).into())
-                .unwrap_or_else(|| src_pad.name());
-            let sink_pad_name = sink_pad
-                .parent()
-                .map(|p| format!("{}.{}", p.name(), sink_pad.name()).into())
-                .unwrap_or_else(|| sink_pad.name());
+            // format as  "element_name.sink_pad_name, if we have a parent, otherwise just "pad_name"
+            let sink_name = CStr::from_ptr(ffi::gst_object_get_name(
+                sink_pad as *mut gst::ffi::GstObject,
+            ));
 
-            let labels = &[&element_latency, &src_pad_name, &sink_pad_name];
+            // back to string for now
+            let sink_pad_name = if !element_latency.is_null() {
+                format!("{:?}.{:?}", element_latency_name, sink_name)
+            } else {
+                format!("{:?}", sink_name)
+            };
+
+            // do the same for the source pad
+            let src_pad_name = if !src_pad.is_null() {
+                let parent = ffi::gst_pad_get_parent_element(src_pad);
+                if !parent.is_null() {
+                    format!(
+                        "{:?}.{:?}",
+                        CStr::from_ptr(ffi::gst_object_get_name(
+                            parent as *mut gst::ffi::GstObject
+                        )),
+                        CStr::from_ptr(ffi::gst_object_get_name(
+                            src_pad as *mut gst::ffi::GstObject
+                        ))
+                    )
+                } else {
+                    format!(
+                        "{:?}",
+                        CStr::from_ptr(ffi::gst_object_get_name(
+                            src_pad as *mut gst::ffi::GstObject
+                        ))
+                    )
+                }
+            } else {
+                "unknown_src_pad".into()
+            };
+
+            let labels = &[&element_latency_name, &src_pad_name, &sink_pad_name];
             (
                 LATENCY_LAST.with_label_values(labels),
                 LATENCY_SUM.with_label_values(labels),

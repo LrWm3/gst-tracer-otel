@@ -157,6 +157,16 @@ gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 
 ```
 
+with perf
+
+```bash
+sudo sysctl -w kernel.perf_event_paranoid=1
+
+cargo run --profile release-with-debug --bin perf-test
+
+perf record -- gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
+```
+
 ## Future work
 
 Would like to switch to otel from prometheus.
