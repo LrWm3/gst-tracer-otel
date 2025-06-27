@@ -47,6 +47,9 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
+static LATENCY_STRUCT_TEMPLATE: Lazy<gst::Structure> =
+    Lazy::new(|| gst::Structure::builder("latency_probe.id").build());
+
 // A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
 static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
 
