@@ -17,12 +17,14 @@
  */
 use glib;
 use gstreamer as gst;
+mod nooplatency;
 mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
     promlatency::register(plugin)?;
+    nooplatency::register(plugin)?;
     Ok(())
 }
 

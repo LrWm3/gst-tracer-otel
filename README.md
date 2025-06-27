@@ -120,31 +120,41 @@ if let Some(tracer) = gst::Tracer::get_by_name("prom-latency") {
 To test the performance of the tracer, you can run a hotloop test. This will create a GStreamer pipeline that continuously processes buffers and measures the latency.
 
 ```bash
-cargo run --release
+cargo run --profile release-with-debug
 
 # run with no tracer to baseline
+
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:00.864097614
+# Execution ended after 0:00:01.478263862
 
 # run gstlatency to get a sense of the overhead
+
 export GST_TRACERS='latency(flags=pipeline+element+reported)'
 export GST_DEBUG=GST_TRACER:5
-export GST_PLUGIN_PATH=target/debug/
-# Execution ended after 0:00:05.805076558
+export GST_PLUGIN_PATH=target/release-with-debug/
+# Execution ended after 0:00:05.406809197
 
-# run with
+export GST_DEBUG=GST_TRACER:5,prom-latency:5
+export GST_PLUGIN_PATH=target/release-with-debug/
+export GST_TRACERS='noop-latency(flags=pipeline+element+reported)'
+gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
+# Execution ended after 0:00:02.616296002
+
 export GST_TRACERS='prom-latency(flags=pipeline+element+reported)'
 export GST_DEBUG=GST_TRACER:5,prom-latency:5
-export GST_PLUGIN_PATH=target/release/
+export GST_PLUGIN_PATH=target/release-with-debug/
 export GST_PROMETHEUS_TRACER_PORT=9092
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:03.027939182
+# Execution ended after 0:00:03.569169298
 
 # numbers for gst-launch-1.0 videotestsrc num-buffers=2000 ! fakesink
+
 ##
-# no tracing                - Execution ended after 0:00:01.060361540
-# gstlatency                - Execution ended after 0:00:01.092149844
+
+# no tracing - Execution ended after 0:00:01.060361540
+# gstlatency - Execution ended after 0:00:01.092149844
 # prom-latency - Execution ended after 0:00:01.018266705
+
 ```
 
 ## Future work
@@ -154,3 +164,7 @@ Would like to switch to otel from prometheus.
 ## License
 
 This library is distributed under the GNU Library General Public License (LGPL) version 2 or later. See the `LICENSE` file for full details.
+
+```
+
+```
