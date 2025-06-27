@@ -111,7 +111,11 @@ mod imp {
                 // Send a custom downstream event with timestamp
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(parent) = get_real_pad_parent(pad) {
-                    send_latency_probe(&parent, &pad, ts);
+                    if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
+                        if let Some(sink_pad) = pad.peer() {
+                            sink_pad.set_qdata::<u64>("latency_probe.id".into(), ts);
+                        }
+                    }
                 }
             }
 
@@ -139,10 +143,8 @@ mod imp {
                 if let Some(peer) = pad.peer() {
                     if let Some(parent) = get_real_pad_parent(&peer) {
                         if !parent.is::<gst::Bin>() && peer.direction() == gst::PadDirection::Sink {
-                            if let Some(ev) = peer.qdata::<gst::Event>("latency_probe.id".into()) {
-                                if let Some(structure) = ev.as_ref().structure() {
-                                    log_latency(&structure, &peer, ts, &parent);
-                                }
+                            if let Some(src_ts) = peer.qdata::<u64>("latency_probe.id".into()) {
+                                log_latency(src_ts.as_ref().clone(), &peer, ts, &parent);
                             }
                         }
                     }
@@ -158,12 +160,8 @@ mod imp {
                 let pad = gst::Pad::from_glib_ptr_borrow(&pad);
                 if let Some(parent) = get_real_pad_parent(&pad) {
                     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Sink {
-                        if let Some(ev) = pad.qdata::<gst::Event>("latency_probe.id".into()) {
-                            if let Some(structure) = ev.as_ref().structure() {
-                                log_latency(&structure, &pad, ts, &parent);
-                            }
-                            // attempt to deref
-                            let _ = ev.as_ref().deref();
+                        if let Some(ev) = pad.qdata::<u64>("latency_probe.id".into()) {
+                            log_latency(ev.as_ref().clone(), &pad, ts, &parent);
                         }
                     }
                 }
@@ -297,15 +295,9 @@ mod imp {
     }
 
     // Log and update Prometheus metrics
-    fn log_latency(
-        data: &gst::StructureRef,
-        sink_pad: &gst::Pad,
-        sink_ts: u64,
-        _parent: &gst::Element,
-    ) {
+    fn log_latency(src_ts: u64, sink_pad: &gst::Pad, sink_ts: u64, _parent: &gst::Element) {
         // Extract source pad and timestamp
-        let src_pad: gst::Pad = data.get_by_quark::<gst::Pad>("pad".into()).unwrap();
-        let src_ts: u64 = data.get_by_quark::<u64>("ts".into()).unwrap();
+        let src_pad = sink_pad.peer().expect("Sink pad must have a peer");
         let diff = sink_ts.saturating_sub(src_ts);
 
         // Create a unique key for the metric cache
