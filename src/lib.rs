@@ -42,7 +42,7 @@ use tiny_http::{Header, Response, Server};
 static METRICS_SERVER_ONCE: OnceLock<()> = OnceLock::new();
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "prometheus-latency-tracer",
+        "prom-latency",
         gst::DebugColorFlags::empty(),
         Some("Prometheus tracer"),
     )
@@ -398,7 +398,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
     gst::Tracer::register(
         Some(plugin),
-        "prometheus-latency-tracer",
+        "prom-latency",
         PrometheusLatencyTracer::static_type(),
     )?;
 

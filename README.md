@@ -43,7 +43,7 @@ export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
 Enable the tracer by setting the following environment variables before running your pipeline:
 
 ```bash
-export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
+export GST_TRACERS='prom-latency(flags=pipeline+element+reported)'
 export GST_DEBUG=GST_TRACER:5
 
 # Optionally, set the tracer to expose metrics over a specific port
@@ -97,7 +97,7 @@ Prometheus exporters.
 ### In C
 
 ```c
-GstTracer *tracer = gst_tracer_find("prometheus-latency-tracer");
+GstTracer *tracer = gst_tracer_find("prom-latency");
 char *metrics = NULL;
 g_signal_emit_by_name(tracer, "request-metrics", &metrics);
 printf("%s", metrics);
@@ -107,7 +107,7 @@ g_free(metrics);
 ### In Rust (glib)
 
 ```rust
-if let Some(tracer) = gst::Tracer::get_by_name("prometheus-latency-tracer") {
+if let Some(tracer) = gst::Tracer::get_by_name("prom-latency") {
     let metrics: Option<String> = tracer.emit_by_name("request-metrics", &[]);
     if let Some(output) = metrics {
         println!("{}", output);
@@ -133,8 +133,8 @@ export GST_PLUGIN_PATH=target/debug/
 # Execution ended after 0:00:05.805076558
 
 # run with
-export GST_TRACERS='prometheus-latency-tracer(flags=pipeline+element+reported)'
-export GST_DEBUG=GST_TRACER:5,prometheus-latency-tracer:5
+export GST_TRACERS='prom-latency(flags=pipeline+element+reported)'
+export GST_DEBUG=GST_TRACER:5,prom-latency:5
 export GST_PLUGIN_PATH=target/release/
 export GST_PROMETHEUS_TRACER_PORT=9092
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
@@ -144,14 +144,12 @@ gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 ##
 # no tracing                - Execution ended after 0:00:01.060361540
 # gstlatency                - Execution ended after 0:00:01.092149844
-# prometheus-latency-tracer - Execution ended after 0:00:01.018266705
+# prom-latency - Execution ended after 0:00:01.018266705
 ```
 
 ## Future work
 
 Would like to switch to otel from prometheus.
-
-Rename `prometheus-latency-tracer` to just `prometheus-latency`
 
 ## License
 
