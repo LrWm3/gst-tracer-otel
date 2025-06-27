@@ -139,11 +139,19 @@ export GST_PLUGIN_PATH=target/release/
 export GST_PROMETHEUS_TRACER_PORT=9092
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 # Execution ended after 0:00:03.027939182
+
+# numbers for gst-launch-1.0 videotestsrc num-buffers=2000 ! fakesink
+##
+# no tracing                - Execution ended after 0:00:01.060361540
+# gstlatency                - Execution ended after 0:00:01.092149844
+# prometheus-latency-tracer - Execution ended after 0:00:01.018266705
 ```
 
 ## Future work
 
 Would like to switch to otel from prometheus.
+
+Rename `prometheus-latency-tracer` to just `prometheus-latency`
 
 ## License
 
