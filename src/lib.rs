@@ -393,13 +393,25 @@ glib::wrapper! {
         @extends gst::Tracer, gst::Object;
 }
 
-// ───────────────── plugin boilerplate ──────────────────
-fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+// Register the plugin with GStreamer
+pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    // Register the tracer factory
     gst::Tracer::register(
         Some(plugin),
         "prometheus-latency-tracer",
         PrometheusLatencyTracer::static_type(),
     )?;
+
+    // Initialize the plugin
+    plugin_init(plugin)?;
+
+    Ok(())
+}
+
+// ───────────────── plugin boilerplate ──────────────────
+fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    // Register the tracer factory
+    register(plugin)?;
     Ok(())
 }
 
