@@ -76,7 +76,7 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
-    use std::ffi::CStr;
+    use std::{ffi::CStr, os::raw::c_void};
 
     use super::*;
     use glib::translate::{IntoGlib, ToGlibPtr};
@@ -118,11 +118,19 @@ mod imp {
                             ) == glib::ffi::GTRUE
                                 && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK
                             {
+                                unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+                                    debug_assert!(!ptr.is_null());
+                                    let value: Box<u64> = Box::from_raw(ptr as *mut u64);
+                                    drop(value)
+                                }
+
+                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
                                 // Store the timestamp on the pad for later
-                                glib::gobject_ffi::g_object_set_qdata(
+                                glib::gobject_ffi::g_object_set_qdata_full(
                                     peer as *mut gobject_sys::GObject,
                                     (*LATENCY_QUARK).into_glib(),
-                                    ts as *mut std::ffi::c_void,
+                                    ptr as *mut std::ffi::c_void,
+                                    Some(drop_value::<u64>),
                                 );
                             }
                         }
@@ -140,16 +148,24 @@ mod imp {
                 if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(peer) {
                         if !parent.is_null() {
-                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE
+                            ) == glib::ffi::GTRUE)
                             {
+                                unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+                                    debug_assert!(!ptr.is_null());
+                                    let value: Box<u64> = Box::from_raw(ptr as *mut u64);
+                                    drop(value)
+                                }
+
+                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
                                 // Store the timestamp on the pad for later
-                                glib::gobject_ffi::g_object_set_qdata(
+                                glib::gobject_ffi::g_object_set_qdata_full(
                                     peer as *mut gobject_sys::GObject,
                                     (*LATENCY_QUARK).into_glib(),
-                                    ts as *mut std::ffi::c_void,
+                                    ptr as *mut std::ffi::c_void,
+                                    Some(drop_value::<u64>),
                                 );
                             }
                         }
@@ -167,16 +183,18 @@ mod imp {
                 if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(peer) {
                         if !parent.is_null() {
-                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE
+                            ) == glib::ffi::GTRUE)
                             {
                                 let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                                     peer as *mut gobject_sys::GObject,
                                     (*LATENCY_QUARK).into_glib(),
                                 ) as *const u64;
-                                log_latency_ffi(*src_ts, peer, ts, parent);
+                                if !src_ts.is_null() {
+                                    log_latency_ffi(*src_ts, peer, ts, parent);
+                                }
                             }
                         }
                     }
@@ -192,16 +210,18 @@ mod imp {
                 if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
                     if let Some(parent) = get_real_pad_parent_ffi(pad) {
                         if !parent.is_null() {
-                            if !glib::gobject_ffi::g_type_check_instance_is_a(
+                            if !(glib::gobject_ffi::g_type_check_instance_is_a(
                                 parent as *mut gobject_sys::GTypeInstance,
                                 ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GTRUE
+                            ) == glib::ffi::GTRUE)
                             {
                                 let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                                     pad as *mut gobject_sys::GObject,
                                     (*LATENCY_QUARK).into_glib(),
                                 ) as *const u64;
-                                log_latency_ffi(*src_ts, pad, ts, parent);
+                                if !src_ts.is_null() {
+                                    log_latency_ffi(*src_ts, pad, ts, parent);
+                                }
                             }
                         }
                     }
@@ -311,6 +331,8 @@ mod imp {
         if parent_obj.is_null() {
             return None;
         }
+        // TODO - if we already know the pad is a GhostPad, we could return immediately.
+        // however, this would require us hook into pad lifecycle events to clean up caching when necessary.
         let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
         let is_ghost_pad = unsafe {
             glib::gobject_ffi::g_type_check_instance_is_a(
@@ -325,7 +347,6 @@ mod imp {
             let real_pad =
                 unsafe { ffi::gst_ghost_pad_get_target(parent_obj as *mut ffi::GstGhostPad) };
             if real_pad.is_null() {
-                gst::error!(CAT, "GhostPad target is null, but parent is a GhostPad");
                 return None;
             }
             unsafe { ffi::gst_object_get_parent(real_pad as *mut ffi::GstObject) }
@@ -444,7 +465,7 @@ mod imp {
                         let addr = ("0.0.0.0", port);
                         let server =
                             Server::http(addr).expect("Failed to bind Prometheus metrics server");
-                        gst::log!(
+                        gst::info!(
                             CAT,
                             "Prometheus metrics server listening on 0.0.0.0:{}",
                             port
