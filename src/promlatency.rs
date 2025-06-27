@@ -228,34 +228,6 @@ mod imp {
                 }
             }
 
-            // We are not using events at the moment to measure latency
-            //
-            // unsafe extern "C" fn do_push_event_pre(
-            //     _tracer: *mut gst::Tracer,
-            //     _ts: u64,
-            //     pad: *mut gst::ffi::GstPad,
-            //     ev: *mut gst::ffi::GstEvent,
-            // ) {
-            //     // Store the custom event on the pad for later
-            //     let peer = gst::Pad::from_glib_ptr_borrow(&pad).peer();
-            //     if let Some(peer) = peer {
-            //         let parent = get_real_pad_parent(&peer);
-            //         if let Some(_parent) = parent {
-            //             let ev = gst::Event::from_glib_borrow(ev);
-            //             if ev.type_() == gst::EventType::CustomDownstream {
-            //                 if let Some(structure) = ev.structure() {
-            //                     if structure.name() == "latency_probe.id" {
-            //                         peer.set_qdata::<gst::Event>(
-            //                             *LATENCY_QUARK,
-            //                             ev.clone(),
-            //                         );
-            //                     }
-            //                 }
-            //             }
-            //         }
-            //     }
-            // }
-            // Register hooks for tracing
             unsafe {
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
@@ -277,12 +249,6 @@ mod imp {
                     b"pad-pull-range-post\0".as_ptr() as *const _,
                     std::mem::transmute::<_, GCallback>(do_pull_range_post as *const ()),
                 );
-                // Not using the event method at the moment
-                // ffi::gst_tracing_register_hook(
-                //     tracer_obj.to_glib_none().0,
-                //     b"pad-push-event-pre\0".as_ptr() as *const _,
-                //     std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
-                // );
             }
         }
 
@@ -358,17 +324,6 @@ mod imp {
         Some(real_parent_obj as *mut ffi::GstElement)
     }
 
-    // Helper for sending latency probes. useful for tracing across entire bins.
-    //
-    // fn send_latency_probe(parent: &gst::Element, pad: &gst::Pad, ts: u64) {
-    //     if !parent.is::<gst::Bin>() && pad.direction() == gst::PadDirection::Src {
-    //         let ev = gst::event::CustomDownstream::builder(LATENCY_STRUCT_TEMPLATE.clone())
-    //             .other_field("pad", pad)
-    //             .other_field("ts", ts)
-    //             .build();
-    //         let _ = pad.push_event(ev);
-    //     }
-    // }
     unsafe fn log_latency_ffi(
         src_ts: u64,
         sink_pad: *mut gst::ffi::GstPad,
