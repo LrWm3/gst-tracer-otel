@@ -17,6 +17,7 @@
  */
 use glib;
 use gstreamer as gst;
+mod ex;
 #[cfg(feature = "noop")]
 mod nooplatency;
 mod otel;

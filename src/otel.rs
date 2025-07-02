@@ -108,6 +108,7 @@ struct EventData {
 /// GStreamer Tracer subclass
 mod imp {
     use glib::{bitflags::parser::from_str, translate::FromGlibPtrNone};
+    use opentelemetry::trace::FutureExt;
 
     use super::*;
     use std::{ffi::CStr, os::raw::c_void};
@@ -149,12 +150,10 @@ mod imp {
                     // if source element, we start a new span (hopefully parent span?)
                     if !parent.is_null() {
                         if element_type(parent, ffi::GST_ELEMENT_FLAG_SOURCE) {
-                            // Get the current context (e.g., from a request or other source)
-                            let current_context = Context::current();
                             let buf_id = BUFFER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
 
                             // Create a new span within the initial context
-                            let span = tracer.start_with_context("gst.src", &current_context);
+                            let span = tracer.start("gst.src");
                             if span.is_recording() {
                                 span.set_attributes(vec![
                                     KeyValue::new(
@@ -187,17 +186,11 @@ mod imp {
                             }
                         }
 
-                        // Get the current context (e.g., from a request or other source)
-                        let current_context = Context::current();
-
-                        tracer
-                            .span_builder("gst.element")
-                            .with_parent_context(&current_context)
-                            .start(&tracer);
+                        let span = tracer.start("gst.element");
                         // Store the timestamp in QData for later use
                         glib::gobject_ffi::g_object_set_qdata(
                             pad as *mut glib::gobject_ffi::GObject,
-                            TRACE_EVENT_QUARK.into_glib(),
+                            TRACE_EVENT_QUARK,
                             Box::into_raw(Box::new(ts)) as *mut c_void,
                         );
                         gst::info!(CAT, "Pushing buffer pre id={}", ts);
