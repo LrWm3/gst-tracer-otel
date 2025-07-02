@@ -7,28 +7,21 @@ use glib::subclass::prelude::*;
 use glib::Quark;
 use gobject_sys::GCallback;
 use gst::ffi;
-use gst::prelude::*;
-use gst::subclass::prelude::*;
 use gstreamer as gst;
 use lazy_static::lazy_static;
 use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
 use opentelemetry::TraceId;
 use std::sync::atomic::AtomicI64;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
-use std::thread;
 
-use glib::subclass::prelude::*;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 // OpenTelemetry and OTLP exporter
-use opentelemetry::trace::TracerProvider;
 use opentelemetry::trace::{Span, SpanContext, Tracer};
 use opentelemetry::{global, Context, KeyValue};
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::trace::Sampler::{ParentBased, TraceIdRatioBased};
 use opentelemetry_sdk::Resource;
 
 /// Quark key for QData propagation
@@ -82,21 +75,21 @@ fn init_otlp() -> global::BoxedTracer {
     INIT_ONCE.get_or_init(|| {
         // First, create a OTLP exporter builder. Configure it as you need.
         let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
+            .with_http()
             .build()
             .expect("Failed to create OTLP exporter");
 
         // Tracing pipeline
         let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
             .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
-                opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(0.001),
+                opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
             )))
             .with_resource(
                 Resource::builder()
                     .with_attributes(vec![KeyValue::new("service.name", "gst-prom-latency")])
                     .build(),
             )
-            .with_simple_exporter(otlp_exporter)
+            .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
             .build();
         global::set_tracer_provider(tracer_provider);
 
@@ -109,20 +102,15 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// Data stored in QData when catching the custom event
 struct EventData {
+    // FIXME - not in use but would allow avoiding side channels
     ctx: SpanContext,
     buffer_id: u64,
 }
 
 /// GStreamer Tracer subclass
 mod imp {
-    use glib::{
-        bitflags::parser::from_str,
-        translate::{FromGlibPtrNone, IntoGlib, ToGlibPtr},
-    };
-    use opentelemetry::{
-        trace::{FutureExt, TraceContextExt},
-        Key,
-    };
+    use glib::translate::{FromGlibPtrNone, IntoGlib, ToGlibPtr};
+    use opentelemetry::trace::TraceContextExt;
 
     use super::*;
     use std::{ffi::CStr, os::raw::c_void};
@@ -142,7 +130,7 @@ mod imp {
             self.parent_constructed();
             let binding = self.obj();
             let tracer_obj: &gst::Tracer = binding.upcast_ref();
-            let tracer = init_otlp();
+            init_otlp();
 
             unsafe extern "C" fn do_push_buffer_pre(
                 _tracer: *mut gst::Tracer,
@@ -171,6 +159,14 @@ mod imp {
                         {
                             if element_type(parent, ffi::GST_ELEMENT_FLAG_SOURCE) {
                                 let buf_id = BUFFER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+                                gst::info!(
+                                    CAT,
+                                    "Pushing buffer with id {} on pad {}",
+                                    buf_id,
+                                    CStr::from_ptr(ffi::gst_object_get_name(pad as *mut _))
+                                        .to_string_lossy()
+                                        .into_owned()
+                                );
 
                                 // Create a new span within the initial context
                                 let mut span = tracer.start("gst.src");
@@ -273,6 +269,15 @@ mod imp {
                 event_ptr: *mut gst::ffi::GstEvent,
                 pad: *mut gst::ffi::GstPad,
             ) {
+                if pad.is_null() || event_ptr.is_null() {
+                    return;
+                }
+                // ensure address is 0x8 & return if not
+                if (event_ptr as usize) & 0x7 != 0 {
+                    gst::warning!(CAT, "Event pointer is not aligned: {:p}", event_ptr);
+                    return;
+                }
+
                 let gst_event = gst::EventRef::from_ptr(event_ptr);
                 if gst_event.is_downstream() {
                     if let Some(s) = gst_event.structure() {
@@ -434,7 +439,7 @@ mod imp {
                 );
                 ffi::gst_tracing_register_hook(
                     obj,
-                    b"pad-event-push-pre\0".as_ptr() as *const _,
+                    b"pad-push-event-pre\0".as_ptr() as *const _,
                     std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
                 );
                 ffi::gst_tracing_register_hook(

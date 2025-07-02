@@ -147,6 +147,10 @@ export GST_PROMETHEUS_TRACER_PORT=9092
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 # Execution ended after 0:00:03.569169298
 
+export GST_DEBUG=GST_TRACER:5,oteltracer:5
+export GST_PLUGIN_PATH=target/release-with-debug/
+export GST_TRACERS='oteltracer(flags=element)'
+gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 # original implementation of this tracer
 # Execution ended after 0:00:12.357704400
 
