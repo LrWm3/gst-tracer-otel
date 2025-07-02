@@ -19,18 +19,23 @@ use glib;
 use gstreamer as gst;
 #[cfg(feature = "noop")]
 mod nooplatency;
-#[cfg(not(feature = "noop"))]
+mod otel;
 mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    // Only noop is feature gated, as it is not needed for the main functionality.
     #[cfg(feature = "noop")]
     {
         nooplatency::register(plugin)?;
     }
-    #[cfg(not(feature = "noop"))]
+
     {
         promlatency::register(plugin)?;
+    }
+
+    {
+        otel::register(plugin)?;
     }
     Ok(())
 }
