@@ -17,7 +17,7 @@ debug = true
 # ── GStreamer stack ───────────────────────────────────────────────
 glib = "0.20"
 gobject-sys = "0.20"
-gstreamer         = { version = "0.23.6", features = ["v1_24"] }
+gstreamer         = { version = "0.23.6", features = ["v1_16"] }
 gstreamer-sys     = "0.23.6"  # raw FFI for hook registration
 lazy_static = "1.4.0"
 prometheus =  "0.14.0"
