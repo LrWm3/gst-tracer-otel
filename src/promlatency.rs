@@ -82,16 +82,16 @@ mod imp {
     use glib::translate::{IntoGlib, ToGlibPtr};
 
     #[derive(Default)]
-    pub struct TelemetyTracer;
+    pub struct PromLatencyTracer;
 
     #[glib::object_subclass]
-    impl ObjectSubclass for TelemetyTracer {
-        const NAME: &'static str = "telemetytracer";
-        type Type = super::TelemetyTracer;
+    impl ObjectSubclass for PromLatencyTracer {
+        const NAME: &'static str = "promlatencytracer";
+        type Type = super::PromLatencyTracer;
         type ParentType = gst::Tracer;
     }
 
-    impl ObjectImpl for TelemetyTracer {
+    impl ObjectImpl for PromLatencyTracer {
         // Called once when the class is initialized
         fn constructed(&self) {
             self.parent_constructed();
@@ -274,8 +274,8 @@ mod imp {
         }
     }
 
-    impl GstObjectImpl for TelemetyTracer {}
-    impl TracerImpl for TelemetyTracer {}
+    impl GstObjectImpl for PromLatencyTracer {}
+    impl TracerImpl for PromLatencyTracer {}
 
     // Add this function, which is the handler for the "request-metrics" signal
     fn request_metrics() -> String {
@@ -463,14 +463,18 @@ mod imp {
 }
 
 glib::wrapper! {
-    pub struct TelemetyTracer(ObjectSubclass<imp::TelemetyTracer>)
+    pub struct PromLatencyTracer(ObjectSubclass<imp::PromLatencyTracer>)
         @extends gst::Tracer, gst::Object;
 }
 
 // Register the plugin with GStreamer
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
-    gst::Tracer::register(Some(plugin), "prom-latency", TelemetyTracer::static_type())?;
+    gst::Tracer::register(
+        Some(plugin),
+        "prom-latency",
+        PromLatencyTracer::static_type(),
+    )?;
 
     Ok(())
 }
