@@ -23,15 +23,12 @@ mod nooplatency;
 mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
-fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "noop")]
     {
         nooplatency::register(plugin)?;
     }
-    #[cfg(not(feature = "noop"))]
-    {
-        promlatency::register(plugin)?;
-    }
+    promlatency::register(plugin)?;
     Ok(())
 }
 

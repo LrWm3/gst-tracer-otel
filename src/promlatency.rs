@@ -107,34 +107,8 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // Calculate latency when buffer arrives at sink
                 let peer = ffi::gst_pad_get_peer(pad);
-                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
-                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
-                        if !parent.is_null() {
-                            if glib::gobject_ffi::g_type_check_instance_is_a(
-                                parent as *mut gobject_sys::GTypeInstance,
-                                ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GFALSE
-                            {
-                                unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
-                                    debug_assert!(!ptr.is_null());
-                                    let value: Box<u64> = Box::from_raw(ptr as *mut u64);
-                                    drop(value)
-                                }
-
-                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
-                                // Store the timestamp on the pad for later
-                                glib::gobject_ffi::g_object_set_qdata_full(
-                                    peer as *mut gobject_sys::GObject,
-                                    (*LATENCY_QUARK).into_glib(),
-                                    ptr as *mut std::ffi::c_void,
-                                    Some(drop_value::<u64>),
-                                );
-                            }
-                        }
-                    }
-                }
+                do_send_latency_ts(ts, peer);
             }
 
             unsafe extern "C" fn do_pull_range_pre(
@@ -142,34 +116,8 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // Calculate latency when buffer arrives at sink
-                let peer = ffi::gst_pad_get_peer(pad);
-                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
-                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
-                        if !parent.is_null() {
-                            if glib::gobject_ffi::g_type_check_instance_is_a(
-                                parent as *mut gobject_sys::GTypeInstance,
-                                ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GFALSE
-                            {
-                                unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
-                                    debug_assert!(!ptr.is_null());
-                                    let value: Box<u64> = Box::from_raw(ptr as *mut u64);
-                                    drop(value)
-                                }
-
-                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
-                                // Store the timestamp on the pad for later
-                                glib::gobject_ffi::g_object_set_qdata_full(
-                                    peer as *mut gobject_sys::GObject,
-                                    (*LATENCY_QUARK).into_glib(),
-                                    ptr as *mut std::ffi::c_void,
-                                    Some(drop_value::<u64>),
-                                );
-                            }
-                        }
-                    }
-                }
+                // TODO - do I send for pad? or for peer?
+                do_send_latency_ts(ts, pad);
             }
 
             unsafe extern "C" fn do_push_buffer_post(
@@ -179,25 +127,7 @@ mod imp {
             ) {
                 // Calculate latency when buffer arrives at sink
                 let peer = ffi::gst_pad_get_peer(pad);
-                if !peer.is_null() && ffi::gst_pad_get_direction(peer) == ffi::GST_PAD_SINK {
-                    if let Some(parent) = get_real_pad_parent_ffi(peer) {
-                        if !parent.is_null() {
-                            if glib::gobject_ffi::g_type_check_instance_is_a(
-                                parent as *mut gobject_sys::GTypeInstance,
-                                ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GFALSE
-                            {
-                                let src_ts = glib::gobject_ffi::g_object_steal_qdata(
-                                    peer as *mut gobject_sys::GObject,
-                                    (*LATENCY_QUARK).into_glib(),
-                                ) as *const u64;
-                                if !src_ts.is_null() {
-                                    log_latency_ffi(*src_ts, peer, ts, parent);
-                                }
-                            }
-                        }
-                    }
-                }
+                do_receive_and_record_latency_ts(ts, peer);
             }
 
             unsafe extern "C" fn do_pull_range_post(
@@ -206,26 +136,7 @@ mod imp {
                 pad: *mut gst::ffi::GstPad,
             ) {
                 // Calculate latency when buffer arrives at sink
-                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
-                    if let Some(parent) = get_real_pad_parent_ffi(pad) {
-                        if !parent.is_null() {
-                            if glib::gobject_ffi::g_type_check_instance_is_a(
-                                parent as *mut gobject_sys::GTypeInstance,
-                                ffi::gst_bin_get_type(),
-                            ) == glib::ffi::GFALSE
-                            {
-                                let src_ts = glib::gobject_ffi::g_object_steal_qdata(
-                                    pad as *mut gobject_sys::GObject,
-                                    (*LATENCY_QUARK).into_glib(),
-                                ) as *const u64;
-                                if !src_ts.is_null() {
-                                    log_latency_ffi(*src_ts, pad, ts, parent);
-                                    // Log the latency
-                                }
-                            }
-                        }
-                    }
-                }
+                do_receive_and_record_latency_ts(ts, pad);
             }
 
             unsafe {
@@ -322,6 +233,57 @@ mod imp {
 
         // 3. Finally, cast the resulting object to an Element.
         Some(real_parent_obj as *mut ffi::GstElement)
+    }
+
+    unsafe fn do_send_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
+        if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
+            if let Some(parent) = get_real_pad_parent_ffi(pad) {
+                if !parent.is_null() {
+                    if glib::gobject_ffi::g_type_check_instance_is_a(
+                        parent as *mut gobject_sys::GTypeInstance,
+                        ffi::gst_bin_get_type(),
+                    ) == glib::ffi::GFALSE
+                    {
+                        unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+                            debug_assert!(!ptr.is_null());
+                            let value: Box<u64> = Box::from_raw(ptr as *mut u64);
+                            drop(value)
+                        }
+
+                        let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
+                        // Store the timestamp on the pad for later
+                        glib::gobject_ffi::g_object_set_qdata_full(
+                            pad as *mut gobject_sys::GObject,
+                            (*LATENCY_QUARK).into_glib(),
+                            ptr as *mut std::ffi::c_void,
+                            Some(drop_value::<u64>),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe fn do_receive_and_record_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
+        if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
+            if let Some(parent) = get_real_pad_parent_ffi(pad) {
+                if !parent.is_null() {
+                    if glib::gobject_ffi::g_type_check_instance_is_a(
+                        parent as *mut gobject_sys::GTypeInstance,
+                        ffi::gst_bin_get_type(),
+                    ) == glib::ffi::GFALSE
+                    {
+                        let src_ts = glib::gobject_ffi::g_object_steal_qdata(
+                            pad as *mut gobject_sys::GObject,
+                            (*LATENCY_QUARK).into_glib(),
+                        ) as *const u64;
+                        if !src_ts.is_null() {
+                            log_latency_ffi(*src_ts, pad, ts, parent);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     unsafe fn log_latency_ffi(
