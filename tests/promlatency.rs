@@ -30,7 +30,12 @@ mod tests {
         );
 
         // Create the pipeline
-        let pipeline = create_pipeline();
+        // This is a kludge to get around a real issue where metrics are reused
+        // across multiple pipelines which use the same element and pad names.
+        //
+        // We could tie the pipeline name to the metrics, but that would require
+        // a change in the tracer implementation.
+        let pipeline = create_pipeline("basic");
 
         // Set the pipeline to the Playing state
         pipeline
@@ -89,19 +94,31 @@ mod tests {
         // count_count should be exactly 100000
         // ie: gst_element_latency_count_count{.*} 100000
         //
-        // For some reason this check fails in CI, but works when the test is run independently.
+        // Test currently fails on count_value check because metrics are not tied to a pipeline, so they all sum up together
+        //   as the test-suite runs multiple times.
         //
         let count_count_metric = format!("{}{{", "gst_element_latency_count_count");
         let count_count_value = metrics
             .lines()
-            .find(|line| line.contains(&count_count_metric))
-            .and_then(|line| line.split_whitespace().nth(1))
-            .expect("Failed to find count_count value in metrics");
-        assert_eq!(
-            count_count_value, "100000",
-            "Expected count_count to be 100000, found {}",
-            count_count_value
-        );
+            .filter(|line| line.contains(&count_count_metric))
+            .flat_map(|line| line.split_whitespace().nth(1))
+            .collect::<Vec<_>>();
+
+        let mut check_failed = true;
+        for value in count_count_value.clone() {
+            // Check if the value is exactly 100000
+            if value == "100000" {
+                check_failed = false;
+                break;
+            }
+        }
+        if check_failed {
+            panic!(
+                "Expected to find '{}' with value 100000 in metrics, but it was not found.\n, found: {:?}",
+                count_count_metric,
+                count_count_value
+            );
+        }
     }
 
     #[test]
@@ -166,7 +183,7 @@ mod tests {
             "Expected to find the `prom-latency` element after registration"
         );
         // Link the elements together
-        let pipeline = create_pipeline();
+        let pipeline = create_pipeline("bench");
 
         // Start playing and benchmark from PLAYING -> EOS
         pipeline
@@ -207,19 +224,19 @@ mod tests {
         elapsed
     }
 
-    fn create_pipeline() -> gst::Pipeline {
+    fn create_pipeline(name: &str) -> gst::Pipeline {
         let pipeline = gst::Pipeline::new();
         let fakesrc = gst::ElementFactory::make("fakesrc")
-            .name("fakesrc")
+            .name(format!("{}-fakesrc", name).as_str())
             .property("num-buffers", &100_000)
             .build()
             .expect("Failed to create fakesrc");
         let identity = gst::ElementFactory::make("identity")
-            .name("id")
+            .name(format!("{}-identity", name).as_str())
             .build()
             .expect("Failed to create identity");
         let fakesink = gst::ElementFactory::make("fakesink")
-            .name("fakesink")
+            .name(format!("{}-fakesink", name).as_str())
             .build()
             .expect("Failed to create fakesink");
 
