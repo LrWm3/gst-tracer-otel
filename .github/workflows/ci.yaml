@@ -32,7 +32,7 @@ jobs:
       - name: Cache Cargo build
         uses: actions/cache@v4
         with:
-          path: target          # caches debug or release, whichever you build
+          path: target # caches debug or release, whichever you build
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-release
           restore-keys: |
             ${{ runner.os }}-cargo-target-
@@ -51,73 +51,10 @@ jobs:
       # ❸ Build plug-in (release w/ debuginfo)
       # ────────────────────────────────────────────────
       - name: Cargo build (release)
-        run: cargo build --release
+        run: cargo build --profile test
 
       # ────────────────────────────────────────────────
-      # ❹ Start OTEL-Collector
+      # ❹ Cargo test
       # ────────────────────────────────────────────────
-      - name: Start OpenTelemetry Collector
-        run: |
-          docker run -d --name otel \
-            -v $PWD/.github/otel-config.yaml:/etc/otelcol/config.yaml \
-            -p 4317:4317 \
-            otel/opentelemetry-collector-contrib:latest \
-            --config /etc/otelcol/config.yaml
-          # Wait until the collector is listening on 4317
-          for i in {1..10}; do
-            (echo > /dev/tcp/localhost/4317) >/dev/null 2>&1 && break
-            sleep 0.5
-          done
-
-      # ────────────────────────────────────────────────
-      # ❻ Normal gst-inspect call that triggers the dump
-      #     (unchanged – this is what produces the core)
-      # ────────────────────────────────────────────────
-      - name: gst-inspect for crash repro
-        env:
-          GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
-        run: |
-          GST_DEBUG="GST_PLUGIN_LOADING:4" gdb -batch -ex "run" -ex "bt" -ex "quit" --args  gst-inspect-1.0 oteltracer || true
-          gst-inspect-1.0 -b || true
-
-      # ────────────────────────────────────────────────
-      # ❼ Pipeline run & optional core-dump processing
-      # ────────────────────────────────────────────────
-      - name: Run gst-launch + process core if present
-        env:
-          GST_PLUGIN_PATH: ${{ github.workspace }}/target/release
-          GST_TRACERS: otel-tracer
-          OTEL_SERVICE_NAME: github-ci-test
-          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4317
-          OTEL_TRACES_SAMPLING_RATIO: 1.0
-          OTEL_EXPORTER_OTLP_INSECURE: true
-        run: |
-          # Enable core dumps
-          ulimit -c unlimited
-          # Run the pipeline
-          gdb -batch \
-            -ex "run" \
-            -ex "bt" \
-            -ex "quit" \
-           --args gst-launch-1.0 -q fakesrc num-buffers=3000 ! fakesink sync=true || true
-          echo "gst-launch finished; waiting 6 s for the collector to flush"
-          sleep 6
-          # If a core file exists, print a back-trace
-          COREFILE=$(ls -1 core* 2>/dev/null | head -n 1 || true)
-          if [ -n "$COREFILE" ]; then
-            echo "===== core dump detected: $COREFILE ====="
-            gdb -batch -ex "bt full" gst-launch-1.0 "$COREFILE" || true
-          fi
-
-      # ────────────────────────────────────────────────
-      # ❽ Show collector logs
-      # ────────────────────────────────────────────────
-      - name: Dump collector output
-        run: docker logs otel
-
-      # ────────────────────────────────────────────────
-      # ❾ Clean up
-      # ────────────────────────────────────────────────
-      - name: Stop collector
-        if: always()
-        run: docker rm -f otel
+      - name: Cargo test
+        run: cargo test

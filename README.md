@@ -43,7 +43,7 @@ export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
 Enable the tracer by setting the following environment variables before running your pipeline:
 
 ```bash
-export GST_TRACERS='prom-latency(flags=pipeline+element+reported)'
+export GST_TRACERS='prom-latency(flags=element)'
 export GST_DEBUG=GST_TRACER:5
 
 # Optionally, set the tracer to expose metrics over a specific port
@@ -128,7 +128,7 @@ gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 # Execution ended after 0:00:01.478263862
 
 # run gstlatency to get a sense of the overhead for the original implementation
-export GST_TRACERS='latency(flags=pipeline+element+reported)'
+export GST_TRACERS='latency(flags=element)'
 export GST_DEBUG=GST_TRACER:5
 export GST_PLUGIN_PATH=target/release-with-debug/
 # Execution ended after 0:00:05.406809197
@@ -136,11 +136,11 @@ export GST_PLUGIN_PATH=target/release-with-debug/
 cargo build --features noop
 export GST_DEBUG=GST_TRACER:5,prom-latency:5
 export GST_PLUGIN_PATH=target/release-with-debug/
-export GST_TRACERS='noop-latency(flags=pipeline+element+reported)'
+export GST_TRACERS='noop-latency(flags=element)'
 gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
 # Execution ended after 0:00:02.616296002
 
-export GST_TRACERS='prom-latency(flags=pipeline+element+reported)'
+export GST_TRACERS='prom-latency(flags=element)'
 export GST_DEBUG=GST_TRACER:5,prom-latency:5
 export GST_PLUGIN_PATH=target/release-with-debug/
 export GST_PROMETHEUS_TRACER_PORT=9092
