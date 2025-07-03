@@ -55,19 +55,19 @@ static LATENCY_QUARK: Lazy<Quark> = Lazy::new(|| Quark::from_str("latency_probe.
 // Define Prometheus metrics, all in nanoseconds
 lazy_static! {
     static ref LATENCY_LAST: GaugeVec = register_gauge_vec!(
-        "gstreamer_element_latency_last_gauge",
+        "gst_element_latency_last_gauge",
         "Last latency in nanoseconds per element",
         &["element", "src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_SUM: CounterVec = register_counter_vec!(
-        "gstreamer_element_latency_sum_count",
+        "gst_element_latency_sum_count",
         "Sum of latencies in nanoseconds per element",
         &["element", "src_pad", "sink_pad"]
     )
     .unwrap();
     static ref LATENCY_COUNT: CounterVec = register_counter_vec!(
-        "gstreamer_element_latency_count_count",
+        "gst_element_latency_count_count",
         "Count of latency measurements per element",
         &["element", "src_pad", "sink_pad"]
     )
