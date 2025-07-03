@@ -119,6 +119,7 @@ mod tests {
 
     #[test]
     fn bench_prom_latency_through_pipeline() {
+        env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
         env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
         env::set_var(
             "GST_TRACERS",
