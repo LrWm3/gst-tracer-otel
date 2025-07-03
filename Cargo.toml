@@ -7,7 +7,7 @@ edition     = "2021"
 name = "gsttelemetytracer"
 crate-type  = ["cdylib", "rlib"]
 
-[profile.release-with-debug]
+[profile.test]
 inherits = "release"
 debug = true
 

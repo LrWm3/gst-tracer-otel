@@ -2,7 +2,7 @@
 
 use gst::prelude::*;
 use gstreamer as gst;
-use std::{env, time::Instant};
+use std::{env, time::Instant, vec};
 
 #[test]
 fn given_basic_pipeline_when_run_then_metrics_captured() {
@@ -44,43 +44,60 @@ fn given_basic_pipeline_when_run_then_metrics_captured() {
         match msg.view() {
             MessageView::Eos(..) => break,
             MessageView::Error(err) => {
+                // Stop the pipeline on error
+                pipeline.set_state(gst::State::Null).unwrap();
                 panic!(
                     "Error from {:?}: {} ({:?})",
                     err.src().map(|s| s.path_string()),
                     err.error(),
                     err.debug()
                 );
-                // Stop the pipeline on error
-                pipeline.set_state(gst::State::Null).unwrap();
             }
             _ => (),
         }
     }
     // Get the metrics by performing an http request to the Prometheus endpoint
+    // in >1.18, could use a signal.
     let prometheus_port =
         env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-    let prometheus_url = format!("http://localhost:{}/metrics", prometheus_port);
+    let prometheus_url = format!("http://localhost:{}", prometheus_port);
     let response = reqwest::blocking::get(&prometheus_url)
         .expect("Failed to fetch metrics from Prometheus endpoint");
     let metrics = response.text().expect("Failed to read response text");
 
+    // Print the metrics for debugging
+    println!("Metrics:\n{}", metrics);
+
     // Validate that the metrics contain expected values
-    assert!(
-        metrics.contains("gst_latency_seconds_count"),
-        "Expected to find 'gst_latency_seconds_count' in metrics"
-    );
-    assert!(
-        metrics.contains("gst_latency_seconds_sum"),
-        "Expected to find 'gst_latency_seconds_sum' in metrics"
-    );
-    assert!(
-        metrics.contains("gst_latency_seconds_bucket"),
-        "Expected to find 'gst_latency_seconds_bucket' in metrics"
+    let metric_asserts = vec![
+        "gst_element_latency_last_gauge",
+        "gst_element_latency_sum_count",
+        "gst_element_latency_count_count",
+    ];
+    for metric in metric_asserts {
+        assert!(
+            metrics.contains(metric),
+            "Expected to find '{}' in metrics",
+            metric
+        );
+    }
+
+    // count_count should be exactly 100000
+    // ie: gst_element_latency_count_count{.*} 100000
+    let count_count_metric = format!("{}{{", "gst_element_latency_count_count");
+    let count_count_value = metrics
+        .lines()
+        .find(|line| line.contains(&count_count_metric))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .expect("Failed to find count_count value in metrics");
+    assert_eq!(
+        count_count_value, "100000",
+        "Expected count_count to be 100000, found {}",
+        count_count_value
     );
 
     // Stop the pipeline
     pipeline.set_state(gst::State::Null).unwrap();
-    // Optionally, you can assert that the tracer has captured some metrics
 }
 
 #[test]
