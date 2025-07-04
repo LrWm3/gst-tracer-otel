@@ -67,7 +67,3 @@ jobs:
       - name: Run tests with address sanitizer
         run: |
           just test-address-sanitizer
-        env:
-          RUST_BACKTRACE: 1
-          RUSTFLAGS: "-Z sanitizer=address"
-          LSAN_OPTIONS: "suppressions=.github/sanitizer/lsan.supp"
