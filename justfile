@@ -1,6 +1,10 @@
-# Setup
+# Setup environment.
 setup:
   ./.devcontainer/setup.sh
+
+# Remove build artifacts.
+clean:
+  cargo clean
 
 # Build and test commands for the project.
 build PROFILE="test":
