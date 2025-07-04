@@ -46,7 +46,9 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          just setup
+          sudo .devcontainer/setup-root.sh
+          .devcontainer/setup-user.sh
+
 
       # ────────────────────────────────────────────────
       # Build plug-in (release w/ debuginfo)
