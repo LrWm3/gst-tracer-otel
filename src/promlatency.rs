@@ -76,7 +76,7 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
-    use std::{ffi::CStr, os::raw::c_void};
+    use std::os::raw::c_void;
 
     use super::*;
     use glib::translate::{IntoGlib, ToGlibPtr};
@@ -316,60 +316,39 @@ mod imp {
 
         // Insert if absent, then get a reference
         let metrics = METRIC_CACHE.entry(key).or_insert_with(|| {
+            let sink_pad_s = gst::Pad::from_glib_ptr_borrow(&sink_pad);
+            // Just get the safe src_pad reference
+            let src_pad_s = gst::Pad::from_glib_ptr_borrow(&src_pad);
             let element_latency = ffi::gst_pad_get_parent_element(sink_pad);
+
+            let sink_name = sink_pad_s.name().to_string();
             let element_latency_name = if !element_latency.is_null() {
+                let element_latency_s = gst::Element::from_glib_ptr_borrow(&element_latency);
                 // If we have a parent element, use its name
-                CStr::from_ptr(ffi::gst_object_get_name(
-                    element_latency as *mut gst::ffi::GstObject,
-                ))
-                .to_str()
-                .unwrap_or("unknown_element")
-                .to_string()
+                element_latency_s.name().to_string()
             } else {
                 // Otherwise, use the pad name directly
-                CStr::from_ptr(ffi::gst_object_get_name(
-                    sink_pad as *mut gst::ffi::GstObject,
-                ))
-                .to_str()
-                .unwrap_or("unknown_pad")
-                .to_string()
+                sink_name.clone()
             };
-
-            // format as  "element_name.sink_pad_name, if we have a parent, otherwise just "pad_name"
-            let sink_name = CStr::from_ptr(ffi::gst_object_get_name(
-                sink_pad as *mut gst::ffi::GstObject,
-            ));
 
             // back to string for now
             let sink_pad_name = if !element_latency.is_null() {
-                element_latency_name.clone()
-                    + "."
-                    + sink_name.to_str().unwrap_or("unknown_sink_pad")
+                // el.name + "." + sink_pad.name()
+                element_latency_name.clone() + "." + &sink_name
             } else {
-                sink_name.to_str().unwrap_or("unknown_sink_pad").to_string()
+                sink_name.clone()
             };
 
             // do the same for the source pad
             let src_pad_name = if !src_pad.is_null() {
                 let parent = ffi::gst_pad_get_parent_element(src_pad);
                 if !parent.is_null() {
-                    CStr::from_ptr(ffi::gst_object_get_name(parent as *mut gst::ffi::GstObject))
-                        .to_str()
-                        .unwrap_or("unknown_src_pad")
-                        .to_string()
-                        + "."
-                        + CStr::from_ptr(ffi::gst_object_get_name(
-                            src_pad as *mut gst::ffi::GstObject,
-                        ))
-                        .to_str()
-                        .unwrap_or("unknown_src_pad")
+                    let element_src = gst::Element::from_glib_ptr_borrow(&parent);
+                    // If we have a parent element, use its name
+                    element_src.name().to_string() + "." + &src_pad_s.name().to_string()
                 } else {
-                    CStr::from_ptr(ffi::gst_object_get_name(
-                        src_pad as *mut gst::ffi::GstObject,
-                    ))
-                    .to_str()
-                    .unwrap_or("unknown_src_pad")
-                    .to_string()
+                    // Otherwise, just use the pad name
+                    src_pad_s.name().to_string()
                 }
             } else {
                 "unknown_src_pad".into()

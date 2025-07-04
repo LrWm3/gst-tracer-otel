@@ -4,23 +4,48 @@ A GStreamer `Tracer` plugin that measures per-element pad buffer processing late
 
 A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus compatibility.
 
-## Building
+## Setup
 
 ### Prerequisites
 
-- Rust toolchain (1.60+)
-- GStreamer 1.0 development headers
+- GStreamer 1.0 libraries and development headers
 - GLib development headers
+- Rust toolchain (1.60+)
 - C compiler and `pkg-config`
+- `just` task runner
+
+### Setup options
+
+#### Using the `.setup.sh` script
+
+Run the provided setup script to install dependencies and set up the environment:
 
 ```bash
-# Build in debug mode
-cargo build
+./.devcontainer/setup.sh
+```
 
-# Build in release mode
-cargo build --release
-# The plugin library is generated at:
-# target/release/libgsttelemetytracer.so
+This will install the necessary GStreamer and GLib development packages, Rust toolchain, just and other dependencies.
+
+However, it is only tested on Ubuntu 24.04, so you may need to adapt it for your system.
+
+#### Using `just`
+
+Install [just](https://github.com/casey/just) task runner, and then run the following command to set up the project:
+
+```bash
+just setup
+```
+
+#### Using DevContainer
+
+Alternatively, you can use the provided DevContainer setup. This requires Docker and VSCode with the Remote - Containers extension.
+
+## Building
+
+```bash
+just build
+# or
+cargo build
 ```
 
 ## Installation
@@ -90,6 +115,8 @@ gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink
 
 ## Collecting Metrics via the `request-metrics` Signal
 
+> Requires building against GStreamer 1.18 or later.
+
 Alternatively, you can pull metrics on demand within your application using the `request-metrics` signal. This allows
 for dynamic retrieval of metrics without needing an HTTP server & can be used to merge metrics into upstream
 Prometheus exporters.
@@ -115,64 +142,19 @@ if let Some(tracer) = gst::Tracer::get_by_name("prom-latency") {
 }
 ```
 
-## Hotloop Test
+## Testing
 
-To test the performance of the tracer, you can run a hotloop test. This will create a GStreamer pipeline that continuously processes buffers and measures the latency.
-
-```bash
-cargo run --profile release-with-debug
-
-# run with no tracer to baseline
-
-gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:01.478263862
-
-# run gstlatency to get a sense of the overhead for the original implementation
-export GST_TRACERS='latency(flags=element)'
-export GST_DEBUG=GST_TRACER:5
-export GST_PLUGIN_PATH=target/release-with-debug/
-# Execution ended after 0:00:05.406809197
-
-cargo build --features noop
-export GST_DEBUG=GST_TRACER:5,prom-latency:5
-export GST_PLUGIN_PATH=target/release-with-debug/
-export GST_TRACERS='noop-latency(flags=element)'
-gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:02.616296002
-
-export GST_TRACERS='prom-latency(flags=element)'
-export GST_DEBUG=GST_TRACER:5,prom-latency:5
-export GST_PLUGIN_PATH=target/release-with-debug/
-export GST_PROMETHEUS_TRACER_PORT=9092
-gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
-# Execution ended after 0:00:03.569169298
-
-# original implementation of this tracer
-# Execution ended after 0:00:12.357704400
-
-# numbers for gst-launch-1.0 videotestsrc num-buffers=2000 ! fakesink
-
-##
-
-# no tracing - Execution ended after 0:00:01.060361540
-# gstlatency - Execution ended after 0:00:01.092149844
-# prom-latency - Execution ended after 0:00:01.018266705
-
-```
-
-with perf
+Run the tests using `just` or `cargo`:
 
 ```bash
-sudo sysctl -w kernel.perf_event_paranoid=1
-
-cargo run --profile release-with-debug --bin perf-test
-
-perf record -- gst-launch-1.0 fakesrc num-buffers=1000000 ! fakesink
+just test
+# or
+cargo test
 ```
 
 ## Future work
 
-Would like to switch to otel from prometheus.
+Would like to support otel in addition to prometheus.
 
 ## License
 

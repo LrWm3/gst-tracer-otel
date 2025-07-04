@@ -10,16 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # ────────────────────────────────────────────────
-      # ❶ Check out repo
+      # Check out repo
       # ────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
       # ────────────────────────────────────────────────
-      # ❷ Rust toolchain & GStreamer + gdb
+      # Rust toolchain & GStreamer + gdb
       # ────────────────────────────────────────────────
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install latest stable
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - uses: extractions/setup-just@v3
+        with:
+          just-version: 1.40.0
       # ────────────────────────────────────────────────
-      # 📦 Cache Cargo registry + build artefacts
+      # Cache Cargo registry + build artefacts
       # ────────────────────────────────────────────────
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -39,22 +46,28 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            gdb \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools \
-            gstreamer1.0-plugins-base
+          just setup
 
       # ────────────────────────────────────────────────
-      # ❸ Build plug-in (release w/ debuginfo)
+      # Build plug-in (release w/ debuginfo)
       # ────────────────────────────────────────────────
       - name: Cargo build (release)
-        run: cargo build --profile test
+        run: just build
 
       # ────────────────────────────────────────────────
-      # ❹ Cargo test
+      # Cargo test
       # ────────────────────────────────────────────────
       - name: Cargo test
-        run: cargo test
+        run: just test
+
+      # ────────────────────────────────────────────────
+      #  Run tests with address sanitizer to look for
+      #    memory leaks
+      # ────────────────────────────────────────────────
+      - name: Run tests with address sanitizer
+        run: |
+          just test-address-sanitizer
+        env:
+          RUST_BACKTRACE: 1
+          RUSTFLAGS: "-Z sanitizer=address"
+          LSAN_OPTIONS: "suppressions=.github/sanitizer/lsan.supp"

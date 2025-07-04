@@ -91,8 +91,8 @@ mod tests {
             );
         }
 
-        // count_count should be exactly 100000
-        // ie: gst_element_latency_count_count{.*} 100000
+        // count_count should be exactly 10000
+        // ie: gst_element_latency_count_count{.*} 10000
         //
         // Test currently fails on count_value check because metrics are not tied to a pipeline, so they all sum up together
         //   as the test-suite runs multiple times.
@@ -106,15 +106,15 @@ mod tests {
 
         let mut check_failed = true;
         for value in count_count_value.clone() {
-            // Check if the value is exactly 100000
-            if value == "100000" {
+            // Check if the value is exactly 10000
+            if value == "10000" {
                 check_failed = false;
                 break;
             }
         }
         if check_failed {
             panic!(
-                "Expected to find '{}' with value 100000 in metrics, but it was not found.\n, found: {:?}",
+                "Expected to find '{}' with value 10000 in metrics, but it was not found.\n, found: {:?}",
                 count_count_metric,
                 count_count_value
             );
@@ -225,30 +225,12 @@ mod tests {
     }
 
     fn create_pipeline(name: &str) -> gst::Pipeline {
-        let pipeline = gst::Pipeline::new();
-        let fakesrc = gst::ElementFactory::make("fakesrc")
-            .name(format!("{}-fakesrc", name).as_str())
-            .property("num-buffers", &100_000)
-            .build()
-            .expect("Failed to create fakesrc");
-        let identity = gst::ElementFactory::make("identity")
-            .name(format!("{}-identity", name).as_str())
-            .build()
-            .expect("Failed to create identity");
-        let fakesink = gst::ElementFactory::make("fakesink")
-            .name(format!("{}-fakesink", name).as_str())
-            .build()
-            .expect("Failed to create fakesink");
-
-        // Add elements to the pipeline
-        pipeline
-            .add_many(&[&fakesrc, &identity, &fakesink])
-            .expect("Failed to add elements to pipeline");
-
-        // Link the elements together
-        gst::Element::link_many(&[&fakesrc, &identity, &fakesink])
-            .expect("Failed to link elements");
-
+        let pipeline_el = gst::parse::launch("fakesrc num-buffers=10000 ! identity ! fakesink")
+            .expect("Failed to create pipeline from launch string");
+        pipeline_el.set_property("name", name);
+        let pipeline = pipeline_el
+            .downcast::<gst::Pipeline>()
+            .expect("Failed to downcast to gst::Pipeline");
         pipeline
     }
 }

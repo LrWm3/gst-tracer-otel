@@ -1,0 +1,39 @@
+{
+  "name": "Ubuntu 24.04 Rust & GStreamer Dev Container",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "remoteEnv": {
+    "DOCKER_HOST": "unix:///var/run/docker.sock"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "swellaby.rust-pack",
+        "ms-vscode.cpptools",
+        "vadimcn.vscode-lldb",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "davidanson.vscode-markdownlint",
+        "yzane.markdown-pdf",
+        "ms-azuretools.vscode-docker",
+        "hbenl.vscode-test-explorer",
+        "ms-vscode.test-adapter-converter",
+        "ms-vscode-remote.remote-containers",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "rust-analyzer.checkOnSave.command": "clippy"
+      }
+    }
+  },
+  "postCreateCommand": "rustup component add clippy rustfmt && rustup default stable"
+}
