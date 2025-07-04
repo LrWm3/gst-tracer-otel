@@ -76,7 +76,7 @@ lazy_static! {
 
 // Our Tracer subclass
 mod imp {
-    use std::{ffi::CStr, os::raw::c_void};
+    use std::os::raw::c_void;
 
     use super::*;
     use glib::translate::{IntoGlib, ToGlibPtr};
@@ -235,6 +235,19 @@ mod imp {
         Some(real_parent_obj as *mut ffi::GstElement)
     }
 
+    /// Drop function for the `gobject` quark data.
+    /// This is called when the `gobject` quark data is removed.
+    /// It safely converts the pointer back to a Box and drops it.
+    /// This is necessary to avoid memory leaks.
+    /// Note that this function is unsafe because it assumes
+    /// the pointer is valid and points to a `Box<QD>`.
+    /// It is the caller's responsibility to ensure this is the case.
+    unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+        debug_assert!(!ptr.is_null());
+        let value: Box<QD> = Box::from_raw(ptr as *mut QD);
+        drop(value)
+    }
+
     unsafe fn do_send_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
         if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
             if let Some(parent) = get_real_pad_parent_ffi(pad) {
@@ -244,11 +257,8 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
-                        unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
-                            debug_assert!(!ptr.is_null());
-                            let value: Box<u64> = Box::from_raw(ptr as *mut u64);
-                            drop(value)
-                        }
+                        // This is only called if we overwrite the quark with a new value,
+                        // once we fetch the value
 
                         let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
                         // Store the timestamp on the pad for later
@@ -273,12 +283,17 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
+                        // Steal the qdata; this means drop value will not be called
+                        // and we can safely convert the pointer to a Box.
                         let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                             pad as *mut gobject_sys::GObject,
                             (*LATENCY_QUARK).into_glib(),
                         ) as *const u64;
                         if !src_ts.is_null() {
                             log_latency_ffi(*src_ts, pad, ts, parent);
+
+                            // Manually drop the value to avoid memory leaks
+                            drop_value::<u64>(src_ts as *mut c_void);
                         }
                     }
                 }
@@ -301,60 +316,39 @@ mod imp {
 
         // Insert if absent, then get a reference
         let metrics = METRIC_CACHE.entry(key).or_insert_with(|| {
+            let sink_pad_s = gst::Pad::from_glib_ptr_borrow(&sink_pad);
+            // Just get the safe src_pad reference
+            let src_pad_s = gst::Pad::from_glib_ptr_borrow(&src_pad);
             let element_latency = ffi::gst_pad_get_parent_element(sink_pad);
+
+            let sink_name = sink_pad_s.name().to_string();
             let element_latency_name = if !element_latency.is_null() {
+                let element_latency_s = gst::Element::from_glib_ptr_borrow(&element_latency);
                 // If we have a parent element, use its name
-                CStr::from_ptr(ffi::gst_object_get_name(
-                    element_latency as *mut gst::ffi::GstObject,
-                ))
-                .to_str()
-                .unwrap_or("unknown_element")
-                .to_string()
+                element_latency_s.name().to_string()
             } else {
                 // Otherwise, use the pad name directly
-                CStr::from_ptr(ffi::gst_object_get_name(
-                    sink_pad as *mut gst::ffi::GstObject,
-                ))
-                .to_str()
-                .unwrap_or("unknown_pad")
-                .to_string()
+                sink_name.clone()
             };
-
-            // format as  "element_name.sink_pad_name, if we have a parent, otherwise just "pad_name"
-            let sink_name = CStr::from_ptr(ffi::gst_object_get_name(
-                sink_pad as *mut gst::ffi::GstObject,
-            ));
 
             // back to string for now
             let sink_pad_name = if !element_latency.is_null() {
-                element_latency_name.clone()
-                    + "."
-                    + sink_name.to_str().unwrap_or("unknown_sink_pad")
+                // el.name + "." + sink_pad.name()
+                element_latency_name.clone() + "." + &sink_name
             } else {
-                sink_name.to_str().unwrap_or("unknown_sink_pad").to_string()
+                sink_name.clone()
             };
 
             // do the same for the source pad
             let src_pad_name = if !src_pad.is_null() {
                 let parent = ffi::gst_pad_get_parent_element(src_pad);
                 if !parent.is_null() {
-                    CStr::from_ptr(ffi::gst_object_get_name(parent as *mut gst::ffi::GstObject))
-                        .to_str()
-                        .unwrap_or("unknown_src_pad")
-                        .to_string()
-                        + "."
-                        + CStr::from_ptr(ffi::gst_object_get_name(
-                            src_pad as *mut gst::ffi::GstObject,
-                        ))
-                        .to_str()
-                        .unwrap_or("unknown_src_pad")
+                    let element_src = gst::Element::from_glib_ptr_borrow(&parent);
+                    // If we have a parent element, use its name
+                    element_src.name().to_string() + "." + &src_pad_s.name().to_string()
                 } else {
-                    CStr::from_ptr(ffi::gst_object_get_name(
-                        src_pad as *mut gst::ffi::GstObject,
-                    ))
-                    .to_str()
-                    .unwrap_or("unknown_src_pad")
-                    .to_string()
+                    // Otherwise, just use the pad name
+                    src_pad_s.name().to_string()
                 }
             } else {
                 "unknown_src_pad".into()
