@@ -4,13 +4,14 @@
     "dockerfile": "Dockerfile",
     "context": ".."
   },
-  "remoteUser": "vscode",
+  "remoteUser": "ubuntu",
   "mounts": [
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
   ],
   "remoteEnv": {
     "DOCKER_HOST": "unix:///var/run/docker.sock"
   },
+  "runArgs": ["--privileged", "--add-host=host.docker.internal:host-gateway"],
   "customizations": {
     "vscode": {
       "extensions": [
@@ -34,6 +35,5 @@
         "rust-analyzer.checkOnSave.command": "clippy"
       }
     }
-  },
-  "postCreateCommand": "rustup component add clippy rustfmt && rustup default stable"
+  }
 }

@@ -5,26 +5,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Use bash as default shell
 SHELL ["/bin/bash", "-lc"]
 
-# Create vscode user (UID 1000) and set as default
-ARG USERNAME=vscode
+ARG USERNAME=ubuntu
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-RUN groupadd --gid $USER_GID $USERNAME \
-  && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-  && chown -R $USERNAME:$USERNAME /home/$USERNAME
+RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
+
+# Add user to the docker group
+RUN usermod -aG docker $USERNAME
+
+# Install dependencies which require root privileges
+COPY .devcontainer/setup-root.sh /tmp/setup-root.sh
+RUN /tmp/setup-root.sh
 
 USER $USERNAME
 WORKDIR /home/$USERNAME
+ENV HOME=/home/$USERNAME
+ENV USER=$USERNAME
 
-RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/* \
-  && usermod -aG docker $USERNAME
-
-# Install GStreamer dependencies
-COPY .devcontainer/setup.sh /tmp/setup.sh
-
-RUN chmod +x /tmp/setup.sh \
-  && /tmp/setup.sh \
-  && rm /tmp/setup.sh
+# Install Rust and other user-level dependencies
+COPY .devcontainer/setup-user.sh /tmp/setup-user.sh
+RUN /tmp/setup-user.sh
 
 ENV PATH="/home/$USERNAME/.cargo/bin:$PATH"
