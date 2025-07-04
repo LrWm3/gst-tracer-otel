@@ -37,7 +37,7 @@ gst::plugin_define!(
     "GStreamer telemetry latency tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
-    "MPL-2.0",
+    "LGPL",
     "gst_telemetry_latency_tracer",
     "gst_telemetry_latency_tracer",
     "https://example.com"

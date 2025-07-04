@@ -177,7 +177,3 @@ Would like to switch to otel from prometheus.
 ## License
 
 This library is distributed under the GNU Library General Public License (LGPL) version 2 or later. See the `LICENSE` file for full details.
-
-```
-
-```
