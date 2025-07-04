@@ -235,6 +235,19 @@ mod imp {
         Some(real_parent_obj as *mut ffi::GstElement)
     }
 
+    /// Drop function for the `gobject` quark data.
+    /// This is called when the `gobject` quark data is removed.
+    /// It safely converts the pointer back to a Box and drops it.
+    /// This is necessary to avoid memory leaks.
+    /// Note that this function is unsafe because it assumes
+    /// the pointer is valid and points to a `Box<QD>`.
+    /// It is the caller's responsibility to ensure this is the case.
+    unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+        debug_assert!(!ptr.is_null());
+        let value: Box<QD> = Box::from_raw(ptr as *mut QD);
+        drop(value)
+    }
+
     unsafe fn do_send_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
         if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
             if let Some(parent) = get_real_pad_parent_ffi(pad) {
@@ -244,11 +257,8 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
-                        unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
-                            debug_assert!(!ptr.is_null());
-                            let value: Box<u64> = Box::from_raw(ptr as *mut u64);
-                            drop(value)
-                        }
+                        // This is only called if we overwrite the quark with a new value,
+                        // once we fetch the value
 
                         let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
                         // Store the timestamp on the pad for later
@@ -273,12 +283,17 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
+                        // Steal the qdata; this means drop value will not be called
+                        // and we can safely convert the pointer to a Box.
                         let src_ts = glib::gobject_ffi::g_object_steal_qdata(
                             pad as *mut gobject_sys::GObject,
                             (*LATENCY_QUARK).into_glib(),
                         ) as *const u64;
                         if !src_ts.is_null() {
                             log_latency_ffi(*src_ts, pad, ts, parent);
+
+                            // Manually drop the value to avoid memory leaks
+                            drop_value::<u64>(src_ts as *mut c_void);
                         }
                     }
                 }
