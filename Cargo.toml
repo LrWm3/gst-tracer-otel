@@ -8,9 +8,9 @@ name = "gsttelemetytracer"
 crate-type  = ["cdylib", "rlib"]
 
 [profile.test]
-inherits = "release"
 debug = true
 strip = false
+split-debuginfo = "off"
 
 [dependencies]
 # ── GStreamer stack ───────────────────────────────────────────────
