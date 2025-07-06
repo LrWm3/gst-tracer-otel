@@ -17,9 +17,11 @@ else
         libgstreamer-plugins-base1.0-dev \
         gstreamer1.0-tools \
         gstreamer1.0-plugins-base \
+        llvm-14 llvm-14-tools clang \
         curl \
         ca-certificates \
       && rm -rf /var/lib/apt/lists/*
+    ln -s "$(which llvm-symbolizer-14)" /usr/bin/llvm-symbolizer || true
     else
       echo "GStreamer is already installed."
     fi
