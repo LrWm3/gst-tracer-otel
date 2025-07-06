@@ -61,6 +61,11 @@ jobs:
       # ────────────────────────────────────────────────
       - name: Cargo test
         run: just test
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+          components: llvm-tools-preview
 
       # ────────────────────────────────────────────────
       #  Run tests with address sanitizer to look for
