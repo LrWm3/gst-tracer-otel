@@ -23,6 +23,7 @@ use std::thread;
 use dashmap::DashMap;
 use glib;
 use glib::subclass::prelude::*;
+use glib::translate::IntoGlib;
 use glib::Quark;
 use gobject_sys::GCallback;
 use gst::ffi;
@@ -50,7 +51,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 // A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
 static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
-static LATENCY_QUARK: Lazy<Quark> = Lazy::new(|| Quark::from_str("latency_probe.ts"));
+static LATENCY_QUARK: Lazy<u32> = Lazy::new(|| Quark::from_str("latency_probe.ts").into_glib());
 
 // Define Prometheus metrics, all in nanoseconds
 lazy_static! {
@@ -79,7 +80,7 @@ mod imp {
     use std::os::raw::c_void;
 
     use super::*;
-    use glib::translate::{IntoGlib, ToGlibPtr};
+    use glib::translate::ToGlibPtr;
 
     #[derive(Default)]
     pub struct PromLatencyTracer;
@@ -247,7 +248,6 @@ mod imp {
         let value: Box<QD> = Box::from_raw(ptr as *mut QD);
         drop(value)
     }
-
     unsafe fn do_send_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
         if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
             if let Some(parent) = get_real_pad_parent_ffi(pad) {
@@ -257,17 +257,24 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
-                        // This is only called if we overwrite the quark with a new value,
-                        // once we fetch the value
-
-                        let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
-                        // Store the timestamp on the pad for later
-                        glib::gobject_ffi::g_object_set_qdata_full(
+                        // To avoid many tiny allocations, if quark is present, we overwrite it
+                        let existing = glib::gobject_ffi::g_object_get_qdata(
                             pad as *mut gobject_sys::GObject,
-                            (*LATENCY_QUARK).into_glib(),
-                            ptr as *mut std::ffi::c_void,
-                            Some(drop_value::<u64>),
-                        );
+                            *LATENCY_QUARK,
+                        ) as *mut u64;
+                        if !existing.is_null() {
+                            // Overwrite in place:
+                            *existing = ts;
+                        } else {
+                            // First time: allocate & install
+                            let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
+                            glib::gobject_ffi::g_object_set_qdata_full(
+                                pad as *mut gobject_sys::GObject,
+                                *LATENCY_QUARK,
+                                ptr,
+                                Some(drop_value::<u64>),
+                            );
+                        }
                     }
                 }
             }
@@ -283,17 +290,16 @@ mod imp {
                         ffi::gst_bin_get_type(),
                     ) == glib::ffi::GFALSE
                     {
-                        // Steal the qdata; this means drop value will not be called
+                        // Get the the qdata; this means drop_value will not be called
                         // and we can safely convert the pointer to a Box.
-                        let src_ts = glib::gobject_ffi::g_object_steal_qdata(
+                        let src_ts = glib::gobject_ffi::g_object_get_qdata(
                             pad as *mut gobject_sys::GObject,
-                            (*LATENCY_QUARK).into_glib(),
-                        ) as *const u64;
-                        if !src_ts.is_null() {
+                            *LATENCY_QUARK,
+                        ) as *mut u64;
+                        if !src_ts.is_null() && *src_ts != 0 {
                             log_latency_ffi(*src_ts, pad, ts, parent);
-
-                            // Manually drop the value to avoid memory leaks
-                            drop_value::<u64>(src_ts as *mut c_void);
+                            // Reset the value to avoid reusing it
+                            *src_ts = 0;
                         }
                     }
                 }

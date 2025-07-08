@@ -10,6 +10,7 @@ crate-type  = ["cdylib", "rlib"]
 [profile.test]
 inherits = "release"
 debug = true
+strip = false
 
 [dependencies]
 # ── GStreamer stack ───────────────────────────────────────────────
