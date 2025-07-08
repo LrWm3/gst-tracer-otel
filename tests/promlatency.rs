@@ -122,6 +122,130 @@ mod tests {
     }
 
     #[test]
+    fn given_pipeline_with_known_latency_when_run_then_latency_metrics_match() {
+        // Set environment variables for the tracer
+        env::set_var(
+            "GST_TRACERS",
+            "prom-latency(filters='GstBuffer',flags=element)",
+        );
+        env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:6");
+        env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
+        env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
+
+        // Initialize GStreamer
+        gst::init().expect("Failed to initialize GStreamer");
+
+        // Verify that our element is registered:
+        assert!(
+            gst::TracerFactory::factories()
+                .iter()
+                .find(|f| f.name() == "prom-latency")
+                .is_some(),
+            "Expected to find the `prom-latency` element after registration"
+        );
+
+        // Sleep time 100 us
+        // Identity itself adds about 9
+        let pipeline_el = gst::parse::launch(
+            "fakesrc num-buffers=100 ! identity name=lm0 sleep-time=10000 ! identity name=lm1 sleep-time=1 ! fakesink",
+        )
+        .expect("Failed to create pipeline from launch string");
+        pipeline_el.set_property("name", "latency_metrics_match");
+        let pipeline = pipeline_el
+            .downcast::<gst::Pipeline>()
+            .expect("Failed to downcast to gst::Pipeline");
+
+        let bus = pipeline.bus().unwrap();
+
+        // Set the pipeline to the Playing state
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("Unable to set the pipeline to Playing");
+
+        // Wait for EOS message
+        for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(..) => break,
+                MessageView::Error(err) => {
+                    println!(
+                        "Error from {:?}: {} ({:?})",
+                        err.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    break;
+                }
+                _ => (),
+            }
+        }
+        // Stop the pipeline
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        // Get the metrics by performing an http request to the Prometheus endpoint
+        let prometheus_port =
+            env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
+        let prometheus_url = format!("http://localhost:{}", prometheus_port);
+        let response = reqwest::blocking::get(&prometheus_url)
+            .expect("Failed to fetch metrics from Prometheus endpoint");
+        let metrics = response.text().expect("Failed to read response text");
+
+        // Print the metrics for debugging
+        println!("Metrics:\n{}", metrics);
+
+        // Validate that the metrics contain expected values
+        let metric_asserts = vec![
+            "gst_element_latency_last_gauge",
+            "gst_element_latency_sum_count",
+            "gst_element_latency_count_count",
+        ];
+        for metric in metric_asserts {
+            assert!(
+                metrics.contains(metric),
+                "Expected to find '{}' in metrics",
+                metric
+            );
+        }
+
+        fn get_metric_value(metrics: &str, metric_name: &str) -> Option<f64> {
+            metrics
+                .lines()
+                .find(|line| line.contains(metric_name))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse::<f64>().ok())
+        }
+        // Check that the latency is around 100 us
+        let latency_value =
+            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm0\"")
+                .expect("Expected to find latency metric for lm0");
+        let latency_value_no_sleep =
+            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm1\"")
+                .expect("Expected to find latency metric for lm1");
+
+        let check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 1e5;
+
+        assert!(
+            !check_failed,
+            "Latency is not within expected range, found: {:?}",
+            latency_value
+        );
+
+        // Check that the sum is around 1000 us
+        let sum_value = get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm0\"")
+            .expect("Expected to find sum metric for lm0");
+        let sum_value_no_sleep =
+            get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm1\"")
+                .expect("Expected to find sum metric for lm1");
+
+        let check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 1e7;
+        assert!(
+            !check_failed,
+            "Sum is not within expected range, found: {:?}",
+            sum_value
+        );
+    }
+
+    #[test]
     fn bench_no_trace_plugin() {
         // run bench 5 times and capture durations in a list
         let durations: Vec<_> = (0..5).map(|_| run_bench("latency")).collect();
