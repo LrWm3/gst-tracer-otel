@@ -49,7 +49,6 @@ jobs:
           sudo .devcontainer/setup-root.sh
           .devcontainer/setup-user.sh
 
-
       # ────────────────────────────────────────────────
       # Build plug-in (release w/ debuginfo)
       # ────────────────────────────────────────────────
@@ -73,4 +72,4 @@ jobs:
       # ────────────────────────────────────────────────
       - name: Run tests with address sanitizer
         run: |
-          just test-address-sanitizer
+          just build && just test-address-sanitizer
