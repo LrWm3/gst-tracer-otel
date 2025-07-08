@@ -68,5 +68,7 @@ mod tests {
         }
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
+
+        assert!(false)
     }
 }

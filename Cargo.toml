@@ -8,7 +8,7 @@ name = "gsttelemetytracer"
 crate-type  = ["cdylib", "rlib"]
 
 [profile.test]
-inherits = "release"
+inherits = "dev"
 debug = true
 strip = false
 
