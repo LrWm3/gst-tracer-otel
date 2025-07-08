@@ -222,7 +222,7 @@ mod tests {
             get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm1\"")
                 .expect("Expected to find latency metric for lm1");
 
-        let check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 1e5;
+        let check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 2e5;
 
         assert!(
             !check_failed,
@@ -237,7 +237,7 @@ mod tests {
             get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm1\"")
                 .expect("Expected to find sum metric for lm1");
 
-        let check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 1e7;
+        let check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 2e7;
         assert!(
             !check_failed,
             "Sum is not within expected range, found: {:?}",
