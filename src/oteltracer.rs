@@ -72,7 +72,7 @@ mod imp {
     #[glib::object_subclass]
     impl ObjectSubclass for OtelTracerImpl {
         const NAME: &'static str = "otel-tracer";
-        type Type = super::TelemetryTracer;
+        type Type = oteltracer::TelemetryTracer;
         type ParentType = gst::Tracer;
     }
 
@@ -153,6 +153,12 @@ mod imp {
     impl GstObjectImpl for OtelTracerImpl {}
     impl TracerImpl for OtelTracerImpl {}
 
+    unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
+        debug_assert!(!ptr.is_null());
+        let value: Box<QD> = Box::from_raw(ptr as *mut QD);
+        drop(value)
+    }
+
     fn pad_push_pre(ts: u64, pad: &gstreamer::Pad, buffer: &gstreamer::Buffer) {
         // To start with simple logic:
         // First, we check if conditions are met to start a span.
@@ -175,7 +181,7 @@ mod imp {
         //
         // Finally, we box & store the span in the qdata of the sink pad, so it can be retrieved later
         // when the buffer is pushed to the sink pad, have metadata added (ts_end, duration)
-        // gst::debug!(
+        // gst::trace!(
         //     CAT,
         //     "pad_push_pre called for pad {} with buffer {:?}",
         //     pad.name(),
@@ -200,12 +206,9 @@ mod imp {
                 existing_span.is_null()
             };
 
-            // TODO - separate change - create child span of this span if present
-
             // If no existing span, create a new one
             if has_no_existing_span {
-                // TODO - do i get it via 'init_otlp' or is there a more direct way?
-                gst::debug!(
+                gst::trace!(
                     CAT,
                     "Starting new span for pad {} with peer {}",
                     pad.name(),
@@ -235,7 +238,7 @@ mod imp {
                         .map(|p| p.name().to_string())
                         .unwrap_or("unknown".to_string());
 
-                    gst::debug!(
+                    gst::trace!(
                         CAT,
                         "Span is recording for element {} pad {}",
                         src_pad_element_v,
@@ -257,10 +260,11 @@ mod imp {
 
                     // Store the span in the pad's qdata
                     unsafe {
-                        glib::gobject_ffi::g_object_set_qdata(
+                        glib::gobject_ffi::g_object_set_qdata_full(
                             pad_ffi as *mut gobject_sys::GObject,
                             Quark::from_str("otel-span").into_glib(),
                             Box::into_raw(boxed_span) as *mut c_void,
+                            Some(drop_value::<BoxedSpan>),
                         );
                     }
                 }
@@ -283,7 +287,7 @@ mod imp {
         //
         // Then we remove the span from the qdata of the pad, so it can be garbage collected.
 
-        // gst::debug!(
+        // gst::trace!(
         //     CAT,
         //     "pad_push_post called for pad {}, element {:?}",
         //     pad.name(),
@@ -300,39 +304,39 @@ mod imp {
                 pad_ffi as *mut gobject_sys::GObject,
                 Quark::from_str("otel-span").into_glib(),
             )
-        };
-        gst::debug!(CAT, "Ending span for pad {} at ts {}", pad.name(), ts);
+        } as *mut BoxedSpan;
+        gst::trace!(CAT, "Ending span for pad {} at ts {}", pad.name(), ts);
 
-        if span_ptr.is_null() {
-            return;
-        }
+        // If we have a span pointer, we can end the span
+        // and remove it from the pad's qdata.
+        if !span_ptr.is_null() {
+            unsafe {
+                // Fixme: only end the span if there are no source pads with peers with spans in progress.
 
-        {
-            let mut span: Box<BoxedSpan> = unsafe { Box::from_raw(span_ptr as *mut BoxedSpan) };
-
-            if span.is_recording() {
-                // Set the end time
-                span.set_attributes(vec![KeyValue::new("ts_end", ts as i64)]);
-                span.end();
-                // Remove the span from the pad's qdata
-                // unsafe {
-                //     glib::gobject_ffi::g_object_set_qdata(
-                //         pad_ffi as *mut gobject_sys::GObject,
-                //         Quark::from_str("otel-span").into_glib(),
-                //         std::ptr::null_mut(),
-                //     );
-                // }
+                if (*span_ptr).is_recording() {
+                    // Set the end time
+                    (*span_ptr).set_attributes(vec![KeyValue::new("ts_end", ts as i64)]);
+                    (*span_ptr).end();
+                    // Remove the span from the pad's qdata
+                    // unsafe {
+                    //     glib::gobject_ffi::g_object_set_qdata(
+                    //         pad_ffi as *mut gobject_sys::GObject,
+                    //         Quark::from_str("otel-span").into_glib(),
+                    //         std::ptr::null_mut(),
+                    //     );
+                    // }
+                }
+                // Log the span end
+                gst::trace!(CAT, "Span ended for pad {}: {:?}", pad.name(), (*span_ptr));
             }
-            // Log the span end
-            gst::debug!(CAT, "Span ended for pad {}: {:?}", pad.name(), span);
-        }
-        unsafe {
-            // Remove the span.
-            glib::gobject_ffi::g_object_set_qdata(
-                pad_ffi as *mut gobject_sys::GObject,
-                Quark::from_str("otel-span").into_glib(),
-                std::ptr::null_mut(),
-            );
+            unsafe {
+                // Remove the span.
+                glib::gobject_ffi::g_object_set_qdata(
+                    pad_ffi as *mut gobject_sys::GObject,
+                    Quark::from_str("otel-span").into_glib(),
+                    std::ptr::null_mut(),
+                );
+            }
         }
     }
 }

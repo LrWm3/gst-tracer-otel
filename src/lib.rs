@@ -19,7 +19,7 @@ use glib;
 use gstreamer as gst;
 #[cfg(feature = "noop")]
 mod nooplatency;
-mod otel;
+mod oteltracer;
 mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
@@ -29,7 +29,7 @@ pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         nooplatency::register(plugin)?;
     }
     {
-        otel::register(plugin)?;
+        oteltracer::register(plugin)?;
     }
     promlatency::register(plugin)?;
     Ok(())
