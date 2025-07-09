@@ -1,5 +1,3 @@
-// tests/bench_prom_latency.rs
-
 #[cfg(test)]
 mod tests {
     use gst::prelude::*;

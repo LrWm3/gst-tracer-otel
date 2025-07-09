@@ -1,5 +1,3 @@
-// tests/otel-tracer.rs
-
 #[cfg(test)]
 mod tests {
     use gst::prelude::*;

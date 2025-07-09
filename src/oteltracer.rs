@@ -60,10 +60,9 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// GStreamer Tracer subclass
 mod imp {
+    use super::*;
     use glib::translate::{FromGlibPtrBorrow, IntoGlib, ToGlibPtr};
     use gobject_sys::GCallback;
-
-    use super::*;
     use std::os::raw::c_void;
 
     #[derive(Default)]
@@ -72,7 +71,7 @@ mod imp {
     #[glib::object_subclass]
     impl ObjectSubclass for OtelTracerImpl {
         const NAME: &'static str = "otel-tracer";
-        type Type = oteltracer::TelemetryTracer;
+        type Type = TelemetryTracer;
         type ParentType = gst::Tracer;
     }
 
