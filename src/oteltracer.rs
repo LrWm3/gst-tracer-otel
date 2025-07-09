@@ -228,8 +228,9 @@ mod imp {
             if has_no_existing_span {
                 gst::trace!(
                     CAT,
-                    "Starting new span for pad {} with peer {}",
+                    "Starting new span for pad {} {} with peer {}",
                     pad.name(),
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     peer.name()
                 );
                 let tracer = init_otlp();
@@ -247,35 +248,32 @@ mod imp {
                 //
                 // TODO - this is the 'cross-threads' span propagation logic. too much to test at once, revisit later.
                 //
-                // if !opentelemetry::Context::current().has_active_span() {
-                //     if let Some(src_pad) = pad.parent() {
-                //         // Get the src pad's qdata
-                //         let src_pad_ffi: *mut gstreamer_sys::GstObject = src_pad.to_glib_none().0;
-                //         let ctx_ptr = unsafe {
-                //             glib::gobject_ffi::g_object_get_qdata(
-                //                 src_pad_ffi as *mut gobject_sys::GObject,
-                //                 *QUARK_SRC_SPAN_REF,
-                //             )
-                //         } as *mut SpanContext;
+                if !opentelemetry::Context::current().has_active_span() {
+                    // Get the src pad's qdata
+                    let src_pad_ffi: *mut gstreamer_sys::GstPad = pad.to_glib_none().0;
+                    let ctx_ptr = unsafe {
+                        glib::gobject_ffi::g_object_get_qdata(
+                            src_pad_ffi as *mut gobject_sys::GObject,
+                            *QUARK_SRC_SPAN_REF,
+                        )
+                    } as *mut SpanContext;
 
-                //         if !ctx_ptr.is_null() {
-                //             // If we have a span, use it as the parent context
-                //             gst::trace!(
-                //                 CAT,
-                //                 "Using span from src pad {} as parent context",
-                //                 src_pad.name()
-                //             );
-                //             let ctx = unsafe { (*ctx_ptr).clone() };
-                //             gst::trace!(CAT, "Span is recording, using it as parent context");
-                //             // Use the span's context
-                //             opentelemetry::Context::current().with_remote_span_context(ctx);
-                //         } else {
-                //             gst::trace!(CAT, "No span found on src pad {}", src_pad.name());
-                //         }
-                //     } else {
-                //         gst::trace!(CAT, "No parent src pad found for pad {}", pad.name());
-                //     }
-                // }
+                    if !ctx_ptr.is_null() {
+                        // If we have a span, use it as the parent context
+                        gst::trace!(
+                            CAT,
+                            "Using span from src pad {} {} as parent context",
+                            pad.name(),
+                            pad.parent().map(|p| p.name()).unwrap_or("unknown".into())
+                        );
+                        let ctx = unsafe { (*ctx_ptr).clone() };
+                        gst::trace!(CAT, "Span is recording, using it as parent context");
+                        // Use the span's context
+                        opentelemetry::Context::current().with_remote_span_context(ctx);
+                    } else {
+                        gst::trace!(CAT, "No span found on src pad {}", pad.name());
+                    }
+                }
 
                 let mut span = tracer.start(span_name);
                 if span.is_recording() {
@@ -297,15 +295,24 @@ mod imp {
                         src_pad_element_v,
                         sink_pad_element_v
                     );
+                    let current = std::thread::current();
+                    let thread_name = current
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "unnamed".into());
+                    let thread_id = format!("{:?}", current.id());
+
                     span.set_attributes(vec![
-                        KeyValue::new("src_pad_element", src_pad_element_v),
-                        KeyValue::new("src_pad_name", src_pad_name_v),
-                        KeyValue::new("ts_start", ts as i64),
+                        KeyValue::new("src_pad.element", src_pad_element_v),
+                        KeyValue::new("src_pad.name", src_pad_name_v),
+                        KeyValue::new("ts.start", ts as i64),
                         // i64 is not ideal but its all KeyValue supports
-                        KeyValue::new("buffer_id", buffer.as_ptr() as i64),
-                        KeyValue::new("buffer_size", buffer.size() as i64),
-                        KeyValue::new("sink_pad_element", sink_pad_element_v),
-                        KeyValue::new("sink_pad_name", peer.name().to_string()),
+                        KeyValue::new("buffer.id", buffer.as_ptr() as i64),
+                        KeyValue::new("buffer.size", buffer.size() as i64),
+                        KeyValue::new("sink_pad.element", sink_pad_element_v),
+                        KeyValue::new("sink_pad.name", peer.name().to_string()),
+                        KeyValue::new("src_pad.thread.name", thread_name),
+                        KeyValue::new("src_pad.thread.id", thread_id),
                     ]);
 
                     // Box the span and store it in the pad's qdata
@@ -406,12 +413,44 @@ mod imp {
                 *QUARK_SINK_SPAN,
             )
         } as *mut GstSpanSink;
-        gst::trace!(CAT, "Ending span for pad {} at ts {}", peer_pad.name(), ts);
+        gst::trace!(
+            CAT,
+            "Entering ending span for pad {} {} at ts {}",
+            peer_pad.name(),
+            peer_pad
+                .parent()
+                .map(|p| p.name())
+                .unwrap_or("unknown".into()),
+            ts
+        );
 
         // If we have a span pointer, we can end the span
         // and remove it from the pad's qdata.
         if !span_ptr.is_null() {
             // TODO - this is a really big unsafe block.
+            if !opentelemetry::Context::current().has_active_span() {
+                // If we have an active span, we can end it
+                gst::trace!(
+                    CAT,
+                    "Attaching span from pad {}, {}, to current context",
+                    peer_pad.name(),
+                    peer_pad
+                        .parent()
+                        .map(|p| p.name())
+                        .unwrap_or("unknown".into())
+                );
+                // Attach the span to the current context
+
+                let src_pad_ffi: *mut gstreamer_sys::GstPad = self_pad.to_glib_none().0;
+                unsafe {
+                    let ctx_ptr = glib::gobject_ffi::g_object_get_qdata(
+                        src_pad_ffi as *mut gobject_sys::GObject,
+                        *QUARK_SRC_SPAN_REF,
+                    ) as *mut SpanContext;
+                    opentelemetry::Context::current().with_remote_span_context((*ctx_ptr).clone());
+                }
+            }
+
             unsafe {
                 if (*span_ptr).span.is_recording() {
                     // To check this we check if the source pads of this pads' element
@@ -436,15 +475,31 @@ mod imp {
                             }))
                         })
                         // By default we assume there are downstream active spans
-                        .unwrap_or(false);
+                        .unwrap_or(true);
 
                     if has_no_downstream_active_spans {
-                        gst::trace!(CAT, "Ending span for pad {}", peer_pad.name());
+                        gst::trace!(
+                            CAT,
+                            "Ending span for pad {}, {}",
+                            peer_pad.name(),
+                            peer_pad
+                                .parent()
+                                .map(|p| p.name())
+                                .unwrap_or("unknown".into())
+                        );
 
+                        let current = std::thread::current();
+                        let thread_name = current
+                            .name()
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "unnamed".into());
+                        let thread_id = format!("{:?}", current.id());
                         // Set the end time
-                        (*span_ptr)
-                            .span
-                            .set_attributes(vec![KeyValue::new("ts_end", ts as i64)]);
+                        (*span_ptr).span.set_attributes(vec![
+                            KeyValue::new("ts.end", ts as i64),
+                            KeyValue::new("sink_pad.thread.name", thread_name),
+                            KeyValue::new("sink_pad.thread.id", thread_id),
+                        ]);
                         (*span_ptr).span.end();
 
                         // Last chance to log the span
@@ -472,9 +527,40 @@ mod imp {
                             *QUARK_SRC_SPAN_REF,
                             std::ptr::null_mut(),
                         );
+                    } else {
+                        gst::trace!(
+                            CAT,
+                            "Span for pad {}, {} is still recording, not ending",
+                            peer_pad.name(),
+                            peer_pad
+                                .parent()
+                                .map(|p| p.name())
+                                .unwrap_or("unknown".into())
+                        );
                     }
+                } else {
+                    gst::trace!(
+                        CAT,
+                        "Span for pad {}, {} is not recording, skipping end",
+                        peer_pad.name(),
+                        peer_pad
+                            .parent()
+                            .map(|p| p.name())
+                            .unwrap_or("unknown".into())
+                    );
                 }
             }
+        } else {
+            gst::trace!(
+                CAT,
+                "No span found for pad {}, {} at ts {}",
+                peer_pad.name(),
+                peer_pad
+                    .parent()
+                    .map(|p| p.name())
+                    .unwrap_or("unknown".into()),
+                ts
+            );
         }
     }
 }
