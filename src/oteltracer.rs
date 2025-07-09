@@ -359,10 +359,11 @@ mod imp {
                             // Attach the span to the src pad as a reference
                             let src_pad_ffi: *mut gstreamer_sys::GstPad = src_pad.to_glib_none().0;
                             unsafe {
-                                glib::gobject_ffi::g_object_set_qdata(
+                                glib::gobject_ffi::g_object_set_qdata_full(
                                     src_pad_ffi as *mut gobject_sys::GObject,
                                     *QUARK_SRC_SPAN_REF,
                                     Box::into_raw(Box::new(ctx_ref.clone())) as *mut c_void,
+                                    Some(drop_value::<SpanContext>),
                                 );
                             }
                         });
