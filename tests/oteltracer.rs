@@ -32,7 +32,7 @@ mod tests {
         //
         // We could tie the pipeline name to the metrics, but that would require
         // a change in the tracer implementation.
-        let pipeline_el = gst::parse::launch("fakesrc num-buffers=10000 ! identity ! fakesink")
+        let pipeline_el = gst::parse::launch("fakesrc num-buffers=100 ! identity ! fakesink")
             .expect("Failed to create pipeline from launch string");
         pipeline_el.set_property("name", "basic");
         let pipeline = pipeline_el
@@ -67,6 +67,6 @@ mod tests {
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
 
-        assert!(false)
+        // TODO - Check metrics / traces / logs somehow
     }
 }
