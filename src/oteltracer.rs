@@ -35,9 +35,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
 static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
 static QUARK_SRC_SPAN_REF: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace-ref").into_glib());
-
-static REGISTER_META: Once = Once::new();
-static mut META_INFO: *const GstMetaInfo = std::ptr::null();
+static REGISTER_META: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug)]
 struct GstSpanSink<'a> {
@@ -89,28 +87,28 @@ mod imp {
     use gobject_sys::GCallback;
     use gstreamer_sys::{gst_meta_register, GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
-    use std::os::raw::c_void;
+    use std::{ffi::c_char, os::raw::c_void, ptr};
 
     #[repr(C)]
-    pub struct GstSpanBuf {
+    pub struct GstOtelSpanBuf {
         parent: gst::ffi::GstMeta,
         // The Buf has a reference to the span
-        span: *const BoxedSpan,
+        span: *const SpanContext,
     }
 
     #[repr(C)]
     pub struct GstSpanBufParams {
-        pub span: *const BoxedSpan,
+        pub span: *const SpanContext,
     }
 
-    unsafe impl Send for GstSpanBuf {}
-    unsafe impl Sync for GstSpanBuf {}
+    unsafe impl Send for GstOtelSpanBuf {}
+    unsafe impl Sync for GstOtelSpanBuf {}
 
-    impl GstSpanBuf {
+    impl GstOtelSpanBuf {
         /// Attach a new meta with the given label to `buffer`.
         pub fn add(
             buffer: &mut gst::BufferRef,
-            span: BoxedSpan,
+            span: SpanContext,
         ) -> gst::MetaRefMut<'_, Self, gst::meta::Standalone> {
             unsafe {
                 // Prepare params for the init func
@@ -119,13 +117,16 @@ mod imp {
                     buffer.as_mut_ptr(),
                     imp::gst_span_buf_get_info(),
                     &mut *params as *mut _ as *mut _,
-                ) as *mut imp::GstSpanBuf;
+                ) as *mut imp::GstOtelSpanBuf;
+
+                // Ensure params is dropped before returning
+                drop(std::mem::ManuallyDrop::into_inner(params));
                 Self::from_mut_ptr(buffer, meta)
             }
         }
 
         /// Retrieve the stored span.
-        pub fn span(&self) -> &*const BoxedSpan {
+        pub fn span(&self) -> &*const SpanContext {
             &self.span
         }
     }
@@ -136,7 +137,7 @@ mod imp {
         _buffer: *mut GstBuffer,
     ) -> glib::ffi::gboolean {
         // Cast meta to your struct
-        let span_meta = meta as *mut GstSpanBuf;
+        let span_meta = meta as *mut GstOtelSpanBuf;
         // Cast params to your params struct
         let p = params as *mut GstSpanBufParams;
         // Copy the span pointer into the meta
@@ -162,7 +163,7 @@ mod imp {
 
         // Allocate a new instance on `dest_buffer`
         let new_meta = gst::ffi::gst_buffer_add_meta(dest_buffer, info, std::ptr::null_mut())
-            as *mut GstSpanBuf;
+            as *mut GstOtelSpanBuf;
 
         if new_meta.is_null() {
             // failed to attach
@@ -170,36 +171,45 @@ mod imp {
         }
 
         // Copy the span pointer from the source meta
-        let src = src_meta as *mut GstSpanBuf;
+        let src = src_meta as *mut GstOtelSpanBuf;
         (*new_meta).span = (*src).span;
 
         GTRUE
     }
     pub fn gst_span_buf_get_info() -> *const gst::ffi::GstMetaInfo {
+        struct MetaInfo(ptr::NonNull<gst::ffi::GstMetaInfo>);
+        unsafe impl Send for MetaInfo {}
+        unsafe impl Sync for MetaInfo {}
+
         // this closure runs exactly once, even in the face of threads
-        REGISTER_META.call_once(|| unsafe {
-            META_INFO = gst_meta_register(
-                custom_meta_api_get_type().into_glib(),
-                b"GstSpanBuf\0".as_ptr() as *const _,
-                std::mem::size_of::<GstSpanBuf>(),
-                Some(gst_spanbuf_init),
-                Some(gst_spanbuf_free),
-                Some(gst_spanbuf_transform),
-            );
+        static META_INFO: Lazy<MetaInfo> = Lazy::new(|| unsafe {
+            MetaInfo(
+                ptr::NonNull::new(gst::ffi::gst_meta_register(
+                    gst_span_buf_api_get_type().into_glib(),
+                    b"GstOtelSpanBufAPI\0".as_ptr() as *const _,
+                    std::mem::size_of::<GstOtelSpanBuf>(),
+                    Some(gst_spanbuf_init),
+                    Some(gst_spanbuf_free),
+                    Some(gst_spanbuf_transform),
+                ) as *mut gst::ffi::GstMetaInfo)
+                .expect("Failed to register meta API"),
+            )
         });
-        // SAFETY: call_once ensures we’ve initialized it
-        unsafe { META_INFO }
+        META_INFO.0.as_ptr() as *const gst::ffi::GstMetaInfo
     }
 
     // Called once per program to register the API type
-    pub fn custom_meta_api_get_type() -> glib::Type {
+    pub fn gst_span_buf_api_get_type() -> glib::Type {
         static ONCE: std::sync::OnceLock<glib::Type> = std::sync::OnceLock::new();
+        static mut TAG: [u8; 12] = [0; 12]; // mutable to allow setting the tag
         *ONCE.get_or_init(|| unsafe {
             let t = glib::Type::from_glib(gst::ffi::gst_meta_api_type_register(
-                b"GstSpanBuf\0".as_ptr() as *const _,
-                std::ptr::null_mut(),
+                b"GstOtelSpanBuf\0".as_ptr() as *const _,
+                TAG.as_mut_ptr() as *mut *const i8,
             ));
             assert_ne!(t, glib::Type::INVALID);
+            println!("t: {:?}", t);
+            println!("t.into_glib(): {:?}", t.into_glib());
             t
         })
     }
@@ -219,6 +229,12 @@ mod imp {
             self.parent_constructed();
             let binding = self.obj();
             let tracer_obj: &gst::Tracer = binding.upcast_ref();
+
+            // this registers the API type
+            // gst_span_buf_api_get_type();
+            // this registers the actual GstMetaInfo (size + init/free/transform)
+            // gst_span_buf_get_info();
+
             init_otlp();
             gst::info!(CAT, "OtelTracerImpl constructed");
 
@@ -262,8 +278,8 @@ mod imp {
                 // This function is called before a buffer is pushed to a pad.
                 // We will use it to start a span for the pad.
                 let pad = gst::Pad::from_glib_borrow(pad);
-                let buffer = gst::Buffer::from_glib_borrow(buffer);
-                pad_push_pre(ts, &pad, &buffer);
+                let mut buffer = gst::Buffer::from_glib_none(buffer);
+                pad_push_pre(ts, &pad, &mut buffer);
             }
 
             // unsafe extern "C" fn do_push_event_pre(
@@ -320,7 +336,7 @@ mod imp {
         drop(value)
     }
 
-    fn pad_push_pre(ts: u64, pad: &gstreamer::Pad, buffer: &gstreamer::Buffer) {
+    fn pad_push_pre(ts: u64, pad: &gstreamer::Pad, buffer: &mut gstreamer::Buffer) {
         // To start with simple logic:
         // First, we check if conditions are met to start a span.
         // Currently, those conditions are:
@@ -370,9 +386,6 @@ mod imp {
 
             // If no existing span, create a new one
             if has_no_existing_span {
-                // See if we have a span on the buffer
-                let buffer_span = buffer.meta::<GstSpanBuf>().map(|span| span.span.clone());
-
                 gst::trace!(
                     CAT,
                     "Starting new span for pad {} {}",
@@ -395,6 +408,24 @@ mod imp {
                 // TODO - this is the 'cross-threads' span propagation logic. too much to test at once, revisit later.
                 //
                 let ctx = if !opentelemetry::Context::current().has_active_span() {
+                    // See if we have a span on the buffer
+                    let buffer_span = buffer
+                        .meta::<GstOtelSpanBuf>()
+                        .map(|meta| meta.span().clone());
+
+                    // TODO - if we have a span in the buffer, use that, if not, check the src pad. if nothing there,
+                    //          use current context.
+
+                    if let Some(span) = buffer_span {
+                        gst::trace!(CAT, "Using span from buffer {:?} as parent context", span);
+                        // Use the span's context
+                        unsafe {
+                            // SAFETY: I am not sure if this is safe.
+                            opentelemetry::Context::current()
+                                .with_remote_span_context((*span).clone());
+                        }
+                    }
+
                     // Get the src pad's qdata
                     let src_pad_ffi: *mut gstreamer_sys::GstPad = pad.to_glib_none().0;
                     let ctx_ptr = unsafe {
@@ -404,7 +435,7 @@ mod imp {
                         )
                     } as *mut SpanContext;
 
-                    if !ctx_ptr.is_null() {
+                    if !ctx_ptr.is_null() && buffer_span.is_none() {
                         // If we have a span, use it as the parent context
                         gst::trace!(
                             CAT,
@@ -511,6 +542,19 @@ mod imp {
                             Box::into_raw(boxed_span) as *mut c_void,
                             Some(drop_value::<GstSpanSink>),
                         );
+                    }
+
+                    // Store the span in the buffers Meta, if the buffer has no span already
+                    if buffer.meta::<GstOtelSpanBuf>().is_none() {
+                        gst::trace!(
+                            CAT,
+                            "Storing span in buffer {:?} for pad {}",
+                            buffer,
+                            pad.name()
+                        );
+                        let ctx_t_s = opentelemetry::Context::current();
+                        let span_to_send = ctx_t_s.span();
+                        GstOtelSpanBuf::add(buffer.make_mut(), span_to_send.span_context().clone());
                     }
 
                     // Get the peer's parents' src pads if any and attach the span to them as as refs without
@@ -753,9 +797,9 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     Ok(())
 }
 
-unsafe impl gst::MetaAPI for imp::GstSpanBuf {
-    type GstType = imp::GstSpanBuf;
+unsafe impl gst::MetaAPI for imp::GstOtelSpanBuf {
+    type GstType = imp::GstOtelSpanBuf;
     fn meta_api() -> glib::Type {
-        imp::custom_meta_api_get_type()
+        imp::gst_span_buf_api_get_type()
     }
 }

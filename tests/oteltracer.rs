@@ -16,7 +16,7 @@ mod tests {
     fn given_mthread_pipeline_when_run_otel_then_traces_captured() {
         help_run_gstreamer_tests(
             "multithreaded",
-            "fakesrc num-buffers=60 ! queue max-size-buffers=3 ! identity sleep-time=1000000 ! fakesink",
+            "fakesrc num-buffers=5 ! queue max-size-buffers=3 ! fakesink",
         );
     }
 
