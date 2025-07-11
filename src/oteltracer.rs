@@ -6,12 +6,14 @@ use glib::subclass::prelude::*;
 use glib::translate::IntoGlib;
 use glib::Quark;
 use gstreamer as gst;
+use gstreamer_sys::GstMetaInfo;
 use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
 use opentelemetry_sdk::logs::BatchLogProcessor;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_stdout::LogExporter;
 use std::sync::LazyLock;
+use std::sync::Once;
 use std::sync::OnceLock;
 
 use gst::prelude::*;
@@ -34,11 +36,8 @@ static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
 static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
 static QUARK_SRC_SPAN_REF: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace-ref").into_glib());
 
-#[derive(Debug, Clone)]
-struct GstSpanSrc<'a> {
-    // The Src has a reference to the span
-    span: &'a BoxedSpan,
-}
+static REGISTER_META: Once = Once::new();
+static mut META_INFO: *const GstMetaInfo = std::ptr::null();
 
 #[derive(Debug)]
 struct GstSpanSink<'a> {
@@ -51,10 +50,10 @@ fn init_otlp() -> global::BoxedTracer {
     INIT_ONCE.get_or_init(|| {
         // First, create a OTLP exporter builder. Configure it as you need.
         // TODO - will try and wire this up later
-        // let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-        //     .with_http()
-        //     .build()
-        //     .expect("Failed to create OTLP exporter");
+        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build()
+            .expect("Failed to create OTLP exporter");
 
         // Tracing pipeline
         let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -66,7 +65,7 @@ fn init_otlp() -> global::BoxedTracer {
                     .with_attributes(vec![KeyValue::new("service.name", "gst-prom-latency")])
                     .build(),
             )
-            .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
+            .with_simple_exporter(otlp_exporter)
             .build();
         global::set_tracer_provider(tracer_provider);
 
@@ -83,10 +82,127 @@ mod imp {
 
     use super::*;
     use core::hash;
-    use glib::translate::{FromGlibPtrBorrow, IntoGlib, ToGlibPtr};
+    use glib::{
+        ffi::{gpointer, GFALSE, GTRUE},
+        translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
+    };
     use gobject_sys::GCallback;
+    use gstreamer_sys::{gst_meta_register, GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::os::raw::c_void;
+
+    #[repr(C)]
+    pub struct GstSpanBuf {
+        parent: gst::ffi::GstMeta,
+        // The Buf has a reference to the span
+        span: *const BoxedSpan,
+    }
+
+    #[repr(C)]
+    pub struct GstSpanBufParams {
+        pub span: *const BoxedSpan,
+    }
+
+    unsafe impl Send for GstSpanBuf {}
+    unsafe impl Sync for GstSpanBuf {}
+
+    impl GstSpanBuf {
+        /// Attach a new meta with the given label to `buffer`.
+        pub fn add(
+            buffer: &mut gst::BufferRef,
+            span: BoxedSpan,
+        ) -> gst::MetaRefMut<'_, Self, gst::meta::Standalone> {
+            unsafe {
+                // Prepare params for the init func
+                let mut params = std::mem::ManuallyDrop::new(GstSpanBufParams { span: &span });
+                let meta = gst::ffi::gst_buffer_add_meta(
+                    buffer.as_mut_ptr(),
+                    imp::gst_span_buf_get_info(),
+                    &mut *params as *mut _ as *mut _,
+                ) as *mut imp::GstSpanBuf;
+                Self::from_mut_ptr(buffer, meta)
+            }
+        }
+
+        /// Retrieve the stored span.
+        pub fn span(&self) -> &*const BoxedSpan {
+            &self.span
+        }
+    }
+
+    unsafe extern "C" fn gst_spanbuf_init(
+        meta: *mut GstMeta,
+        params: gpointer,
+        _buffer: *mut GstBuffer,
+    ) -> glib::ffi::gboolean {
+        // Cast meta to your struct
+        let span_meta = meta as *mut GstSpanBuf;
+        // Cast params to your params struct
+        let p = params as *mut GstSpanBufParams;
+        // Copy the span pointer into the meta
+        (*span_meta).span = (*p).span;
+        // Return TRUE to indicate success
+        GTRUE
+    }
+
+    unsafe extern "C" fn gst_spanbuf_free(_meta: *mut GstMeta, _buffer: *mut GstBuffer) {
+        // In this design we do not own a separate allocation for `span`,
+        // so nothing to free here. If you had heap data here you'd drop it.
+    }
+
+    unsafe extern "C" fn gst_spanbuf_transform(
+        dest_buffer: *mut GstBuffer,
+        src_meta: *mut GstMeta,
+        _src_buffer: *mut GstBuffer,
+        _type: glib::ffi::GQuark,
+        _data: gpointer,
+    ) -> glib::ffi::gboolean {
+        // Registering your meta returns a GstMetaInfo pointer:
+        let info = gst_span_buf_get_info(); // your function returning *const GstMetaInfo
+
+        // Allocate a new instance on `dest_buffer`
+        let new_meta = gst::ffi::gst_buffer_add_meta(dest_buffer, info, std::ptr::null_mut())
+            as *mut GstSpanBuf;
+
+        if new_meta.is_null() {
+            // failed to attach
+            return GFALSE;
+        }
+
+        // Copy the span pointer from the source meta
+        let src = src_meta as *mut GstSpanBuf;
+        (*new_meta).span = (*src).span;
+
+        GTRUE
+    }
+    pub fn gst_span_buf_get_info() -> *const gst::ffi::GstMetaInfo {
+        // this closure runs exactly once, even in the face of threads
+        REGISTER_META.call_once(|| unsafe {
+            META_INFO = gst_meta_register(
+                custom_meta_api_get_type().into_glib(),
+                b"GstSpanBuf\0".as_ptr() as *const _,
+                std::mem::size_of::<GstSpanBuf>(),
+                Some(gst_spanbuf_init),
+                Some(gst_spanbuf_free),
+                Some(gst_spanbuf_transform),
+            );
+        });
+        // SAFETY: call_once ensures we’ve initialized it
+        unsafe { META_INFO }
+    }
+
+    // Called once per program to register the API type
+    pub fn custom_meta_api_get_type() -> glib::Type {
+        static ONCE: std::sync::OnceLock<glib::Type> = std::sync::OnceLock::new();
+        *ONCE.get_or_init(|| unsafe {
+            let t = glib::Type::from_glib(gst::ffi::gst_meta_api_type_register(
+                b"GstSpanBuf\0".as_ptr() as *const _,
+                std::ptr::null_mut(),
+            ));
+            assert_ne!(t, glib::Type::INVALID);
+            t
+        })
+    }
 
     #[derive(Default)]
     pub struct OtelTracerImpl;
@@ -212,6 +328,7 @@ mod imp {
         // 1. This is a source pad.
         // 2. The peer sink pad is a sink pad on a sink element.
         // 3. There is no existing span for this pad already created.
+        // 4. If there is a span attached to the buffer, we use that as the parent span.
         //
         // Then we start a span with the following attributes:
         // - Src pad element name
@@ -253,6 +370,9 @@ mod imp {
 
             // If no existing span, create a new one
             if has_no_existing_span {
+                // See if we have a span on the buffer
+                let buffer_span = buffer.meta::<GstSpanBuf>().map(|span| span.span.clone());
+
                 gst::trace!(
                     CAT,
                     "Starting new span for pad {} {}",
@@ -631,4 +751,11 @@ glib::wrapper! {
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Tracer::register(Some(plugin), "otel-tracer", TelemetryTracer::static_type())?;
     Ok(())
+}
+
+unsafe impl gst::MetaAPI for imp::GstSpanBuf {
+    type GstType = imp::GstSpanBuf;
+    fn meta_api() -> glib::Type {
+        imp::custom_meta_api_get_type()
+    }
 }

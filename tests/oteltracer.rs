@@ -6,12 +6,18 @@ mod tests {
 
     #[test]
     fn given_basic_pipeline_when_run_otel_then_metrics_captured() {
-        help_run_gstreamer_tests("basic", "fakesrc num-buffers=3 ! identity ! fakesink");
+        help_run_gstreamer_tests(
+            "basic",
+            "fakesrc num-buffers=3 ! identity ! identity ! identity ! identity ! fakesink",
+        );
     }
 
     #[test]
     fn given_mthread_pipeline_when_run_otel_then_traces_captured() {
-        help_run_gstreamer_tests("multithreaded", "fakesrc num-buffers=30 ! queue ! fakesink");
+        help_run_gstreamer_tests(
+            "multithreaded",
+            "fakesrc num-buffers=60 ! queue max-size-buffers=3 ! identity sleep-time=1000000 ! fakesink",
+        );
     }
 
     #[test]
