@@ -546,15 +546,23 @@ mod imp {
 
                     // Store the span in the buffers Meta, if the buffer has no span already
                     if buffer.meta::<GstOtelSpanBuf>().is_none() {
-                        gst::trace!(
-                            CAT,
-                            "Storing span in buffer {:?} for pad {}",
-                            buffer,
-                            pad.name()
-                        );
                         let ctx_t_s = opentelemetry::Context::current();
                         let span_to_send = ctx_t_s.span();
+                        gst::trace!(
+                            CAT,
+                            "Storing span in buffer {:?} for element {} pad {}",
+                            buffer,
+                            pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                            pad.name()
+                        );
                         GstOtelSpanBuf::add(buffer.make_mut(), span_to_send.span_context().clone());
+                        gst::trace!(
+                            CAT,
+                            "Stored span in buffer {:?} for element {} pad {}",
+                            buffer,
+                            pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                            pad.name()
+                        );
                     }
 
                     // Get the peer's parents' src pads if any and attach the span to them as as refs without
