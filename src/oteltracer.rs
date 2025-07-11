@@ -8,6 +8,9 @@ use glib::Quark;
 use gstreamer as gst;
 use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
+use opentelemetry_sdk::logs::BatchLogProcessor;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_stdout::LogExporter;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 
@@ -76,6 +79,8 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// GStreamer Tracer subclass
 mod imp {
+    use crate::otellogbridge::{LogBridge, PlaintextBridge, StructuredBridge};
+
     use super::*;
     use core::hash;
     use glib::translate::{FromGlibPtrBorrow, IntoGlib, ToGlibPtr};
@@ -100,6 +105,28 @@ mod imp {
             let tracer_obj: &gst::Tracer = binding.upcast_ref();
             init_otlp();
             gst::info!(CAT, "OtelTracerImpl constructed");
+
+            // Install the bridge into GStreamer
+            let bridge_clone = Box::new(PlaintextBridge::new());
+
+            gst::log::remove_default_log_function();
+            gst::log::add_log_function(move |cat, lvl, file, func, line, obj, msg| {
+                // Extract trace/span from current context:
+
+                let trace_id = opentelemetry::Context::current()
+                    .span()
+                    .span_context()
+                    .trace_id()
+                    .to_string();
+                let span_id = opentelemetry::Context::current()
+                    .span()
+                    .span_context()
+                    .span_id()
+                    .to_string();
+
+                bridge_clone
+                    .log_message(&cat, lvl, file, func, line, msg, obj, &trace_id, &span_id);
+            });
 
             // Omit ffi hooks for now, we will use safe Rust API to start with
             //   as its easier to implement & we can use the unsafe API for performance-critical parts later.
@@ -228,10 +255,9 @@ mod imp {
             if has_no_existing_span {
                 gst::trace!(
                     CAT,
-                    "Starting new span for pad {} {} with peer {}",
-                    pad.name(),
-                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
-                    peer.name()
+                    "Starting new span for pad {} {}",
+                    peer.name(),
+                    peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                 );
                 let tracer = init_otlp();
                 let span_name = format!(
@@ -248,7 +274,7 @@ mod imp {
                 //
                 // TODO - this is the 'cross-threads' span propagation logic. too much to test at once, revisit later.
                 //
-                if !opentelemetry::Context::current().has_active_span() {
+                let ctx = if !opentelemetry::Context::current().has_active_span() {
                     // Get the src pad's qdata
                     let src_pad_ffi: *mut gstreamer_sys::GstPad = pad.to_glib_none().0;
                     let ctx_ptr = unsafe {
@@ -263,19 +289,40 @@ mod imp {
                         gst::trace!(
                             CAT,
                             "Using span from src pad {} {} as parent context",
-                            pad.name(),
-                            pad.parent().map(|p| p.name()).unwrap_or("unknown".into())
+                            peer.name(),
+                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
                         );
                         let ctx = unsafe { (*ctx_ptr).clone() };
-                        gst::trace!(CAT, "Span is recording, using it as parent context");
+                        gst::trace!(
+                            CAT,
+                            "Span for {} {} is recording, using it as parent context {:?}",
+                            peer.name(),
+                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                            ctx
+                        );
                         // Use the span's context
-                        opentelemetry::Context::current().with_remote_span_context(ctx);
+                        opentelemetry::Context::current().with_remote_span_context(ctx)
                     } else {
-                        gst::trace!(CAT, "No span found on src pad {}", pad.name());
+                        gst::trace!(
+                            CAT,
+                            "No span found on src pad {} {}",
+                            peer.name(),
+                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
+                        );
+                        opentelemetry::Context::current()
                     }
-                }
+                } else {
+                    gst::trace!(
+                        CAT,
+                        "Current context already has an active span {} {}",
+                        peer.name(),
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
+                    );
+                    opentelemetry::Context::current()
+                };
 
-                let mut span = tracer.start(span_name);
+                let mut span = tracer.start_with_context(span_name, &ctx);
+                let _guard = ctx.attach();
                 if span.is_recording() {
                     // Set the spans attributes
                     let pad_c = pad.clone();
@@ -291,9 +338,13 @@ mod imp {
 
                     gst::trace!(
                         CAT,
-                        "Span is recording for element {} pad {}",
-                        src_pad_element_v,
-                        sink_pad_element_v
+                        "Span is recording for element {} pad {} - trace parent {:?}",
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        peer.name(),
+                        opentelemetry::Context::current()
+                            .span()
+                            .span_context()
+                            .trace_id(),
                     );
                     let current = std::thread::current();
                     let thread_name = current
@@ -326,6 +377,12 @@ mod imp {
                         span: span_to_send,
                     });
 
+                    gst::trace!(
+                        CAT,
+                        "Attached span; storing reference for element {} pad {}",
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        peer.name(),
+                    );
                     // Store the span in the pad's qdata
                     unsafe {
                         glib::gobject_ffi::g_object_set_qdata_full(

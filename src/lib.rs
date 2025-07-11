@@ -19,6 +19,7 @@ use glib;
 use gstreamer as gst;
 #[cfg(feature = "noop")]
 mod nooplatency;
+mod otellogbridge;
 mod oteltracer;
 mod promlatency;
 

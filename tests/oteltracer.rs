@@ -6,12 +6,29 @@ mod tests {
 
     #[test]
     fn given_basic_pipeline_when_run_otel_then_metrics_captured() {
+        help_run_gstreamer_tests("basic", "fakesrc num-buffers=3 ! identity ! fakesink");
+    }
+
+    #[test]
+    fn given_mthread_pipeline_when_run_otel_then_traces_captured() {
+        help_run_gstreamer_tests("multithreaded", "fakesrc num-buffers=30 ! queue ! fakesink");
+    }
+
+    #[test]
+    fn given_pipeline_with_bin_element_when_run_otel_then_traces_captured() {
+        // TODO will need to create a custom bin element, probably can't use help_run_gstreamer_tests directly
+    }
+
+    fn help_run_gstreamer_tests(name: &str, pipeline: &str) {
         // Set environment variables for the tracer
         env::set_var(
             "GST_TRACERS",
             "otel-tracer(filters='GstBuffer',flags=element)",
         );
-        env::set_var("GST_DEBUG", "GST_TRACER:5,otel-tracer:7");
+        env::set_var(
+            "GST_DEBUG",
+            "fakesink:5,identity:5,GST_TRACER:5,otel-tracer:7",
+        );
         env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
 
         // Initialize GStreamer
@@ -33,9 +50,8 @@ mod tests {
         // We could tie the pipeline name to the metrics, but that would require
         // a change in the tracer implementation.
         let pipeline_el =
-            gst::parse::launch("fakesrc num-buffers=3 ! identity ! queue ! identity ! fakesink")
-                .expect("Failed to create pipeline from launch string");
-        pipeline_el.set_property("name", "basic");
+            gst::parse::launch(pipeline).expect("Failed to create pipeline from launch string");
+        pipeline_el.set_property("name", name);
         let pipeline = pipeline_el
             .downcast::<gst::Pipeline>()
             .expect("Failed to downcast to gst::Pipeline");
@@ -67,7 +83,5 @@ mod tests {
         }
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
-
-        // TODO - Check metrics / traces / logs somehow
     }
 }
