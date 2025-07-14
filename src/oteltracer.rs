@@ -8,14 +8,9 @@ use glib::Quark;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
-use gstreamer_sys::GstMetaInfo;
 use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
-use opentelemetry_sdk::logs::BatchLogProcessor;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_stdout::LogExporter;
 use std::sync::LazyLock;
-use std::sync::Once;
 use std::sync::OnceLock;
 // OpenTelemetry and OTLP exporter
 use opentelemetry::trace::{Span, SpanContext, Tracer};
@@ -33,11 +28,10 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
 static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
-static QUARK_SRC_SPAN_REF: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace-ref").into_glib());
-static REGISTER_META: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug)]
 struct GstSpanSink<'a> {
+    // guard deallocation ends span
     guard: opentelemetry::ContextGuard,
     span: opentelemetry::trace::SpanRef<'a>,
 }
@@ -75,30 +69,23 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// GStreamer Tracer subclass
 mod imp {
-    use crate::otellogbridge::{LogBridge, PlaintextBridge, StructuredBridge};
+    use crate::otellogbridge::{LogBridge, PlaintextBridge};
 
     use super::*;
-    use core::hash;
     use glib::{
         ffi::{gpointer, GFALSE, GTRUE},
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
-    use gstreamer::ObjectLockGuard;
-    use gstreamer_sys::{gst_meta_register, GstBuffer, GstMeta};
+    use gstreamer_sys::{GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
-    use std::{ffi::c_char, os::raw::c_void, ptr};
+    use std::{os::raw::c_void, ptr};
 
     #[repr(C)]
     pub struct GstOtelSpanBuf {
         parent: gst::ffi::GstMeta,
         // The Buf has a reference to the span
         span: *const SpanContext,
-    }
-
-    #[repr(C)]
-    pub struct GstSpanBufParams {
-        pub span: *const SpanContext,
     }
 
     unsafe impl Send for GstOtelSpanBuf {}
@@ -112,7 +99,7 @@ mod imp {
         ) -> gst::MetaRefMut<'_, Self, gst::meta::Standalone> {
             unsafe {
                 // Prepare params for the init func
-                let mut params = std::mem::ManuallyDrop::new(GstSpanBufParams { span: &span });
+                let params = Box::into_raw(Box::new(span));
                 let meta = gst::ffi::gst_buffer_add_meta(
                     buffer.as_mut_ptr(),
                     imp::gst_span_buf_get_info(),
@@ -120,14 +107,25 @@ mod imp {
                 ) as *mut imp::GstOtelSpanBuf;
 
                 // Ensure params is dropped before returning
-                drop(std::mem::ManuallyDrop::into_inner(params));
                 Self::from_mut_ptr(buffer, meta)
+            }
+        }
+        /// Attach a new meta with the given label to `buffer`.
+        pub fn add_ptr(buffer: *mut gst::ffi::GstBuffer, span: SpanContext) {
+            unsafe {
+                // Prepare params for the init func
+                let params = Box::into_raw(Box::new(span));
+                gst::ffi::gst_buffer_add_meta(
+                    buffer,
+                    imp::gst_span_buf_get_info(),
+                    &mut *params as *mut _ as *mut _,
+                ) as *mut imp::GstOtelSpanBuf;
             }
         }
 
         /// Retrieve the stored span.
-        pub fn span(&self) -> &*const SpanContext {
-            &self.span
+        pub fn span(&self) -> &SpanContext {
+            unsafe { &*self.span }
         }
     }
 
@@ -139,16 +137,23 @@ mod imp {
         // Cast meta to your struct
         let span_meta = meta as *mut GstOtelSpanBuf;
         // Cast params to your params struct
-        let p = params as *mut GstSpanBufParams;
+        let p = params as *mut SpanContext;
+        gst::trace!(
+            CAT,
+            "gst_spanbuf_init called with meta: {:?}, params: {:?}",
+            span_meta,
+            *p
+        );
         // Copy the span pointer into the meta
-        (*span_meta).span = (*p).span;
+        (*span_meta).span = p;
         // Return TRUE to indicate success
         GTRUE
     }
 
     unsafe extern "C" fn gst_spanbuf_free(_meta: *mut GstMeta, _buffer: *mut GstBuffer) {
-        // In this design we do not own a separate allocation for `span`,
-        // so nothing to free here. If you had heap data here you'd drop it.
+        // we drop the reference to the span
+        let src = _meta as *mut GstOtelSpanBuf;
+        drop(Box::from_raw((*src).span as *mut SpanContext));
     }
 
     unsafe extern "C" fn gst_spanbuf_transform(
@@ -167,6 +172,7 @@ mod imp {
 
         if new_meta.is_null() {
             // failed to attach
+            gst::error!(CAT, "Failed to attach span metadata");
             return GFALSE;
         }
 
@@ -174,6 +180,7 @@ mod imp {
         let src = src_meta as *mut GstOtelSpanBuf;
         (*new_meta).span = (*src).span;
 
+        gst::trace!(CAT, "Span metadata transformed successfully");
         GTRUE
     }
     pub fn gst_span_buf_get_info() -> *const gst::ffi::GstMetaInfo {
@@ -266,7 +273,7 @@ mod imp {
                 _tracer: *mut gst::Tracer,
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
-                buffer: *mut gst::ffi::GstBuffer,
+                buf_ptr: *mut gst::ffi::GstBuffer,
             ) {
                 // gst::info!(
                 //     CAT,
@@ -278,8 +285,8 @@ mod imp {
                 // This function is called before a buffer is pushed to a pad.
                 // We will use it to start a span for the pad.
                 let pad = gst::Pad::from_glib_borrow(pad);
-                let mut buffer = gst::Buffer::from_glib_none(buffer);
-                pad_push_pre(ts, &pad, &mut buffer);
+                let buffer = gst::Buffer::from_glib_borrow(buf_ptr);
+                pad_push_pre(ts, &pad, &buffer, buf_ptr);
             }
 
             // unsafe extern "C" fn do_push_event_pre(
@@ -336,7 +343,12 @@ mod imp {
         drop(value)
     }
 
-    fn pad_push_pre(ts: u64, pad: &gstreamer::Pad, buffer: &mut gstreamer::Buffer) {
+    fn pad_push_pre(
+        ts: u64,
+        pad: &gstreamer::Pad,
+        buffer: &gst::Buffer,
+        buf_ptr: *mut gst::ffi::GstBuffer,
+    ) {
         // To start with simple logic:
         // First, we check if conditions are met to start a span.
         // Currently, those conditions are:
@@ -365,7 +377,7 @@ mod imp {
         //     pad.name(),
         //     buffer
         // );
-        if pad.direction() == gstreamer::PadDirection::Sink {
+        if pad.direction() != gstreamer::PadDirection::Src {
             return;
         }
 
@@ -415,18 +427,23 @@ mod imp {
             if has_no_existing_span {
                 gst::trace!(
                     CAT,
-                    "Starting new span for pad {} {}",
+                    "Trying to start new span for {} {} {} {}",
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.name(),
                     peer.name(),
                     peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                 );
                 let tracer = init_otlp();
                 let span_name = format!(
-                    "pad-push-{}-{}-{}",
+                    "pad-push-{}-{}-{}-{}",
+                    pad.parent()
+                        .map(|p| p.name().to_string())
+                        .unwrap_or("unknown".to_string()),
                     pad.name(),
+                    peer.name(),
                     peer.parent()
                         .map(|p| p.name().to_string())
                         .unwrap_or("unknown".to_string()),
-                    peer.name(),
                 );
 
                 // if our context isn't set yet, we check to see if there is a span attached to the src pad (not peer)
@@ -434,70 +451,68 @@ mod imp {
                 //
                 // TODO - this is the 'cross-threads' span propagation logic. too much to test at once, revisit later.
                 //
-                let ctx = if !opentelemetry::Context::current().has_active_span() {
+                let o_ctx = if !opentelemetry::Context::current().has_active_span() {
+                    // let meta = ffi::gst_buffer_get_meta(self.as_mut_ptr(), T::meta_api().into_glib());
                     // See if we have a span on the buffer
                     let buffer_span = buffer
                         .meta::<GstOtelSpanBuf>()
                         .map(|meta| meta.span().clone());
 
-                    // TODO - if we have a span in the buffer, use that, if not, check the src pad. if nothing there,
-                    //          use current context.
+                    // TODO - if we have a span in the buffer, use that, if not, we can only start a span if this is a
+                    //        source pad.
 
-                    if let Some(span) = buffer_span {
-                        gst::trace!(CAT, "Using span from buffer {:?} as parent context", span);
-                        // Use the span's context
-                        unsafe {
-                            // SAFETY: I am not sure if this is safe.
-                            opentelemetry::Context::current()
-                                .with_remote_span_context((*span).clone());
-                        }
-                    }
-
-                    // Get the src pad's qdata
-                    let src_pad_ffi: *mut gstreamer_sys::GstPad = pad.to_glib_none().0;
-                    let ctx_ptr = unsafe {
-                        glib::gobject_ffi::g_object_get_qdata(
-                            src_pad_ffi as *mut gobject_sys::GObject,
-                            *QUARK_SRC_SPAN_REF,
-                        )
-                    } as *mut SpanContext;
-
-                    if !ctx_ptr.is_null() && buffer_span.is_none() {
-                        // If we have a span, use it as the parent context
-                        gst::trace!(
-                            CAT,
-                            "Using span from src pad {} {} as parent context",
-                            peer.name(),
-                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
-                        );
-                        let ctx = unsafe { (*ctx_ptr).clone() };
-                        gst::trace!(
-                            CAT,
-                            "Span for {} {} is recording, using it as parent context {:?}",
-                            peer.name(),
-                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
-                            ctx
-                        );
-                        // Use the span's context
-                        opentelemetry::Context::current().with_remote_span_context(ctx)
-                    } else {
-                        gst::trace!(
-                            CAT,
-                            "No span found on src pad {} {}",
-                            peer.name(),
-                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
-                        );
-                        opentelemetry::Context::current()
-                    }
+                    buffer_span
+                        .map(|span| {
+                            // Use the span's context
+                            opentelemetry::Context::current().with_remote_span_context(span.clone())
+                        })
+                        .or_else(|| {
+                            gst::trace!(
+                                CAT,
+                                "No span found in buffer {:?}, using current context",
+                                buffer
+                            );
+                            // If this is a source pad, we return the current context
+                            if pad.direction() == gstreamer::PadDirection::Src {
+                                gst::trace!(
+                                    CAT,
+                                    "Using current context for source pad {}",
+                                    pad.name()
+                                );
+                                Some(opentelemetry::Context::current())
+                            } else {
+                                gst::trace!(
+                                    CAT,
+                                    "Not a source pad, cannot start span {}",
+                                    pad.name()
+                                );
+                                None
+                            }
+                        })
                 } else {
                     gst::trace!(
                         CAT,
-                        "Current context already has an active span {} {}",
+                        "Current context already has an active span {} {} {} {}",
+                        pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        pad.name(),
                         peer.name(),
                         peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
                     );
-                    opentelemetry::Context::current()
+                    Some(opentelemetry::Context::current())
                 };
+
+                if o_ctx.is_none() {
+                    gst::trace!(
+                        CAT,
+                        "No context available for pad {} {} {} {}, not starting span",
+                        pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        pad.name(),
+                        peer.name(),
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into())
+                    );
+                    return;
+                }
+                let ctx = o_ctx.unwrap();
 
                 let mut span = tracer.start_with_context(span_name, &ctx);
                 let _guard = ctx.attach();
@@ -516,9 +531,11 @@ mod imp {
 
                     gst::trace!(
                         CAT,
-                        "Span is recording for element {} pad {} - trace parent {:?}",
-                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        "Span is recording for {} {} {} {} - trace parent {:?}",
+                        pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        pad.name(),
                         peer.name(),
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                         opentelemetry::Context::current()
                             .span()
                             .span_context()
@@ -546,7 +563,6 @@ mod imp {
 
                     // Box the span and store it in the pad's qdata
                     // TODO - this is messy, not sure if there's a better way to set the span and then send the span ref.
-                    let ctx_ref = span.span_context().clone();
                     let guard = opentelemetry::Context::current_with_span(span).attach();
                     let ctx_t_s = opentelemetry::Context::current();
                     let span_to_send = ctx_t_s.span();
@@ -557,9 +573,11 @@ mod imp {
 
                     gst::trace!(
                         CAT,
-                        "Attached span; storing reference for element {} pad {}",
-                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        "Attached span; storing reference for {} {} {} {}",
+                        pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                        pad.name(),
                         peer.name(),
+                        peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     );
                     // Store the span in the pad's qdata
                     unsafe {
@@ -577,65 +595,29 @@ mod imp {
                         let span_to_send = ctx_t_s.span();
                         gst::trace!(
                             CAT,
-                            "Storing span in buffer {:?} for element {} pad {}",
+                            "Storing span in buffer {:?} for {} {} {} {}",
                             buffer,
                             pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
-                            pad.name()
+                            pad.name(),
+                            peer.name(),
+                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                         );
-                        GstOtelSpanBuf::add(buffer.make_mut(), span_to_send.span_context().clone());
+                        GstOtelSpanBuf::add_ptr(buf_ptr, span_to_send.span_context().to_owned());
                         gst::trace!(
                             CAT,
-                            "Stored span in buffer {:?} for element {} pad {}",
+                            "Stored span in buffer {:?} for {} {} {} {}",
                             buffer,
                             pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
-                            pad.name()
+                            pad.name(),
+                            peer.name(),
+                            peer.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                         );
-                    }
-
-                    // Get the peer's parents' src pads if any and attach the span to them as as refs without
-                    // the deallocation callback.
-                    let parent = peer
-                        .parent()
-                        .map(gst::Object::downcast::<gst::Element>)
-                        .map(Result::ok)
-                        .flatten();
-                    if let Some(parent) = parent {
-                        parent.src_pads().iter().for_each(|src_pad| {
-                            // Make sure there's no existing span reference on the src pad
-                            let src_pad_ffi: *mut gstreamer_sys::GstPad = src_pad.to_glib_none().0;
-                            let existing_ctx_ptr = unsafe {
-                                glib::gobject_ffi::g_object_get_qdata(
-                                    src_pad_ffi as *mut gobject_sys::GObject,
-                                    *QUARK_SRC_SPAN_REF,
-                                )
-                            }
-                                as *mut SpanContext;
-                            if !existing_ctx_ptr.is_null() {
-                                gst::trace!(
-                                    CAT,
-                                    "Src pad {} already has a span reference, skipping",
-                                    src_pad.name()
-                                );
-                                return;
-                            }
-
-                            // Attach the span to the src pad as a reference
-                            let src_pad_ffi: *mut gstreamer_sys::GstPad = src_pad.to_glib_none().0;
-                            unsafe {
-                                glib::gobject_ffi::g_object_set_qdata_full(
-                                    src_pad_ffi as *mut gobject_sys::GObject,
-                                    *QUARK_SRC_SPAN_REF,
-                                    Box::into_raw(Box::new(ctx_ref.clone())) as *mut c_void,
-                                    Some(drop_value::<SpanContext>),
-                                );
-                            }
-                        });
                     }
                 }
             }
         }
     }
-    fn pad_push_post(ts: u64, peer_pad: &gstreamer::Pad, self_pad: &gstreamer::Pad) {
+    fn pad_push_post(ts: u64, peer_pad: &gstreamer::Pad, _self_pad: &gstreamer::Pad) {
         // To start with simple logic:
         // First, we check if conditions are met to start a span.
         // Currently, those conditions are:
@@ -684,116 +666,47 @@ mod imp {
         // and remove it from the pad's qdata.
         if !span_ptr.is_null() {
             // TODO - this is a really big unsafe block.
-            if !opentelemetry::Context::current().has_active_span() {
-                // If we have an active span, we can end it
-                gst::trace!(
-                    CAT,
-                    "Attaching span from pad {}, {}, to current context",
-                    peer_pad.name(),
-                    peer_pad
-                        .parent()
-                        .map(|p| p.name())
-                        .unwrap_or("unknown".into())
-                );
-                // Attach the span to the current context
-
-                let src_pad_ffi: *mut gstreamer_sys::GstPad = self_pad.to_glib_none().0;
-                unsafe {
-                    let ctx_ptr = glib::gobject_ffi::g_object_get_qdata(
-                        src_pad_ffi as *mut gobject_sys::GObject,
-                        *QUARK_SRC_SPAN_REF,
-                    ) as *mut SpanContext;
-                    opentelemetry::Context::current().with_remote_span_context((*ctx_ptr).clone());
-                }
-            }
-
             unsafe {
                 if (*span_ptr).span.is_recording() {
-                    // To check this we check if the source pads of this pads' element
-                    // have any attached active spans.
-                    let has_no_downstream_active_spans = peer_pad
-                        .parent()
-                        .map(gst::Object::downcast::<gst::Element>)
-                        .map(Result::ok)
-                        .flatten()
-                        .and_then(|p| {
-                            Some(p.src_pads().iter().all(|src_pad| {
-                                // Get the src pad's qdata
-                                let src_pad_ffi: *mut gstreamer_sys::GstPad =
-                                    src_pad.to_glib_none().0;
-                                let ctx_ptr = glib::gobject_ffi::g_object_get_qdata(
-                                    src_pad_ffi as *mut gobject_sys::GObject,
-                                    *QUARK_SRC_SPAN_REF,
-                                ) as *mut SpanContext;
+                    gst::trace!(
+                        CAT,
+                        "Ending span for pad {}, {}",
+                        peer_pad.name(),
+                        peer_pad
+                            .parent()
+                            .map(|p| p.name())
+                            .unwrap_or("unknown".into())
+                    );
 
-                                // If the context is not null, we have an active span
-                                ctx_ptr.is_null()
-                            }))
-                        })
-                        // By default we assume there are downstream active spans
-                        .unwrap_or(true);
+                    let current = std::thread::current();
+                    let thread_name = current
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "unnamed".into());
+                    let thread_id = format!("{:?}", current.id());
+                    // Set the end time
+                    (*span_ptr).span.set_attributes(vec![
+                        KeyValue::new("ts.end", ts as i64),
+                        KeyValue::new("sink_pad.thread.name", thread_name),
+                        KeyValue::new("sink_pad.thread.id", thread_id),
+                    ]);
+                    (*span_ptr).span.end();
 
-                    if has_no_downstream_active_spans {
-                        gst::trace!(
-                            CAT,
-                            "Ending span for pad {}, {}",
-                            peer_pad.name(),
-                            peer_pad
-                                .parent()
-                                .map(|p| p.name())
-                                .unwrap_or("unknown".into())
-                        );
+                    // Last chance to log the span
+                    gst::trace!(
+                        CAT,
+                        "Span ended for pad {}: {:?}",
+                        peer_pad.name(),
+                        (*span_ptr)
+                    );
 
-                        let current = std::thread::current();
-                        let thread_name = current
-                            .name()
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| "unnamed".into());
-                        let thread_id = format!("{:?}", current.id());
-                        // Set the end time
-                        (*span_ptr).span.set_attributes(vec![
-                            KeyValue::new("ts.end", ts as i64),
-                            KeyValue::new("sink_pad.thread.name", thread_name),
-                            KeyValue::new("sink_pad.thread.id", thread_id),
-                        ]);
-                        (*span_ptr).span.end();
-
-                        // Last chance to log the span
-                        gst::trace!(
-                            CAT,
-                            "Span ended for pad {}: {:?}",
-                            peer_pad.name(),
-                            (*span_ptr)
-                        );
-
-                        // Deallocate the span through glib.
-                        // This will also drop the guard.
-                        glib::gobject_ffi::g_object_set_qdata(
-                            sink_pad_ffi as *mut gobject_sys::GObject,
-                            *QUARK_SINK_SPAN,
-                            std::ptr::null_mut(),
-                        );
-
-                        // Remove the src pad's qdata reference to the span so it can be garbage collected.
-                        // And upstream sink pads will see this src pad as not having an active span.
-                        // Allowing them to end their own attached spans.
-                        let src_pad_ffi: *mut gstreamer_sys::GstPad = self_pad.to_glib_none().0;
-                        glib::gobject_ffi::g_object_set_qdata(
-                            src_pad_ffi as *mut gobject_sys::GObject,
-                            *QUARK_SRC_SPAN_REF,
-                            std::ptr::null_mut(),
-                        );
-                    } else {
-                        gst::trace!(
-                            CAT,
-                            "Span for pad {}, {} is still recording, not ending",
-                            peer_pad.name(),
-                            peer_pad
-                                .parent()
-                                .map(|p| p.name())
-                                .unwrap_or("unknown".into())
-                        );
-                    }
+                    // Deallocate the span through glib.
+                    // This will also drop the guard.
+                    glib::gobject_ffi::g_object_set_qdata(
+                        sink_pad_ffi as *mut gobject_sys::GObject,
+                        *QUARK_SINK_SPAN,
+                        std::ptr::null_mut(),
+                    );
                 } else {
                     gst::trace!(
                         CAT,
