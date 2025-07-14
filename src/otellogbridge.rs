@@ -74,6 +74,8 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
         let mut record = self.logger.create_log_record();
         let debug_level = severity_of_debug_level(level);
         record.set_severity_number(debug_level);
+        record.set_timestamp(std::time::SystemTime::now());
+
         // TODO - not sure how to comply with 'static lifetime
         // record.set_severity_text(&level.to_owned().to_string());
         record.set_body(
