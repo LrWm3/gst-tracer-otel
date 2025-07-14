@@ -5,6 +5,8 @@ use glib;
 use glib::subclass::prelude::*;
 use glib::translate::IntoGlib;
 use glib::Quark;
+use gst::prelude::*;
+use gst::subclass::prelude::*;
 use gstreamer as gst;
 use gstreamer_sys::GstMetaInfo;
 use once_cell::sync::Lazy;
@@ -15,9 +17,6 @@ use opentelemetry_stdout::LogExporter;
 use std::sync::LazyLock;
 use std::sync::Once;
 use std::sync::OnceLock;
-
-use gst::prelude::*;
-use gst::subclass::prelude::*;
 // OpenTelemetry and OTLP exporter
 use opentelemetry::trace::{Span, SpanContext, Tracer};
 use opentelemetry::{global, KeyValue};
@@ -85,6 +84,7 @@ mod imp {
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
+    use gstreamer::ObjectLockGuard;
     use gstreamer_sys::{gst_meta_register, GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::{ffi::c_char, os::raw::c_void, ptr};
@@ -372,6 +372,33 @@ mod imp {
         // TODO - separate change - if child span present on 'this pads' qdata, end it here
 
         if let Some(peer) = pad.peer() {
+            //
+            // Just a reminder to myself on how to do this so I can use it later
+            //
+            if let Some(el_o) = pad.parent() {
+                match el_o.downcast::<gst::Element>() {
+                    Ok(elem) => {
+                        // now `elem` is a gst::Element
+                        // e.g. check flags:
+                        if elem.element_flags().contains(gst::ElementFlags::SOURCE) {
+                            // source element!
+                        }
+
+                        // unsafe version
+                        unsafe {
+                            let ptr: *mut gst::ffi::GstObject = elem.as_ptr() as *mut _;
+                            if (*ptr).flags & gst::ffi::GST_ELEMENT_FLAG_SOURCE as u32 != 0 {
+                                gst::trace!(CAT, "Element {} is a source element", elem.name());
+                            } else {
+                                gst::trace!(CAT, "Element {} is not a source element", elem.name());
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // parent wasn’t an Element
+                    }
+                }
+            }
             // Check if we already have a span for this pad by checking the qdata
             let pad_ffi: *mut gstreamer_sys::GstPad = peer.to_glib_none().0;
 
