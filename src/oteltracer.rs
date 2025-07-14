@@ -17,6 +17,8 @@ use opentelemetry::trace::{Span, SpanContext, Tracer};
 use opentelemetry::{global, KeyValue};
 use opentelemetry_sdk::Resource;
 
+use opentelemetry::logs::LoggerProvider;
+
 /// GStreamer debug category for logs
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -69,7 +71,7 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// GStreamer Tracer subclass
 mod imp {
-    use crate::otellogbridge::{LogBridge, PlaintextBridge};
+    use crate::otellogbridge::{init_logs_otlp, LogBridge, PlaintextBridge, StructuredBridge};
 
     use super::*;
     use glib::{
@@ -77,6 +79,7 @@ mod imp {
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
+    use gstreamer::Structure;
     use gstreamer_sys::{GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::{os::raw::c_void, ptr};
@@ -246,7 +249,11 @@ mod imp {
             gst::info!(CAT, "OtelTracerImpl constructed");
 
             // Install the bridge into GStreamer
-            let bridge_clone = Box::new(PlaintextBridge::new());
+            let log_provider = init_logs_otlp();
+            let logger = log_provider.logger("otel-tracer");
+
+            // Create a bridge to handle GStreamer logs
+            let bridge_clone = Box::new(StructuredBridge::new(logger));
 
             gst::log::remove_default_log_function();
             gst::log::add_log_function(move |cat, lvl, file, func, line, obj, msg| {

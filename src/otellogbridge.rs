@@ -26,6 +26,13 @@ pub trait LogBridge: Send + Sync + 'static {
 use opentelemetry::logs::LogRecord;
 use opentelemetry::logs::{AnyValue, Logger};
 use opentelemetry::Key;
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::LogExporter;
+use opentelemetry_sdk::logs::BatchConfig;
+use opentelemetry_sdk::logs::BatchLogProcessor;
+use opentelemetry_sdk::logs::BatchLogProcessorBuilder;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
+use opentelemetry_sdk::Resource;
 
 pub struct StructuredBridge<L: Logger> {
     logger: L,
@@ -163,4 +170,25 @@ impl LogBridge for PlaintextBridge {
             msg,
         );
     }
+}
+
+pub fn init_logs_otlp() -> SdkLoggerProvider {
+    // 1. Build an OTLP LogExporter over gRPC
+    let exporter = LogExporter::builder()
+        .with_http()
+        .build() // use HTTP
+        .expect("failed to build OTLP exporter");
+
+    // 3. Provider
+    let provider = SdkLoggerProvider::builder()
+        .with_resource(
+            Resource::builder_empty()
+                .with_attribute(KeyValue::new("service.name", "gst-tracer-otel"))
+                .build(),
+        )
+        .with_log_processor(opentelemetry_sdk::logs::SimpleLogProcessor::new(exporter))
+        // .with_log_processor(BatchLogProcessor::builder(exporter).build())
+        .build();
+
+    provider
 }
