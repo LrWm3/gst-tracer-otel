@@ -325,7 +325,7 @@ mod imp {
             let sink_pad_s = gst::Pad::from_glib_ptr_borrow(&sink_pad);
             // Just get the safe src_pad reference
             let src_pad_s = gst::Pad::from_glib_ptr_borrow(&src_pad);
-            let element_latency = ffi::gst_pad_get_parent_element(sink_pad);
+            let element_latency = get_real_pad_parent_ffi(sink_pad).unwrap();
 
             let sink_name = sink_pad_s.name().to_string();
             let element_latency_name = if !element_latency.is_null() {
@@ -347,7 +347,7 @@ mod imp {
 
             // do the same for the source pad
             let src_pad_name = if !src_pad.is_null() {
-                let parent = ffi::gst_pad_get_parent_element(src_pad);
+                let parent = get_real_pad_parent_ffi(src_pad).unwrap();
                 if !parent.is_null() {
                     let element_src = gst::Element::from_glib_ptr_borrow(&parent);
                     // If we have a parent element, use its name
