@@ -209,31 +209,31 @@ mod imp {
         if parent_obj.is_null() {
             return None;
         }
-        // TODO - if we already know the pad is a GhostPad, we could return immediately.
-        // however, this would require us hook into pad lifecycle events to clean up caching when necessary.
+
+        // 2. Get the real pad
+        let real_pad = get_real_pad_ffi(pad);
+
+        // 3. Finally, cast the resulting object to an Element.
+        real_pad.map(|p| unsafe {
+            ffi::gst_object_get_parent(p as *mut ffi::GstObject) as *mut ffi::GstElement
+        })
+    }
+
+    /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
+    fn get_real_pad_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstPad> {
         let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
         let is_ghost_pad = unsafe {
             glib::gobject_ffi::g_type_check_instance_is_a(
-                parent_obj as *mut glib::gobject_ffi::GTypeInstance,
+                pad as *mut glib::gobject_ffi::GTypeInstance,
                 ghost_pad_type,
             )
         };
-        let real_parent_obj = if is_ghost_pad == glib::ffi::GTRUE {
-            // If it's a GhostPad, get the real pad and then its parent
-            // Just in case its a GhostPad targetting another GhostPad, we keep unwrapping.
-            // This is fairly atypical but can happen 2 or 3 levels deep occasionally.
-            let real_pad =
-                unsafe { ffi::gst_ghost_pad_get_target(parent_obj as *mut ffi::GstGhostPad) };
-            if real_pad.is_null() {
-                return None;
-            }
-            unsafe { ffi::gst_object_get_parent(real_pad as *mut ffi::GstObject) }
-        } else {
-            parent_obj
-        };
 
-        // 3. Finally, cast the resulting object to an Element.
-        Some(real_parent_obj as *mut ffi::GstElement)
+        if is_ghost_pad == glib::ffi::GTRUE {
+            Some(unsafe { ffi::gst_ghost_pad_get_target(pad as *mut ffi::GstGhostPad) })
+        } else {
+            Some(pad)
+        }
     }
 
     /// Drop function for the `gobject` quark data.
@@ -322,9 +322,12 @@ mod imp {
 
         // Insert if absent, then get a reference
         let metrics = METRIC_CACHE.entry(key).or_insert_with(|| {
-            let sink_pad_s = gst::Pad::from_glib_ptr_borrow(&sink_pad);
-            // Just get the safe src_pad reference
-            let src_pad_s = gst::Pad::from_glib_ptr_borrow(&src_pad);
+            // Get the real sink pad
+            let binding = get_real_pad_ffi(sink_pad).unwrap();
+            let sink_pad_s = gst::Pad::from_glib_ptr_borrow(&binding);
+            // Get the real src pad
+            let binding = get_real_pad_ffi(src_pad).unwrap();
+            let src_pad_s = gst::Pad::from_glib_ptr_borrow(&binding);
             let element_latency = get_real_pad_parent_ffi(sink_pad).unwrap();
 
             let sink_name = sink_pad_s.name().to_string();

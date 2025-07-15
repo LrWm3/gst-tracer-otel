@@ -274,7 +274,7 @@ mod tests {
         let bin = gst::Bin::with_name("test-bin");
         let src = gst::ElementFactory::make("fakesrc")
             .name("src")
-            .property("num-buffers", 100)
+            .property("num-buffers", 10)
             .build()
             .unwrap();
         let sink = gst::ElementFactory::make("fakesink")
