@@ -35,7 +35,8 @@ mod tests {
             "GST_DEBUG",
             "fakesink:5,identity:5,GST_TRACER:5,otel-tracer:7",
         );
-        env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
+        // TODO - is there a better way?
+        env::set_var("GST_PLUGIN_PATH", "../../target/release:../../target/debug");
 
         // Initialize GStreamer
         gst::init().expect("Failed to initialize GStreamer");
