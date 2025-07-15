@@ -71,7 +71,7 @@ fn init_otlp() -> global::BoxedTracer {
 
 /// GStreamer Tracer subclass
 mod imp {
-    use crate::otellogbridge::{init_logs_otlp, LogBridge, PlaintextBridge, StructuredBridge};
+    use crate::otellogbridge::{init_logs_otlp, LogBridge, StructuredBridge};
 
     use super::*;
     use glib::{
@@ -79,7 +79,7 @@ mod imp {
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
-    use gstreamer::Structure;
+    
     use gstreamer_sys::{GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::{os::raw::c_void, ptr};

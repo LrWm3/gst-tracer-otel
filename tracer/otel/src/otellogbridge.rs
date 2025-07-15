@@ -28,9 +28,6 @@ use opentelemetry::logs::{AnyValue, Logger};
 use opentelemetry::Key;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::LogExporter;
-use opentelemetry_sdk::logs::BatchConfig;
-use opentelemetry_sdk::logs::BatchLogProcessor;
-use opentelemetry_sdk::logs::BatchLogProcessorBuilder;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::Resource;
 

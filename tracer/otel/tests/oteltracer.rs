@@ -2,7 +2,7 @@
 mod tests {
     use gst::prelude::*;
     use gstreamer as gst;
-    use std::{env, time::Instant, vec};
+    use std::env;
 
     #[test]
     fn given_basic_pipeline_when_run_otel_then_metrics_captured() {
