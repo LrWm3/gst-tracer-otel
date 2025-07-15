@@ -27,7 +27,7 @@ pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 }
 
 gst::plugin_define!(
-    gstoteltracer, // → libgstoteltracer.so
+    oteltracer, // → libgstoteltracer.so
     "GStreamer Open Telemetry tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),

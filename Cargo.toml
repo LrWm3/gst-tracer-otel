@@ -6,6 +6,11 @@ members = [
     "tracer/prometheus",
 ]
 
+default-members = [
+    "tracer/otel",
+    "tracer/prometheus",
+]
+
 [workspace.package]
 version = "0.1.0"
 repository = "git@github.com:LrWm3/gst-tracer-otel.git"

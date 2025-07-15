@@ -26,7 +26,7 @@ pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 }
 
 gst::plugin_define!(
-    gstnooptracer, // → libgstnooptracer.so
+    nooptracer, // → libgstnooptracer.so
     "GStreamer Noop tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
