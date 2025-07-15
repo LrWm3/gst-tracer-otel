@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "tracer/otel",
+    "tracer/noop",
+    "tracer/prometheus",
 ]
 
 [workspace.package]
