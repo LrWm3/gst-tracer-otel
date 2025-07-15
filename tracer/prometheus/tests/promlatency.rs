@@ -270,15 +270,15 @@ mod tests {
         );
 
         // Create a pipeline with a bin and elements
-        let pipeline = create_pipeline("test-pipeline");
+        let pipeline = gst::Pipeline::with_name("test-pipeline");
         let bin = gst::Bin::with_name("test-bin");
         let src = gst::ElementFactory::make("fakesrc")
-            .name("src")
+            .name("fakesrc")
             .property("num-buffers", 10)
             .build()
             .unwrap();
         let sink = gst::ElementFactory::make("fakesink")
-            .name("sink")
+            .name("fakesink")
             .build()
             .unwrap();
         let id1 = gst::ElementFactory::make("identity")
@@ -358,8 +358,6 @@ mod tests {
 
         // Print the metrics for debugging
         println!("Metrics:\n{}", metrics);
-
-        assert!(false)
     }
 
     #[test]

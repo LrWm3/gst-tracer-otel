@@ -108,8 +108,10 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                let peer = ffi::gst_pad_get_peer(pad);
-                do_send_latency_ts(ts, peer);
+                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SRC {
+                    let peer = ffi::gst_pad_get_peer(pad);
+                    do_send_latency_ts(ts, peer);
+                }
             }
 
             unsafe extern "C" fn do_pull_range_pre(
@@ -126,9 +128,11 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // Calculate latency when buffer arrives at sink
-                let peer = ffi::gst_pad_get_peer(pad);
-                do_receive_and_record_latency_ts(ts, peer);
+                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SRC {
+                    // Calculate latency when buffer arrives at sink
+                    let peer = ffi::gst_pad_get_peer(pad);
+                    do_receive_and_record_latency_ts(ts, peer);
+                }
             }
 
             unsafe extern "C" fn do_pull_range_post(
@@ -230,7 +234,13 @@ mod imp {
         };
 
         if is_ghost_pad == glib::ffi::GTRUE {
-            Some(unsafe { ffi::gst_ghost_pad_get_target(pad as *mut ffi::GstGhostPad) })
+            let maybe_real_pad =
+                unsafe { ffi::gst_ghost_pad_get_target(pad as *mut ffi::GstGhostPad) };
+            if maybe_real_pad.is_null() {
+                None
+            } else {
+                get_real_pad_ffi(maybe_real_pad)
+            }
         } else {
             Some(pad)
         }
@@ -364,6 +374,13 @@ mod imp {
             };
 
             let labels = &[&element_latency_name, &src_pad_name, &sink_pad_name];
+            gst::info!(
+                CAT,
+                "Logging latency for element: {}, src_pad: {}, sink_pad: {}",
+                element_latency_name,
+                src_pad_name,
+                sink_pad_name
+            );
             (
                 LATENCY_LAST.with_label_values(labels),
                 LATENCY_SUM.with_label_values(labels),
