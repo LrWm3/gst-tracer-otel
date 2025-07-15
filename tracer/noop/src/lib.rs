@@ -17,28 +17,21 @@
  */
 use glib;
 use gstreamer as gst;
-#[cfg(feature = "noop")]
 mod nooplatency;
-#[cfg(not(feature = "noop"))]
-mod promlatency;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    #[cfg(feature = "noop")]
-    {
-        nooplatency::register(plugin)?;
-    }
-    promlatency::register(plugin)?;
+    nooplatency::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
-    telemetytracer, // → libgsttelemetytracer.so
-    "GStreamer telemetry latency tracer",
+    nooptracer, // → libgstnooptracer.so
+    "GStreamer Noop tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",
-    "gst_telemetry_latency_tracer",
-    "gst_telemetry_latency_tracer",
+    "gst_noop_tracer",
+    "gst_noop_tracer",
     "https://example.com"
 );

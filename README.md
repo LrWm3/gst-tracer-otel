@@ -54,7 +54,7 @@ Copy the built plugin into a directory on your GStreamer plugin search path, or 
 
 ```bash
 # System-wide install (requires permissions)
-sudo cp target/release/libgsttelemetytracer.so /usr/lib/gstreamer-1.0/
+sudo cp target/release/libgst*.so /usr/lib/gstreamer-1.0/
 
 # Or for a local setup (debug)
 export GST_PLUGIN_PATH="$PWD/target/debug/:$GST_PLUGIN_PATH"

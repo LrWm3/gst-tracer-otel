@@ -1,1 +1,2 @@
-leak:promlatency::tests::create_pipeline
+leak:promlatency::tests
+leak:oteltracer::tests

@@ -1,5 +1,3 @@
-// tests/bench_prom_latency.rs
-
 #[cfg(test)]
 mod tests {
     use gst::prelude::*;
@@ -15,7 +13,8 @@ mod tests {
         );
         env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:6");
         env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
-        env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
+        // TODO - is there a better way?
+        env::set_var("GST_PLUGIN_PATH", "../../target/release:../../target/debug");
 
         // Initialize GStreamer
         gst::init().expect("Failed to initialize GStreamer");
@@ -130,7 +129,8 @@ mod tests {
         );
         env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:6");
         env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
-        env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
+        // TODO - is there a better way?
+        env::set_var("GST_PLUGIN_PATH", "../../target/release:../../target/debug");
 
         // Initialize GStreamer
         gst::init().expect("Failed to initialize GStreamer");
@@ -261,7 +261,8 @@ mod tests {
     #[test]
     fn bench_prom_latency_through_pipeline() {
         env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
-        env::set_var("GST_PLUGIN_PATH", env!("CARGO_MANIFEST_DIR"));
+        // TODO - is there a better way?
+        env::set_var("GST_PLUGIN_PATH", "../../target/release:../../target/debug");
         env::set_var(
             "GST_TRACERS",
             "prom-latency(filters='GstBuffer',flags=element)",

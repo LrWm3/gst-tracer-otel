@@ -27,11 +27,11 @@ else
 
     # 3) Enable the ddebs (debug-symbol) repository
     echo "deb http://ddebs.ubuntu.com $(lsb_release -cs) main restricted universe multiverse" \
-      | sudo tee /etc/apt/sources.list.d/ddebs.list
+      | tee /etc/apt/sources.list.d/ddebs.list
     echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-updates main restricted universe multiverse" \
-      | sudo tee -a /etc/apt/sources.list.d/ddebs.list
+      | tee -a /etc/apt/sources.list.d/ddebs.list
     echo "deb http://ddebs.ubuntu.com $(lsb_release -cs)-proposed main restricted universe multiverse" \
-      | sudo tee -a /etc/apt/sources.list.d/ddebs.list
+      | tee -a /etc/apt/sources.list.d/ddebs.list
 
     # 4) Install the GStreamer debug-symbol packages
     apt-get update && apt-get install -y --no-install-recommends \
