@@ -232,14 +232,44 @@ mod imp {
                 ghost_pad_type,
             )
         };
-
-        if is_ghost_pad == glib::ffi::GTRUE {
+        let o_pad = if is_ghost_pad == glib::ffi::GTRUE {
             let maybe_real_pad =
                 unsafe { ffi::gst_ghost_pad_get_target(pad as *mut ffi::GstGhostPad) };
             if maybe_real_pad.is_null() {
                 None
             } else {
                 get_real_pad_ffi(maybe_real_pad)
+            }
+        } else {
+            None
+        };
+
+        if o_pad.is_some() {
+            return o_pad;
+        }
+
+        let proxy_pad_type = unsafe { ffi::gst_proxy_pad_get_type() };
+        let is_proxy_pad = unsafe {
+            glib::gobject_ffi::g_type_check_instance_is_a(
+                pad as *mut glib::gobject_ffi::GTypeInstance,
+                proxy_pad_type,
+            )
+        };
+
+        if is_proxy_pad == glib::ffi::GTRUE {
+            let maybe_ghost_pad = unsafe {
+                ffi::gst_object_get_parent(pad as *mut ffi::GstObject) as *mut ffi::GstPad
+            };
+            if maybe_ghost_pad.is_null() {
+                None
+            } else {
+                // get the peer, that might be our real pad
+                let maybe_real_pad = unsafe { ffi::gst_pad_get_peer(maybe_ghost_pad) };
+                if maybe_real_pad.is_null() {
+                    None
+                } else {
+                    get_real_pad_ffi(maybe_real_pad)
+                }
             }
         } else {
             Some(pad)
