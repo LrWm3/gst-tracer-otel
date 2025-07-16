@@ -274,7 +274,7 @@ mod tests {
         let bin = gst::Bin::with_name("test-bin");
         let src = gst::ElementFactory::make("fakesrc")
             .name("fakesrc")
-            .property("num-buffers", 10)
+            .property("num-buffers", 100)
             .build()
             .unwrap();
         let sink = gst::ElementFactory::make("fakesink")
@@ -287,18 +287,25 @@ mod tests {
             .unwrap();
         let id2 = gst::ElementFactory::make("identity")
             .name("id2")
+            .property_from_str("sleep-time", "10000")
+            .build()
+            .unwrap();
+        let id3 = gst::ElementFactory::make("identity")
+            .name("id3")
             .build()
             .unwrap();
 
         // Add elements to the bin
         bin.add(&id1).unwrap();
         bin.add(&id2).unwrap();
+        bin.add(&id3).unwrap();
 
         // Link the elements together
         id1.link(&id2).unwrap();
+        id2.link(&id3).unwrap();
 
         let g_src = gst::GhostPad::builder(gstreamer::PadDirection::Src)
-            .with_target(&id2.static_pad("src").unwrap())
+            .with_target(&id3.static_pad("src").unwrap())
             .ok()
             .expect("Failed to create GhostPad for src")
             .build();

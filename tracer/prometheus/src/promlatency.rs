@@ -108,10 +108,8 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SRC {
-                    let peer = ffi::gst_pad_get_peer(pad);
-                    do_send_latency_ts(ts, peer);
-                }
+                let peer = ffi::gst_pad_get_peer(pad);
+                do_send_latency_ts(ts, pad, peer);
             }
 
             unsafe extern "C" fn do_pull_range_pre(
@@ -119,8 +117,9 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // TODO - do I send for pad? or for peer?
-                do_send_latency_ts(ts, pad);
+                // For pull, we treat sink as src, src as sink as we're going the other way
+                let peer = ffi::gst_pad_get_peer(pad);
+                do_send_latency_ts(ts, peer, pad);
             }
 
             unsafe extern "C" fn do_push_buffer_post(
@@ -128,11 +127,9 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                if ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SRC {
-                    // Calculate latency when buffer arrives at sink
-                    let peer = ffi::gst_pad_get_peer(pad);
-                    do_receive_and_record_latency_ts(ts, peer);
-                }
+                // Calculate latency when buffer arrives at sink
+                let peer = ffi::gst_pad_get_peer(pad);
+                do_receive_and_record_latency_ts(ts, pad, peer);
             }
 
             unsafe extern "C" fn do_pull_range_post(
@@ -140,8 +137,9 @@ mod imp {
                 ts: u64,
                 pad: *mut gst::ffi::GstPad,
             ) {
-                // Calculate latency when buffer arrives at sink
-                do_receive_and_record_latency_ts(ts, pad);
+                // For pull, we treat sink as src, src as sink as we're going the other way
+                let peer = ffi::gst_pad_get_peer(pad);
+                do_receive_and_record_latency_ts(ts, peer, pad);
             }
 
             unsafe {
@@ -223,6 +221,16 @@ mod imp {
         })
     }
 
+    fn is_proxy_pad(pad: *mut ffi::GstPad) -> bool {
+        let proxy_pad_type = unsafe { ffi::gst_proxy_pad_get_type() };
+        unsafe {
+            glib::gobject_ffi::g_type_check_instance_is_a(
+                pad as *mut glib::gobject_ffi::GTypeInstance,
+                proxy_pad_type,
+            ) == glib::ffi::GTRUE
+        }
+    }
+
     /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
     fn get_real_pad_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstPad> {
         let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
@@ -288,32 +296,40 @@ mod imp {
         let value: Box<QD> = Box::from_raw(ptr as *mut QD);
         drop(value)
     }
-    unsafe fn do_send_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
-        if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
-            if let Some(parent) = get_real_pad_parent_ffi(pad) {
-                if !parent.is_null() {
-                    if glib::gobject_ffi::g_type_check_instance_is_a(
-                        parent as *mut gobject_sys::GTypeInstance,
-                        ffi::gst_bin_get_type(),
-                    ) == glib::ffi::GFALSE
-                    {
-                        // To avoid many tiny allocations, if quark is present, we overwrite it
-                        let existing = glib::gobject_ffi::g_object_get_qdata(
-                            pad as *mut gobject_sys::GObject,
-                            *LATENCY_QUARK,
-                        ) as *mut u64;
-                        if !existing.is_null() {
-                            // Overwrite in place:
-                            *existing = ts;
-                        } else {
-                            // First time: allocate & install
-                            let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
-                            glib::gobject_ffi::g_object_set_qdata_full(
-                                pad as *mut gobject_sys::GObject,
+    unsafe fn do_send_latency_ts(
+        ts: u64,
+        src_pad: *mut gst::ffi::GstPad,
+        sink_pad: *mut gst::ffi::GstPad,
+    ) {
+        if !sink_pad.is_null() && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK {
+            // If we go upstream through a proxy pad, we'll end up counting the latency twice.
+            // We may want to consider handling this differently if we add bin support at a later time.
+            if !is_proxy_pad(src_pad) {
+                if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
+                    if !parent.is_null() {
+                        if glib::gobject_ffi::g_type_check_instance_is_a(
+                            parent as *mut gobject_sys::GTypeInstance,
+                            ffi::gst_bin_get_type(),
+                        ) == glib::ffi::GFALSE
+                        {
+                            // To avoid many tiny allocations, if quark is present, we overwrite it
+                            let existing = glib::gobject_ffi::g_object_get_qdata(
+                                sink_pad as *mut gobject_sys::GObject,
                                 *LATENCY_QUARK,
-                                ptr,
-                                Some(drop_value::<u64>),
-                            );
+                            ) as *mut u64;
+                            if !existing.is_null() {
+                                // Overwrite in place:
+                                *existing = ts;
+                            } else {
+                                // First time: allocate & install
+                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
+                                glib::gobject_ffi::g_object_set_qdata_full(
+                                    sink_pad as *mut gobject_sys::GObject,
+                                    *LATENCY_QUARK,
+                                    ptr,
+                                    Some(drop_value::<u64>),
+                                );
+                            }
                         }
                     }
                 }
@@ -321,25 +337,31 @@ mod imp {
         }
     }
 
-    unsafe fn do_receive_and_record_latency_ts(ts: u64, pad: *mut gst::ffi::GstPad) {
-        if !pad.is_null() && ffi::gst_pad_get_direction(pad) == ffi::GST_PAD_SINK {
-            if let Some(parent) = get_real_pad_parent_ffi(pad) {
-                if !parent.is_null() {
-                    if glib::gobject_ffi::g_type_check_instance_is_a(
-                        parent as *mut gobject_sys::GTypeInstance,
-                        ffi::gst_bin_get_type(),
-                    ) == glib::ffi::GFALSE
-                    {
-                        // Get the the qdata; this means drop_value will not be called
-                        // and we can safely convert the pointer to a Box.
-                        let src_ts = glib::gobject_ffi::g_object_get_qdata(
-                            pad as *mut gobject_sys::GObject,
-                            *LATENCY_QUARK,
-                        ) as *mut u64;
-                        if !src_ts.is_null() && *src_ts != 0 {
-                            log_latency_ffi(*src_ts, pad, ts, parent);
-                            // Reset the value to avoid reusing it
-                            *src_ts = 0;
+    unsafe fn do_receive_and_record_latency_ts(
+        ts: u64,
+        src_pad: *mut gst::ffi::GstPad,
+        sink_pad: *mut gst::ffi::GstPad,
+    ) {
+        if !sink_pad.is_null() && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK {
+            if !is_proxy_pad(src_pad) {
+                if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
+                    if !parent.is_null() {
+                        if glib::gobject_ffi::g_type_check_instance_is_a(
+                            parent as *mut gobject_sys::GTypeInstance,
+                            ffi::gst_bin_get_type(),
+                        ) == glib::ffi::GFALSE
+                        {
+                            // Get the the qdata; this means drop_value will not be called
+                            // and we can safely convert the pointer to a Box.
+                            let src_ts = glib::gobject_ffi::g_object_get_qdata(
+                                sink_pad as *mut gobject_sys::GObject,
+                                *LATENCY_QUARK,
+                            ) as *mut u64;
+                            if !src_ts.is_null() && *src_ts != 0 {
+                                log_latency_ffi(*src_ts, sink_pad, ts, parent);
+                                // Reset the value to avoid reusing it
+                                *src_ts = 0;
+                            }
                         }
                     }
                 }
