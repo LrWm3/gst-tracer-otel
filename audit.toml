@@ -1,0 +1,9 @@
+# Accepting warning for paste crate (RUSTSEC-2024-0436)
+# Title: paste - no longer maintained
+# Advisory: https://rustsec.org/advisories/RUSTSEC-2024-0436
+# Dependency: gstreamer 0.23.7
+[advisories]
+ignore = ["RUSTSEC-2024-0436"]
+
+[target]
+arch = ["x86_64", "aarch64"]
