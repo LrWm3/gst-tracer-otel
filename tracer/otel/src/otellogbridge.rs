@@ -10,6 +10,13 @@ use opentelemetry::logs::Severity;
 
 pub trait LogBridge: Send + Sync + 'static {
     /// Called for every GstDebugMessage
+    ///
+    /// Arguments are similar to GstDebugMessage, but with some additional fields:
+    /// - `trace_id`: The trace ID of the current trace context.
+    /// - `span_id`: The span ID of the current span context.
+    ///
+    /// This allows structured logging of debug messages with trace/span context.
+    #[allow(clippy::too_many_arguments)]
     fn log_message(
         &self,
         category: &DebugCategory,
@@ -64,7 +71,7 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
         function: &GStr,
         line: u32,
         message: &DebugMessage,
-        obj: Option<&LoggedObject>,
+        _obj: Option<&LoggedObject>,
         trace_id: &str,
         span_id: &str,
     ) {
@@ -84,7 +91,7 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
             message
                 .get()
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "".to_string())
+                .unwrap_or_default()
                 .to_string()
                 .into(),
         );
@@ -113,6 +120,7 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
 }
 pub struct PlaintextBridge;
 
+#[allow(dead_code)]
 impl PlaintextBridge {
     pub fn new() -> Self {
         PlaintextBridge
@@ -139,15 +147,15 @@ impl LogBridge for PlaintextBridge {
         let mins = (secs / 60) % 60;
         let secs_rem = secs % 60;
         let nanos = micros * 1_000;
-        let timestamp = format!("{}:{:02}:{:02}.{:09}", hours, mins, secs_rem, nanos);
+        let timestamp = format!("{hours}:{mins:02}:{secs_rem:02}.{nanos:09}");
 
         // pointer to current Thread handle
         let current_thread = thread::current();
         let thread_ptr = format!("{:p}", &current_thread);
 
         // level and category
-        let level_str = format!("{:?}", level).to_uppercase();
-        let level_padded = format!("{:<16}", level_str); // pad to 16 chars
+        let level_str = format!("{level:?}").to_uppercase();
+        let level_padded = format!("{level_str:<16}"); // pad to 16 chars
         let category_str = category.name();
 
         // the actual message text
@@ -179,7 +187,8 @@ pub fn init_logs_otlp() -> SdkLoggerProvider {
         .expect("failed to build OTLP exporter");
 
     // 3. Provider
-    let provider = SdkLoggerProvider::builder()
+
+    SdkLoggerProvider::builder()
         .with_resource(
             Resource::builder_empty()
                 .with_attribute(KeyValue::new("service.name", "gst-tracer-otel"))
@@ -187,7 +196,5 @@ pub fn init_logs_otlp() -> SdkLoggerProvider {
         )
         .with_log_processor(opentelemetry_sdk::logs::SimpleLogProcessor::new(exporter))
         // .with_log_processor(BatchLogProcessor::builder(exporter).build())
-        .build();
-
-    provider
+        .build()
 }

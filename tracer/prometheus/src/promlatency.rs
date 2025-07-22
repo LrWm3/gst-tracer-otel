@@ -21,11 +21,9 @@ use std::sync::OnceLock;
 use std::thread;
 
 use dashmap::DashMap;
-use glib;
 use glib::subclass::prelude::*;
 use glib::translate::IntoGlib;
 use glib::Quark;
-use gobject_sys::GCallback;
 use gst::ffi;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -50,7 +48,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 // A global, concurrent cache mapping pad‐ptrs → (last, sum, count)
-static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(|| DashMap::new());
+static METRIC_CACHE: Lazy<DashMap<usize, (Gauge, Counter, Counter)>> = Lazy::new(DashMap::new);
 static LATENCY_QUARK: Lazy<u32> = Lazy::new(|| Quark::from_str("latency_probe.ts").into_glib());
 
 // Define Prometheus metrics, all in nanoseconds
@@ -100,7 +98,7 @@ mod imp {
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
 
             // Start the metrics server if not already started
-            METRICS_SERVER_ONCE.get_or_init(|| maybe_start_metrics_server());
+            METRICS_SERVER_ONCE.get_or_init(maybe_start_metrics_server);
 
             // Hook callbacks
             unsafe extern "C" fn do_push_buffer_pre(
@@ -145,23 +143,31 @@ mod imp {
             unsafe {
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-push-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_pre as *const ()),
+                    c"pad-push-pre".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_buffer_pre as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-push-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_post as *const ()),
+                    c"pad-push-post".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_buffer_post as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-pull-range-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_pull_range_pre as *const ()),
+                    c"pad-pull-range-pre".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_pull_range_pre as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-pull-range-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_pull_range_post as *const ()),
+                    c"pad-pull-range-post".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_pull_range_post as *const (),
+                    ),
                 );
             }
         }
@@ -177,10 +183,16 @@ mod imp {
                     .return_type::<Option<String>>()
                     .class_handler(|_, _args| {
                         // Call the request_metrics function when the signal is emitted
-                        Some(request_metrics().to_value())
+                        let ret = request_metrics();
+                        gst::info!(
+                            CAT,
+                            "Prometheus metrics requested via signal, returning {} bytes",
+                            ret.len()
+                        );
+                        Some(ret.to_value())
                     })
-                    .accumulator(|_hint, _acc, _value| {
-                        // First signal handler wins
+                    .accumulator(|_hint, ret, value| {
+                        *ret = value.clone();
                         true
                     })
                     .build()]
@@ -193,7 +205,7 @@ mod imp {
 
     // Add this function, which is the handler for the "request-metrics" signal
     fn request_metrics() -> String {
-        gst::info!(CAT, "Metrics requested via signal");
+        gst::debug!(CAT, "Metrics requested via signal");
         let metric_families = gather();
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
@@ -301,36 +313,34 @@ mod imp {
         src_pad: *mut gst::ffi::GstPad,
         sink_pad: *mut gst::ffi::GstPad,
     ) {
-        if !sink_pad.is_null() && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK {
-            // If we go upstream through a proxy pad, we'll end up counting the latency twice.
-            // We may want to consider handling this differently if we add bin support at a later time.
-            if !is_proxy_pad(src_pad) {
-                if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
-                    if !parent.is_null() {
-                        if glib::gobject_ffi::g_type_check_instance_is_a(
-                            parent as *mut gobject_sys::GTypeInstance,
-                            ffi::gst_bin_get_type(),
-                        ) == glib::ffi::GFALSE
-                        {
-                            // To avoid many tiny allocations, if quark is present, we overwrite it
-                            let existing = glib::gobject_ffi::g_object_get_qdata(
-                                sink_pad as *mut gobject_sys::GObject,
-                                *LATENCY_QUARK,
-                            ) as *mut u64;
-                            if !existing.is_null() {
-                                // Overwrite in place:
-                                *existing = ts;
-                            } else {
-                                // First time: allocate & install
-                                let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
-                                glib::gobject_ffi::g_object_set_qdata_full(
-                                    sink_pad as *mut gobject_sys::GObject,
-                                    *LATENCY_QUARK,
-                                    ptr,
-                                    Some(drop_value::<u64>),
-                                );
-                            }
-                        }
+        if !sink_pad.is_null()
+            && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK
+            && !is_proxy_pad(src_pad)
+        {
+            if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
+                if !parent.is_null()
+                    && glib::gobject_ffi::g_type_check_instance_is_a(
+                        parent as *mut gobject_sys::GTypeInstance,
+                        ffi::gst_bin_get_type(),
+                    ) == glib::ffi::GFALSE
+                {
+                    // To avoid many tiny allocations, if quark is present, we overwrite it
+                    let existing = glib::gobject_ffi::g_object_get_qdata(
+                        sink_pad as *mut gobject_sys::GObject,
+                        *LATENCY_QUARK,
+                    ) as *mut u64;
+                    if !existing.is_null() {
+                        // Overwrite in place:
+                        *existing = ts;
+                    } else {
+                        // First time: allocate & install
+                        let ptr = Box::into_raw(Box::new(ts)) as *mut c_void;
+                        glib::gobject_ffi::g_object_set_qdata_full(
+                            sink_pad as *mut gobject_sys::GObject,
+                            *LATENCY_QUARK,
+                            ptr,
+                            Some(drop_value::<u64>),
+                        );
                     }
                 }
             }
@@ -342,27 +352,27 @@ mod imp {
         src_pad: *mut gst::ffi::GstPad,
         sink_pad: *mut gst::ffi::GstPad,
     ) {
-        if !sink_pad.is_null() && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK {
-            if !is_proxy_pad(src_pad) {
-                if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
-                    if !parent.is_null() {
-                        if glib::gobject_ffi::g_type_check_instance_is_a(
-                            parent as *mut gobject_sys::GTypeInstance,
-                            ffi::gst_bin_get_type(),
-                        ) == glib::ffi::GFALSE
-                        {
-                            // Get the the qdata; this means drop_value will not be called
-                            // and we can safely convert the pointer to a Box.
-                            let src_ts = glib::gobject_ffi::g_object_get_qdata(
-                                sink_pad as *mut gobject_sys::GObject,
-                                *LATENCY_QUARK,
-                            ) as *mut u64;
-                            if !src_ts.is_null() && *src_ts != 0 {
-                                log_latency_ffi(*src_ts, sink_pad, ts, parent);
-                                // Reset the value to avoid reusing it
-                                *src_ts = 0;
-                            }
-                        }
+        if !sink_pad.is_null()
+            && ffi::gst_pad_get_direction(sink_pad) == ffi::GST_PAD_SINK
+            && !is_proxy_pad(src_pad)
+        {
+            if let Some(parent) = get_real_pad_parent_ffi(sink_pad) {
+                if !parent.is_null()
+                    && glib::gobject_ffi::g_type_check_instance_is_a(
+                        parent as *mut gobject_sys::GTypeInstance,
+                        ffi::gst_bin_get_type(),
+                    ) == glib::ffi::GFALSE
+                {
+                    // Get the the qdata; this means drop_value will not be called
+                    // and we can safely convert the pointer to a Box.
+                    let src_ts = glib::gobject_ffi::g_object_get_qdata(
+                        sink_pad as *mut gobject_sys::GObject,
+                        *LATENCY_QUARK,
+                    ) as *mut u64;
+                    if !src_ts.is_null() && *src_ts != 0 {
+                        log_latency_ffi(*src_ts, sink_pad, ts, parent);
+                        // Reset the value to avoid reusing it
+                        *src_ts = 0;
                     }
                 }
             }
@@ -416,7 +426,7 @@ mod imp {
                 if !parent.is_null() {
                     let element_src = gst::Element::from_glib_ptr_borrow(&parent);
                     // If we have a parent element, use its name
-                    element_src.name().to_string() + "." + &src_pad_s.name().to_string()
+                    element_src.name().to_string() + "." + &src_pad_s.name()
                 } else {
                     // Otherwise, just use the pad name
                     src_pad_s.name().to_string()

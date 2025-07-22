@@ -1,7 +1,6 @@
 // Derived from gstlatency.c: tracing module that logs processing latency stats
 // Now uses OTLP exporter for both traces and metrics, removing Prometheus-specific HTTP server
 
-use glib;
 use glib::subclass::prelude::*;
 use glib::translate::IntoGlib;
 use glib::Quark;
@@ -34,6 +33,7 @@ static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").i
 #[derive(Debug)]
 struct GstSpanSink<'a> {
     // guard deallocation ends span
+    #[allow(dead_code)]
     guard: opentelemetry::ContextGuard,
     span: opentelemetry::trace::SpanRef<'a>,
 }
@@ -79,7 +79,7 @@ mod imp {
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
-    
+
     use gstreamer_sys::{GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::{os::raw::c_void, ptr};
@@ -96,6 +96,7 @@ mod imp {
 
     impl GstOtelSpanBuf {
         /// Attach a new meta with the given label to `buffer`.
+        #[allow(dead_code)]
         pub fn add(
             buffer: &mut gst::BufferRef,
             span: SpanContext,
@@ -122,7 +123,7 @@ mod imp {
                     buffer,
                     imp::gst_span_buf_get_info(),
                     &mut *params as *mut _ as *mut _,
-                ) as *mut imp::GstOtelSpanBuf;
+                );
             }
         }
 
@@ -196,7 +197,7 @@ mod imp {
             MetaInfo(
                 ptr::NonNull::new(gst::ffi::gst_meta_register(
                     gst_span_buf_api_get_type().into_glib(),
-                    b"GstOtelSpanBufAPI\0".as_ptr() as *const _,
+                    c"GstOtelSpanBufAPI".as_ptr() as *const _,
                     std::mem::size_of::<GstOtelSpanBuf>(),
                     Some(gst_spanbuf_init),
                     Some(gst_spanbuf_free),
@@ -209,16 +210,17 @@ mod imp {
     }
 
     // Called once per program to register the API type
+    #[allow(static_mut_refs)]
     pub fn gst_span_buf_api_get_type() -> glib::Type {
         static ONCE: std::sync::OnceLock<glib::Type> = std::sync::OnceLock::new();
         static mut TAG: [u8; 12] = [0; 12]; // mutable to allow setting the tag
         *ONCE.get_or_init(|| unsafe {
             let t = glib::Type::from_glib(gst::ffi::gst_meta_api_type_register(
-                b"GstOtelSpanBuf\0".as_ptr() as *const _,
+                c"GstOtelSpanBuf".as_ptr() as *const _,
                 TAG.as_mut_ptr() as *mut *const i8,
             ));
             assert_ne!(t, glib::Type::INVALID);
-            println!("t: {:?}", t);
+            println!("t: {t:?}");
             println!("t.into_glib(): {:?}", t.into_glib());
             t
         })
@@ -324,18 +326,18 @@ mod imp {
                 let obj = tracer_obj.to_glib_none().0;
                 gst::ffi::gst_tracing_register_hook(
                     obj,
-                    b"pad-push-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_pre as *const ()),
+                    c"pad-push-pre".as_ptr() as *const _,
+                    std::mem::transmute::<*const (), GCallback>(do_push_buffer_pre as *const ()),
                 );
                 // gst::ffi::gst_tracing_register_hook(
                 //     obj,
-                //     b"pad-push-event-pre\0".as_ptr() as *const _,
+                //     c"pad-push-event-pre".as_ptr() as *const _,
                 //     std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
                 // );
                 gst::ffi::gst_tracing_register_hook(
                     obj,
-                    b"pad-push-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_post as *const ()),
+                    c"pad-push-post".as_ptr() as *const _,
+                    std::mem::transmute::<*const (), GCallback>(do_push_buffer_post as *const ()),
                 );
             }
         }
@@ -406,7 +408,7 @@ mod imp {
                         // unsafe version
                         unsafe {
                             let ptr: *mut gst::ffi::GstObject = elem.as_ptr() as *mut _;
-                            if (*ptr).flags & gst::ffi::GST_ELEMENT_FLAG_SOURCE as u32 != 0 {
+                            if (*ptr).flags & gst::ffi::GST_ELEMENT_FLAG_SOURCE != 0 {
                                 gst::trace!(CAT, "Element {} is a source element", elem.name());
                             } else {
                                 gst::trace!(CAT, "Element {} is not a source element", elem.name());

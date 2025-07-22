@@ -1,0 +1,41 @@
+name: Update Benchmarks
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  bench-update:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Check out the full history so we can commit back
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Install just
+      - name: Setup just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: "1.40.0"
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: just setup
+
+      # 4. Run the benchmark update
+      - name: Run bench-perf-update
+        run: just bench-perf-update
+
+      # 5. Commit & push only if this is not already the “skip ci” commit
+      - name: Commit updated benchmarks
+        if: "!contains(github.event.head_commit.message, '[skip ci]')"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # adjust the glob/path to wherever your .data files land
+          git add .github/perf/*.data
+          git commit -m "Update benchmarks [skip ci]"
+          git push

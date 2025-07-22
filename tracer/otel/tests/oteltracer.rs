@@ -1,8 +1,13 @@
 #[cfg(test)]
 mod tests {
     use gst::prelude::*;
+    #[allow(unused_imports)]
+    use gstoteltracer::*;
     use gstreamer as gst;
-    use std::env;
+    use std::{
+        env::{self, consts::ARCH},
+        path::Path,
+    };
 
     #[test]
     fn given_basic_pipeline_when_run_otel_then_metrics_captured() {
@@ -26,6 +31,8 @@ mod tests {
     }
 
     fn help_run_gstreamer_tests(name: &str, pipeline: &str) {
+        // Translates to directory containing this modules' Cargo.toml file.
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         // Set environment variables for the tracer
         env::set_var(
             "GST_TRACERS",
@@ -35,8 +42,23 @@ mod tests {
             "GST_DEBUG",
             "fakesink:5,identity:5,GST_TRACER:5,otel-tracer:7",
         );
-        // TODO - is there a better way?
-        env::set_var("GST_PLUGIN_PATH", "../../target/release:../../target/debug");
+        let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
+        let debug_plugin_path = root_manifest_dir.join("target/debug");
+        let release_plugin_path = root_manifest_dir.join("target/release");
+        let debug_plugin_with_target =
+            debug_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+        let release_plugin_with_target =
+            release_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+        env::set_var(
+            "GST_PLUGIN_PATH",
+            format!(
+                "{}:{}:{}:{}",
+                release_plugin_with_target.to_str().unwrap(),
+                release_plugin_path.to_str().unwrap(),
+                debug_plugin_with_target.to_str().unwrap(),
+                debug_plugin_path.to_str().unwrap(),
+            ),
+        );
 
         // Initialize GStreamer
         gst::init().expect("Failed to initialize GStreamer");

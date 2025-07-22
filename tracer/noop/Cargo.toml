@@ -7,11 +7,6 @@ edition     = "2021"
 name = "gstnooptracer"
 crate-type  = ["cdylib", "rlib"]
 
-[profile.test]
-inherits = "dev"
-debug = true
-strip = false
-
 [dependencies]
 glib.workspace=true
 gobject-sys.workspace=true

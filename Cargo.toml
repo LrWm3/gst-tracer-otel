@@ -21,19 +21,14 @@ license = "LGPL"
 # ── GStreamer stack ───────────────────────────────────────────────
 glib = "0.20"
 gobject-sys = "0.20"
-gstreamer         = { version = "0.23.6", features = ["v1_16"] }
+gstreamer         = { version = "0.23.6", features = ["v1_18"] }
 gstreamer-sys     = "0.23.6"  # raw FFI for hook registration
 
 [profile.release]
 lto = "thin"
-opt-level = 3
-debug = true
+opt-level = 2
+debug = "limited"
 panic = 'unwind'
 
-[profile.dev]
-opt-level = 1
-lto = "off"
-
 [profile.test]
-inherits = "release"
-strip = false
+inherits = "dev"
