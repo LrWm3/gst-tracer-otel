@@ -33,3 +33,10 @@ test-address-sanitizer test="given_basic_pipeline_when_run_then_metrics_captured
 # Test the CI workflow using `act`.
 test-ci:
   act --workflows ".github/workflows/ci.yaml" --secret-file "" --var-file "" --input-file "" --eventpath ""
+
+bench-perf:
+    mkdir -p target/bench/perf
+    for bench in $(cargo test -- --list | grep bench | awk '{print $1}'); do \
+        perf record -o "target/bench/perf/$bench.data" cargo test --bench "$bench"; \
+        perf report -i "target/bench/perf/$bench.data" -o "target/bench/perf/$bench.txt"; \
+    done

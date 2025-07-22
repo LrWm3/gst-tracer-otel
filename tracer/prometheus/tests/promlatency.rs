@@ -316,13 +316,13 @@ mod tests {
         println!("Metrics:\n{}", metrics);
     }
 
-    #[bench]
+    #[test]
     fn bench_prom_latency_through_pipeline() {
         setup_test();
         run_bench("prom-latency");
     }
 
-    #[bench]
+    #[test]
     #[ignore]
     fn bench_latency_through_pipeline() {
         env::set_var("GST_TRACERS", "latency(filters='GstBuffer',flags=element)");
