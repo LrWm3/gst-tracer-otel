@@ -36,7 +36,10 @@ test-ci:
 
 bench-perf:
     mkdir -p target/bench/perf
-    for bench in $(cargo test -- --list | grep bench | awk '{print $1}'); do \
-        perf record -o "target/bench/perf/$bench.data" cargo test --bench "$bench"; \
-        perf report -i "target/bench/perf/$bench.data" -o "target/bench/perf/$bench.txt"; \
+    # Find all test executables without running them and then profile each one.
+    for test_executable in $(cargo test --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]'); do \
+        for bench in $($test_executable --list | grep ::bench | awk -F'::' '{print $NF}' | awk -F':' '{print $1}' | sort -u); do \
+          perf record -o "target/bench/perf/$bench.data" $test_executable "$bench"; \
+          perf report -i "target/bench/perf/$bench.data" >> "target/bench/perf/$bench.txt"; \
+        done \
     done

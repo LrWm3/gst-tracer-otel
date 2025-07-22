@@ -322,22 +322,6 @@ mod tests {
         run_bench("prom-latency");
     }
 
-    #[test]
-    #[ignore]
-    fn bench_latency_through_pipeline() {
-        env::set_var("GST_TRACERS", "latency(filters='GstBuffer',flags=element)");
-        env::set_var("GST_DEBUG", "GST_TRACER:5,latency:3");
-
-        let durations: Vec<_> = (0..5).map(|_| run_bench("latency")).collect();
-
-        // Print the durations
-        for (i, duration) in durations.iter().enumerate() {
-            println!("Run {}: Duration: {:?}", i + 1, duration);
-            // Optionally assert it’s under some threshold:
-            // assert!(duration.as_secs_f64() < 1.0, "Pipeline too slow!");
-        }
-    }
-
     fn run_bench(tracer_name: &str) -> std::time::Duration {
         // Initialize GStreamer (loads your plugin & tracer)
         gst::init().expect("Failed to initialize GStreamer");
