@@ -47,6 +47,22 @@ mod tests {
                 _ => (),
             }
         }
+        // Get the active tracer and then emit to get the metrics.
+
+        let binding = gst::active_tracers();
+        println!("Active tracers: {}", binding.len());
+        let tracer = binding
+            .iter()
+            .map(|t| {
+                println!("Active tracer: {}", t.name());
+                t
+            })
+            .find(|t| t.name() == "promlatencytracer0")
+            .expect("Expected to find the `prom-latency` tracer");
+        let metrics_from_signal = tracer
+            .emit_by_name::<Option<String>>("request-metrics", &[])
+            .unwrap();
+
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
 
@@ -61,6 +77,11 @@ mod tests {
 
         // Print the metrics for debugging
         println!("Metrics:\n{}", metrics);
+
+        assert!(
+            metrics_from_signal == metrics.clone(),
+            "Expected metrics from signal to match the metrics from the HTTP request"
+        );
 
         // Validate that the metrics contain expected values
         let metric_asserts = vec![

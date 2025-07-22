@@ -183,10 +183,16 @@ mod imp {
                     .return_type::<Option<String>>()
                     .class_handler(|_, _args| {
                         // Call the request_metrics function when the signal is emitted
-                        Some(request_metrics().to_value())
+                        let ret = request_metrics();
+                        gst::info!(
+                            CAT,
+                            "Prometheus metrics requested via signal, returning {} bytes",
+                            ret.len()
+                        );
+                        Some(ret.to_value())
                     })
-                    .accumulator(|_hint, _acc, _value| {
-                        // First signal handler wins
+                    .accumulator(|_hint, ret, value| {
+                        *ret = value.clone();
                         true
                     })
                     .build()]
@@ -199,7 +205,7 @@ mod imp {
 
     // Add this function, which is the handler for the "request-metrics" signal
     fn request_metrics() -> String {
-        gst::info!(CAT, "Metrics requested via signal");
+        gst::debug!(CAT, "Metrics requested via signal");
         let metric_families = gather();
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
