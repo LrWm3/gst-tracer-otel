@@ -33,6 +33,7 @@ static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").i
 #[derive(Debug)]
 struct GstSpanSink<'a> {
     // guard deallocation ends span
+    #[allow(dead_code)]
     guard: opentelemetry::ContextGuard,
     span: opentelemetry::trace::SpanRef<'a>,
 }
@@ -95,6 +96,7 @@ mod imp {
 
     impl GstOtelSpanBuf {
         /// Attach a new meta with the given label to `buffer`.
+        #[allow(dead_code)]
         pub fn add(
             buffer: &mut gst::BufferRef,
             span: SpanContext,
@@ -195,7 +197,7 @@ mod imp {
             MetaInfo(
                 ptr::NonNull::new(gst::ffi::gst_meta_register(
                     gst_span_buf_api_get_type().into_glib(),
-                    b"GstOtelSpanBufAPI\0".as_ptr() as *const _,
+                    c"GstOtelSpanBufAPI".as_ptr() as *const _,
                     std::mem::size_of::<GstOtelSpanBuf>(),
                     Some(gst_spanbuf_init),
                     Some(gst_spanbuf_free),
@@ -208,12 +210,13 @@ mod imp {
     }
 
     // Called once per program to register the API type
+    #[allow(static_mut_refs)]
     pub fn gst_span_buf_api_get_type() -> glib::Type {
         static ONCE: std::sync::OnceLock<glib::Type> = std::sync::OnceLock::new();
         static mut TAG: [u8; 12] = [0; 12]; // mutable to allow setting the tag
         *ONCE.get_or_init(|| unsafe {
             let t = glib::Type::from_glib(gst::ffi::gst_meta_api_type_register(
-                b"GstOtelSpanBuf\0".as_ptr() as *const _,
+                c"GstOtelSpanBuf".as_ptr() as *const _,
                 TAG.as_mut_ptr() as *mut *const i8,
             ));
             assert_ne!(t, glib::Type::INVALID);
@@ -323,18 +326,18 @@ mod imp {
                 let obj = tracer_obj.to_glib_none().0;
                 gst::ffi::gst_tracing_register_hook(
                     obj,
-                    b"pad-push-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_pre as *const ()),
+                    c"pad-push-pre".as_ptr() as *const _,
+                    std::mem::transmute::<*const (), GCallback>(do_push_buffer_pre as *const ()),
                 );
                 // gst::ffi::gst_tracing_register_hook(
                 //     obj,
-                //     b"pad-push-event-pre\0".as_ptr() as *const _,
+                //     c"pad-push-event-pre".as_ptr() as *const _,
                 //     std::mem::transmute::<_, GCallback>(do_push_event_pre as *const ()),
                 // );
                 gst::ffi::gst_tracing_register_hook(
                     obj,
-                    b"pad-push-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_post as *const ()),
+                    c"pad-push-post".as_ptr() as *const _,
+                    std::mem::transmute::<*const (), GCallback>(do_push_buffer_post as *const ()),
                 );
             }
         }

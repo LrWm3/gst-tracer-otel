@@ -10,6 +10,13 @@ use opentelemetry::logs::Severity;
 
 pub trait LogBridge: Send + Sync + 'static {
     /// Called for every GstDebugMessage
+    ///
+    /// Arguments are similar to GstDebugMessage, but with some additional fields:
+    /// - `trace_id`: The trace ID of the current trace context.
+    /// - `span_id`: The span ID of the current span context.
+    ///
+    /// This allows structured logging of debug messages with trace/span context.
+    #[allow(clippy::too_many_arguments)]
     fn log_message(
         &self,
         category: &DebugCategory,
