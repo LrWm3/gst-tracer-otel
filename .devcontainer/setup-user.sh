@@ -8,6 +8,7 @@ CARGO_EXTRAS=(
   cargo-watch
   cargo-deny
   cargo-release
+  cargo-smart-release
   cargo-tarpaulin
 )
 
