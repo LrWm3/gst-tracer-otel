@@ -34,3 +34,9 @@ if ! command -v act &> /dev/null; then
 else
   echo "act is already installed."
 fi
+
+# 
+cargo install cargo-audit \
+  && cargo install cargo-watch \
+  && cargo install cargo-deny \
+  && cargo install cargo-release
