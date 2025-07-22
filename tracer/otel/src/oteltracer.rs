@@ -1,7 +1,6 @@
 // Derived from gstlatency.c: tracing module that logs processing latency stats
 // Now uses OTLP exporter for both traces and metrics, removing Prometheus-specific HTTP server
 
-use glib;
 use glib::subclass::prelude::*;
 use glib::translate::IntoGlib;
 use glib::Quark;
@@ -122,7 +121,7 @@ mod imp {
                     buffer,
                     imp::gst_span_buf_get_info(),
                     &mut *params as *mut _ as *mut _,
-                ) as *mut imp::GstOtelSpanBuf;
+                );
             }
         }
 
@@ -218,7 +217,7 @@ mod imp {
                 TAG.as_mut_ptr() as *mut *const i8,
             ));
             assert_ne!(t, glib::Type::INVALID);
-            println!("t: {:?}", t);
+            println!("t: {t:?}");
             println!("t.into_glib(): {:?}", t.into_glib());
             t
         })
@@ -406,7 +405,7 @@ mod imp {
                         // unsafe version
                         unsafe {
                             let ptr: *mut gst::ffi::GstObject = elem.as_ptr() as *mut _;
-                            if (*ptr).flags & gst::ffi::GST_ELEMENT_FLAG_SOURCE as u32 != 0 {
+                            if (*ptr).flags & gst::ffi::GST_ELEMENT_FLAG_SOURCE != 0 {
                                 gst::trace!(CAT, "Element {} is a source element", elem.name());
                             } else {
                                 gst::trace!(CAT, "Element {} is not a source element", elem.name());
