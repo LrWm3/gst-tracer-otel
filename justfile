@@ -14,7 +14,8 @@ audit:
   cargo audit
 
 coverage:
-  cargo tarpaulin --out Html
+  cargo build --profile test
+  cargo tarpaulin --skip-clean --out Html
 
 # Build and test commands for the project.
 build profile="test" target="x86_64-unknown-linux-gnu":

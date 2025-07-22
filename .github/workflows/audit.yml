@@ -14,18 +14,17 @@ jobs:
         with:
           toolchain: stable
           profile: minimal
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run cargo audit
-        run: cargo audit
-      - name: Cargo fmt check
-        run: cargo fmt --all -- --check
-      - name: Cargo clippy
-        run: cargo clippy --all -- -D warnings
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
+      - uses: extractions/setup-just@v3
+        with:
+          just-version: 1.40.0
+      - name: Run audit
+        run: just audit
+      - name: Run fmt check
+        run: just fmt-check
+      - name: Run clippy
+        run: just lint
       - name: Run coverage
-        run: cargo tarpaulin --out Html
+        run: just coverage
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
