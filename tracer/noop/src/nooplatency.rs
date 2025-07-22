@@ -1,9 +1,9 @@
 /*
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Library General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+*
+* This library is free software; you can redistribute it and/or
+* modify it under the terms of the GNU Library General Public
+* License as published by the Free Software Foundation; either
+* version 2 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,6 +22,14 @@ use gst::ffi;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
+use std::sync::LazyLock;
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new(
+        "noop-latency",
+        gst::DebugColorFlags::empty(),
+        Some("Noop tracer"),
+    )
+});
 
 // Our Tracer subclass
 mod imp {
@@ -49,33 +57,65 @@ mod imp {
             unsafe extern "C" fn do_push_buffer_pre(
                 _tracer: *mut gst::Tracer,
                 _ts: u64,
-                _pad: *mut gst::ffi::GstPad,
+                ffi_pad: *mut gst::ffi::GstPad,
             ) {
-                // Do nothing, just a placeholder
+                let pad = gst::Pad::from_glib_ptr_borrow(&ffi_pad);
+                gst::debug!(
+                    CAT,
+                    "noop tracer: do_push_buffer_pre called on {}.{} {}.{}, but noop tracer does nothing",
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.name(),
+                    pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                );
             }
 
             unsafe extern "C" fn do_pull_range_pre(
                 _tracer: *mut gst::Tracer,
                 _ts: u64,
-                _pad: *mut gst::ffi::GstPad,
+                ffi_pad: *mut gst::ffi::GstPad,
             ) {
-                // Do nothing, just a placeholder
+                let pad = gst::Pad::from_glib_ptr_borrow(&ffi_pad);
+                gst::debug!(
+                    CAT,
+                    "noop tracer: do_pull_range_pre called on {}.{} {}.{}, but noop tracer does nothing",
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.name(),
+                    pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                );
             }
 
             unsafe extern "C" fn do_push_buffer_post(
                 _tracer: *mut gst::Tracer,
                 _ts: u64,
-                _pad: *mut gst::ffi::GstPad,
+                ffi_pad: *mut gst::ffi::GstPad,
             ) {
-                // Do nothing, just a placeholder
+                let pad = gst::Pad::from_glib_ptr_borrow(&ffi_pad);
+                gst::debug!(
+                    CAT,
+                    "noop tracer: do_push_buffer_post called on {}.{} {}.{}, but noop tracer does nothing",
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.name(),
+                    pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                );
             }
 
             unsafe extern "C" fn do_pull_range_post(
                 _tracer: *mut gst::Tracer,
                 _ts: u64,
-                _pad: *mut gst::ffi::GstPad,
+                ffi_pad: *mut gst::ffi::GstPad,
             ) {
-                // Do nothing, just a placeholder
+                let pad = gst::Pad::from_glib_ptr_borrow(&ffi_pad);
+                gst::debug!(
+                    CAT,
+                    "noop tracer: do_pull_range_post called on {}.{} {}.{}, but noop tracer does nothing",
+                    pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.name(),
+                    pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
+                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                );
             }
             unsafe {
                 ffi::gst_tracing_register_hook(
