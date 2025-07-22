@@ -13,12 +13,16 @@ lint:
 audit:
   cargo audit
 
+coverage:
+  cargo tarpaulin --out Html
+
 # Build and test commands for the project.
 build profile="test" target="x86_64-unknown-linux-gnu":
   cargo build --profile "{{profile}}" --target "{{target}}"
 
 # Run the tests, or run a specific test if provided.
 test test="":
+  cargo build --profile test
   cargo test "{{test}}"
 
 # Run tests with address sanitizer enabled, or provide a specific test name to run it against that.

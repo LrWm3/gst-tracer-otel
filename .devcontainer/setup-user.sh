@@ -53,10 +53,10 @@ install_cargo_extras() {
 }
 
 # Install additional cargo tools if the user agrees or this is github ci
-if [[ $GITHUB_ACTIONS ]]; then
+if [[ ${GITHUB_ACTIONS:-} ]]; then
   install_cargo_extras
 else
-  read -p "Do you want to install additional cargo tools (cargo-audit, cargo-watch, cargo-deny, cargo-release, cargo-tarpaulin)? [y/N] " -n 1 -r
+  read -p "Do you want to install additional cargo tools (${CARGO_EXTRAS[*]})? [y/N] " -n 1 -r
   echo
   if [[ $REPLY =~ ^[Yy]$ ]]; then
     install_cargo_extras
