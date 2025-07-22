@@ -40,7 +40,8 @@ test test="":
 [group('test')]
 [group('asan')]
 test-address-sanitizer test="given_basic_pipeline_when_run_then_metrics_captured" target="x86_64-unknown-linux-gnu":
-  RUST_BACKTRACE=1 LSAN_OPTIONS="suppressions=.github/sanitizer/lsan.supp" RUSTFLAGS="-Z sanitizer=address" cargo +nightly test "{{test}}" --profile test --target "{{target}}" 2>&1
+  cargo +nightly build --profile test --target "{{target}}"
+  RUST_BACKTRACE=1 LSAN_OPTIONS="suppressions=$(pwd)/.github/sanitizer/lsan.supp" RUSTFLAGS="-Z sanitizer=address" cargo +nightly test "{{test}}" --profile test --target "{{target}}" 2>&1
 
 # Test the .github CI workflow using `act`.
 [group('test')]

@@ -72,4 +72,4 @@ jobs:
       # ────────────────────────────────────────────────
       - name: Run tests with address sanitizer
         run: |
-          just build && just test-address-sanitizer
+          just test-address-sanitizer
