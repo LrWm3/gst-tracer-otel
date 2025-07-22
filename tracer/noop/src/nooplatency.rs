@@ -15,9 +15,7 @@
  * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
  * Boston, MA 02110-1301, USA.
  */
-use glib;
 use glib::subclass::prelude::*;
-use gobject_sys::GCallback;
 use gst::ffi;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -66,7 +64,7 @@ mod imp {
                     pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     pad.name(),
                     pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
-                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                    pad.peer().and_then(|p| p.parent()).map(|p| p.name()).unwrap_or("unknown".into())
                 );
             }
 
@@ -82,7 +80,7 @@ mod imp {
                     pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     pad.name(),
                     pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
-                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                    pad.peer().and_then(|p| p.parent()).map(|p| p.name()).unwrap_or("unknown".into())
                 );
             }
 
@@ -98,7 +96,7 @@ mod imp {
                     pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     pad.name(),
                     pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
-                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                    pad.peer().and_then(|p| p.parent()).map(|p| p.name()).unwrap_or("unknown".into())
                 );
             }
 
@@ -114,29 +112,37 @@ mod imp {
                     pad.parent().map(|p| p.name()).unwrap_or("unknown".into()),
                     pad.name(),
                     pad.peer().map(|p| p.name()).unwrap_or("unknown".into()),
-                    pad.peer().map(|p| p.parent()).flatten().map(|p| p.name()).unwrap_or("unknown".into())
+                    pad.peer().and_then(|p| p.parent()).map(|p| p.name()).unwrap_or("unknown".into())
                 );
             }
             unsafe {
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-push-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_pre as *const ()),
+                    c"pad-push-pre".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_buffer_pre as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-push-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_push_buffer_post as *const ()),
+                    c"pad-push-post".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_buffer_post as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-pull-range-pre\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_pull_range_pre as *const ()),
+                    c"pad-pull-range-pre".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_pull_range_pre as *const (),
+                    ),
                 );
                 ffi::gst_tracing_register_hook(
                     tracer_obj.to_glib_none().0,
-                    b"pad-pull-range-post\0".as_ptr() as *const _,
-                    std::mem::transmute::<_, GCallback>(do_pull_range_post as *const ()),
+                    c"pad-pull-range-post".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_pull_range_post as *const (),
+                    ),
                 );
             }
         }
