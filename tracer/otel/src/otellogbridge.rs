@@ -64,7 +64,7 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
         function: &GStr,
         line: u32,
         message: &DebugMessage,
-        obj: Option<&LoggedObject>,
+        _obj: Option<&LoggedObject>,
         trace_id: &str,
         span_id: &str,
     ) {
@@ -113,6 +113,7 @@ impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
 }
 pub struct PlaintextBridge;
 
+#[allow(dead_code)]
 impl PlaintextBridge {
     pub fn new() -> Self {
         PlaintextBridge
@@ -179,7 +180,6 @@ pub fn init_logs_otlp() -> SdkLoggerProvider {
         .expect("failed to build OTLP exporter");
 
     // 3. Provider
-    
 
     SdkLoggerProvider::builder()
         .with_resource(

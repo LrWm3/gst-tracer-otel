@@ -78,7 +78,7 @@ mod imp {
         translate::{FromGlib, FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     };
     use gobject_sys::GCallback;
-    
+
     use gstreamer_sys::{GstBuffer, GstMeta};
     use opentelemetry::trace::TraceContextExt;
     use std::{os::raw::c_void, ptr};
