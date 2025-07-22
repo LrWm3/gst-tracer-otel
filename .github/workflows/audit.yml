@@ -17,14 +17,14 @@ jobs:
       - uses: extractions/setup-just@v3
         with:
           just-version: 1.40.0
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      - name: Install build dependencies
+        run: |
+          sudo .devcontainer/setup-root.sh
+          .devcontainer/setup-user.sh
       - name: Run audit
         run: just audit
       - name: Run clippy
         run: just lint
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
       - name: Run coverage
         run: just coverage
       - name: Upload coverage report
