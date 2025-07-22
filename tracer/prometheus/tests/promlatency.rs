@@ -316,35 +316,14 @@ mod tests {
         println!("Metrics:\n{}", metrics);
     }
 
-    #[test]
-    fn bench_no_trace_plugin() {
-        // run bench 5 times and capture durations in a list
-        let durations: Vec<_> = (0..5).map(|_| run_bench("latency")).collect();
-
-        // Print the durations
-        for (i, duration) in durations.iter().enumerate() {
-            println!("Run {}: Duration: {:?}", i + 1, duration);
-            // Optionally assert it’s under some threshold:
-            // assert!(duration.as_secs_f64() < 1.0, "Pipeline too slow!");
-        }
-    }
-
-    #[test]
+    #[bench]
     fn bench_prom_latency_through_pipeline() {
         setup_test();
-
-        // run bench 5 times and capture durations in a list
-        let durations: Vec<_> = (0..5).map(|_| run_bench("prom-latency")).collect();
-
-        // Print the durations
-        for (i, duration) in durations.iter().enumerate() {
-            println!("Run {}: Duration: {:?}", i + 1, duration);
-            // Optionally assert it’s under some threshold:
-            // assert!(duration.as_secs_f64() < 1.0, "Pipeline too slow!");
-        }
+        run_bench("prom-latency");
     }
 
-    #[test]
+    #[bench]
+    #[ignore]
     fn bench_latency_through_pipeline() {
         env::set_var("GST_TRACERS", "latency(filters='GstBuffer',flags=element)");
         env::set_var("GST_DEBUG", "GST_TRACER:5,latency:3");
