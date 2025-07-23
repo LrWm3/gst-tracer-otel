@@ -56,9 +56,10 @@ test-ci:
 [group('perf')]
 bench-perf perf_opts="":
     mkdir -p target/bench/perf
+    cargo build --profile "profiling"
     # Find all test executables without running them and then profile each one.
     branch_name=$(git rev-parse --abbrev-ref HEAD); \
-    for test_executable in $(cargo test --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]'); do \
+    for test_executable in $(cargo test --profile profiling --no-run --message-format=json | jq -r 'select(.profile.test == true) | .filenames[]'); do \
         for bench in $($test_executable --list | grep ::bench | awk -F'::' '{print $NF}' | awk -F':' '{print $1}' | sort -u); do \
           perf record {{perf_opts}} -o "target/bench/perf/$bench.$branch_name.data" $test_executable "$bench"; \
           perf report -i "target/bench/perf/$bench.$branch_name.data" >> "target/bench/perf/$bench.$branch_name.txt"; \

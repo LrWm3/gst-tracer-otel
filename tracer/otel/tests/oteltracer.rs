@@ -45,10 +45,9 @@ mod tests {
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
         let debug_plugin_path = root_manifest_dir.join("target/debug");
         let release_plugin_path = root_manifest_dir.join("target/release");
-        let debug_plugin_with_target =
-            debug_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+        let debug_plugin_with_target = debug_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
         let release_plugin_with_target =
-            release_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+            release_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
         env::set_var(
             "GST_PLUGIN_PATH",
             format!(
@@ -67,8 +66,7 @@ mod tests {
         assert!(
             gst::TracerFactory::factories()
                 .iter()
-                .find(|f| f.name() == "otel-tracer")
-                .is_some(),
+                .any(|f| f.name() == "otel-tracer"),
             "Expected to find the `otel-tracer` element after registration"
         );
 

@@ -53,9 +53,8 @@ mod tests {
         println!("Active tracers: {}", binding.len());
         let tracer = binding
             .iter()
-            .map(|t| {
+            .inspect(|t| {
                 println!("Active tracer: {}", t.name());
-                t
             })
             .find(|t| t.name() == "promlatencytracer0")
             .expect("Expected to find the `prom-latency` tracer");
@@ -70,13 +69,13 @@ mod tests {
         // in >1.18, could use a signal.
         let prometheus_port =
             env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{}", prometheus_port);
+        let prometheus_url = format!("http://localhost:{prometheus_port}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
 
         // Print the metrics for debugging
-        println!("Metrics:\n{}", metrics);
+        println!("Metrics:\n{metrics}");
 
         // These will only be the same if we're running this as a single test
         // and not as part of a suite, because the metrics are not tied to a pipeline
@@ -96,8 +95,7 @@ mod tests {
         for metric in metric_asserts {
             assert!(
                 metrics.contains(metric),
-                "Expected to find '{}' in metrics",
-                metric
+                "Expected to find '{metric}' in metrics"
             );
         }
 
@@ -124,9 +122,7 @@ mod tests {
         }
         if check_failed {
             panic!(
-                "Expected to find '{}' with value 10000 in metrics, but it was not found.\n, found: {:?}",
-                count_count_metric,
-                count_count_value
+                "Expected to find '{count_count_metric}' with value 10000 in metrics, but it was not found.\n, found: {count_count_value:?}"
             );
         }
     }
@@ -176,13 +172,13 @@ mod tests {
         // Get the metrics by performing an http request to the Prometheus endpoint
         let prometheus_port =
             env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{}", prometheus_port);
+        let prometheus_url = format!("http://localhost:{prometheus_port}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
 
         // Print the metrics for debugging
-        println!("Metrics:\n{}", metrics);
+        println!("Metrics:\n{metrics}");
 
         // Validate that the metrics contain expected values
         let metric_asserts = vec![
@@ -193,8 +189,7 @@ mod tests {
         for metric in metric_asserts {
             assert!(
                 metrics.contains(metric),
-                "Expected to find '{}' in metrics",
-                metric
+                "Expected to find '{metric}' in metrics"
             );
         }
 
@@ -218,8 +213,7 @@ mod tests {
 
         assert!(
             !last_check_failed,
-            "Latency is not within expected range, found: {:?}",
-            latency_value
+            "Latency is not within expected range, found: {latency_value:?}"
         );
 
         // Check that the sum is around 1000 us
@@ -234,8 +228,7 @@ mod tests {
 
         assert!(
             !sum_check_failed,
-            "Sum is not within expected range, found: {:?}",
-            sum_value
+            "Sum is not within expected range, found: {sum_value:?}"
         );
     }
 
@@ -332,13 +325,13 @@ mod tests {
         // Get the metrics by performing an http request to the Prometheus endpoint
         let prometheus_port =
             env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{}", prometheus_port);
+        let prometheus_url = format!("http://localhost:{prometheus_port}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
 
         // Print the metrics for debugging
-        println!("Metrics:\n{}", metrics);
+        println!("Metrics:\n{metrics}");
     }
 
     #[test]
@@ -355,8 +348,7 @@ mod tests {
         assert!(
             gst::TracerFactory::factories()
                 .iter()
-                .find(|f| f.name() == tracer_name)
-                .is_some(),
+                .any(|f| f.name() == tracer_name),
             "Expected to find the `prom-latency` element after registration"
         );
         // Link the elements together
@@ -394,21 +386,20 @@ mod tests {
         pipeline.set_state(gst::State::Null).unwrap();
 
         // Report elapsed time
-        let elapsed = start.elapsed();
 
         // (Optionally assert it’s under some threshold:)
         // assert!(elapsed.as_secs_f64() < 1.0, "Pipeline too slow!");
-        elapsed
+        start.elapsed()
     }
 
     fn create_pipeline(name: &str) -> gst::Pipeline {
-        let pipeline_el = gst::parse::launch("fakesrc num-buffers=10000 ! identity ! fakesink")
+        let pipeline_el = gst::parse::launch("fakesrc num-buffers=100000 ! identity ! fakesink")
             .expect("Failed to create pipeline from launch string");
         pipeline_el.set_property("name", name);
-        let pipeline = pipeline_el
+
+        pipeline_el
             .downcast::<gst::Pipeline>()
-            .expect("Failed to downcast to gst::Pipeline");
-        pipeline
+            .expect("Failed to downcast to gst::Pipeline")
     }
 
     fn setup_test() {
@@ -423,16 +414,20 @@ mod tests {
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
         let debug_plugin_path = root_manifest_dir.join("target/debug");
         let release_plugin_path = root_manifest_dir.join("target/release");
-        let debug_plugin_with_target =
-            debug_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+        let profiling_plugin_path = root_manifest_dir.join("target/profiling");
+        let debug_plugin_with_target = debug_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
         let release_plugin_with_target =
-            release_plugin_path.join(format!("{}-unknown-linux-gnu", ARCH));
+            release_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
+        let profiling_plugin_with_target =
+            profiling_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
         env::set_var(
             "GST_PLUGIN_PATH",
             format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}",
                 release_plugin_with_target.to_str().unwrap(),
                 release_plugin_path.to_str().unwrap(),
+                profiling_plugin_with_target.to_str().unwrap(),
+                profiling_plugin_path.to_str().unwrap(),
                 debug_plugin_with_target.to_str().unwrap(),
                 debug_plugin_path.to_str().unwrap(),
             ),
@@ -445,8 +440,7 @@ mod tests {
         assert!(
             gst::TracerFactory::factories()
                 .iter()
-                .find(|f| f.name() == "prom-latency")
-                .is_some(),
+                .any(|f| f.name() == "prom-latency"),
             "Expected to find the `prom-latency` element after registration"
         );
     }
