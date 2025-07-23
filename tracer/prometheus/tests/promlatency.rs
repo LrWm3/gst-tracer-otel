@@ -393,7 +393,7 @@ mod tests {
     }
 
     fn create_pipeline(name: &str) -> gst::Pipeline {
-        let pipeline_el = gst::parse::launch("fakesrc num-buffers=100000 ! identity ! fakesink")
+        let pipeline_el = gst::parse::launch("fakesrc num-buffers=10000 ! identity ! fakesink")
             .expect("Failed to create pipeline from launch string");
         pipeline_el.set_property("name", name);
 
