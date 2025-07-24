@@ -33,7 +33,7 @@ use prometheus::{gather, Encoder, TextEncoder};
 use tiny_http::{Header, Response, Server};
 
 mod imp {
-    use std::os::raw::c_void;
+    use std::{cell::Cell, os::raw::c_void};
 
     use super::*;
     use glib::{
@@ -66,6 +66,13 @@ mod imp {
         )
         .unwrap();
     }
+
+    thread_local! {
+        /// Experimental approach to seeing if we set the span latency if
+        /// we can use it to measure cross element latency.
+        pub static SPAN_LATENCY: Cell<u64> = Cell::new(0);
+    }
+
     static PAD_CACHE_QUARK: Lazy<glib::ffi::GQuark> =
         Lazy::new(|| Quark::from_str("promlatency.pad_cache").into_glib());
 
@@ -412,23 +419,6 @@ mod imp {
         // me how it works.
         drop(value)
     }
-    unsafe fn do_send_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
-        let pad_cache = unsafe {
-            glib::gobject_ffi::g_object_get_qdata(
-                src_pad as *mut gobject_sys::GObject,
-                *PAD_CACHE_QUARK,
-            ) as *mut PadCacheData
-        };
-        if pad_cache.is_null() {
-            return;
-        }
-
-        // If we have a valid cache, we can safely convert the pointer to a Box.
-        let pad_cache: &mut PadCacheData = unsafe { &mut *pad_cache };
-
-        // Set the ts
-        pad_cache.ts = ts;
-    }
 
     /// Given a source and sink pad, returns the PadCacheData for the pad pair.
     /// If the pads are not valid for any reason, returns a sentinel value indicating to skip this pair.
@@ -630,6 +620,27 @@ mod imp {
         }
     }
 
+    unsafe fn do_send_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
+        let pad_cache = unsafe {
+            glib::gobject_ffi::g_object_get_qdata(
+                src_pad as *mut gobject_sys::GObject,
+                *PAD_CACHE_QUARK,
+            ) as *mut PadCacheData
+        };
+        if pad_cache.is_null() {
+            return;
+        }
+
+        // If we have a valid cache, we can safely convert the pointer to a Box.
+        let pad_cache: &mut PadCacheData = unsafe { &mut *pad_cache };
+
+        // Set the ts
+        pad_cache.ts = ts;
+
+        // Zero out the span latency
+        SPAN_LATENCY.with(|v| v.set(0));
+    }
+
     unsafe fn do_receive_and_record_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
         let pad_cache = unsafe {
             glib::gobject_ffi::g_object_get_qdata(
@@ -648,15 +659,30 @@ mod imp {
         if pad_cache.ts == 0 {
             return;
         }
+
         // Calculate the difference
-        let diff = ts.saturating_sub(pad_cache.ts);
+        let span_diff = ts.saturating_sub(pad_cache.ts);
+
+        // Get cached latency if needed
+        let ts_latency = SPAN_LATENCY.with(|v| v.get());
+        // gst::info!(CAT, "Current span latency: {}", ts_latency);
+
+        // Calculate the per element difference
+        let el_diff = span_diff.saturating_sub(ts_latency);
 
         // Log the latency
         pad_cache
             .last_gauge
-            .set(diff.try_into().unwrap_or(i64::MAX));
-        pad_cache.sum_counter.inc_by(diff);
+            .set(el_diff.try_into().unwrap_or(i64::MAX));
+        pad_cache.sum_counter.inc_by(el_diff);
         pad_cache.count_counter.inc();
+
+        // Reset the timestamp for the next push
+        pad_cache.ts = 0;
+
+        // Set the SPAN_LATENCY to span_diff so upstream elements know how much
+        // latency to subtract from their own latency.
+        SPAN_LATENCY.with(|v| v.set(span_diff));
     }
 
     /// If the env var is set and valid, spawn the HTTP server in a new thread.
