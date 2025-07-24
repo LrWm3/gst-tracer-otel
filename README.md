@@ -12,6 +12,7 @@ The table below contains the plugins available in this repository.
 | ------------ | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
 | prom-latency | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
 | otel-tracer  | captures per element latencies as otel traces, gst::logs as otel logs, and otel-compatiable metrics with full association | very slow   | pre-alpha |
+| pyroscope    | captures pyroscope profiles for the Gstreamer pipeline                                                                    | optimized   | pre-alpha |
 | noop-latency | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
 
 In general `prom-latency` is recommended for now, and `otel-tracer` is still a work in progress.

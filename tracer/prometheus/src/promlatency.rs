@@ -70,7 +70,7 @@ mod imp {
     thread_local! {
         /// Experimental approach to seeing if we set the span latency if
         /// we can use it to measure cross element latency.
-        pub static SPAN_LATENCY: Cell<u64> = Cell::new(0);
+        pub static SPAN_LATENCY: Cell<u64> = const { Cell::new(0) };
     }
 
     static PAD_CACHE_QUARK: Lazy<glib::ffi::GQuark> =

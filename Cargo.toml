@@ -4,10 +4,10 @@ members = [
     "tracer/otel",
     "tracer/noop",
     "tracer/prometheus",
+    "tracer/pyroscope",
 ]
 
 default-members = [
-    "tracer/otel",
     "tracer/prometheus",
 ]
 

@@ -1,0 +1,20 @@
+[package]
+name        = "gst-pyroscope-tracer"
+version     = "0.1.0"
+edition     = "2021"
+
+[lib]
+name = "gstpyroscopetracer"
+crate-type  = ["cdylib", "rlib"]
+
+[dependencies]
+glib.workspace=true
+gobject-sys.workspace=true
+gstreamer.workspace=true       
+gstreamer-sys.workspace=true
+pyroscope = "0.5.4"
+pyroscope_pprofrs = "0.2"
+pprof = { version = "0.15.0", features = ["frame-pointer"] }
+
+[features]
+pyroscope = []
