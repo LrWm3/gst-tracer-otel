@@ -26,7 +26,8 @@ mod imp {
 
     use super::*;
 
-    use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
+    use glib::thread_guard::thread_id;
+    use pyroscope::{backend::Tag, pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -58,14 +59,48 @@ mod imp {
         }
     }
 
-    fn create_pyroscope_agent() -> PyroscopeAgent<PyroscopeAgentRunning> {
-        // TODO - make all configurable.
-        PyroscopeAgent::builder("http://localhost:4040", "pyroscope_tracer")
-            .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
-            .build()
-            .unwrap()
-            .start()
-            .unwrap()
+    fn create_pyroscope_agent(tags: Vec<(&str, &str)>) -> PyroscopeAgent<PyroscopeAgentRunning> {
+        PyroscopeAgent::builder(
+            std::env::var("GST_PYROSCOPE_SERVER_URL")
+                .unwrap_or_else(|_| "http://localhost:4040".into()),
+            std::env::var("GST_PYROSCOPE_TRACER_NAME")
+                .unwrap_or_else(|_| "pyroscope_tracer".into()),
+        )
+        .tags(
+            vec![
+                ("service", "gst-pyroscope-tracer"),
+                ("version", env!("CARGO_PKG_VERSION")),
+                ("language", "rust"),
+            ]
+            .into_iter()
+            .chain(
+                std::env::var("GST_PYROSCOPE_TAGS")
+                    .unwrap_or_else(|_| String::new())
+                    .split(',')
+                    .filter_map(|tag| {
+                        let mut parts = tag.splitn(2, '=');
+                        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                            Some((key, value))
+                        } else {
+                            None
+                        }
+                    }),
+            )
+            .chain(tags.into_iter())
+            .collect(),
+        )
+        .backend(pprof_backend(
+            PprofConfig::new().sample_rate(
+                std::env::var("GST_PYROSCOPE_SAMPLE_RATE")
+                    .unwrap_or_else(|_| "100".into())
+                    .parse()
+                    .unwrap_or(100),
+            ),
+        ))
+        .build()
+        .unwrap()
+        .start()
+        .unwrap()
     }
 
     impl ObjectImpl for PyroscopeTracer {
@@ -84,16 +119,20 @@ mod imp {
                         CAT,
                         "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
                     );
-                    // TODO - if we aren't configured to stop the agent properly, we should exit instead of stopping
-                    //        the agent properly. Stopping the agent can take two minutes easily.
-                    unsafe {
-                        let raw_self: *mut imp::PyroscopeTracer =
-                            self as *const _ as *mut imp::PyroscopeTracer;
-                        (*raw_self).agent.take().map(|agent| {
-                            let agent_stopped = agent.stop().unwrap();
-                            agent_stopped.shutdown();
-                            gst::debug!(CAT, "Pyroscope agent stopped");
-                        });
+                    let stop_agent = std::env::var("GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE")
+                        .unwrap_or_else(|_| "true".into())
+                        .parse()
+                        .unwrap_or(true);
+                    if stop_agent {
+                        unsafe {
+                            let raw_self: *mut imp::PyroscopeTracer =
+                                self as *const _ as *mut imp::PyroscopeTracer;
+                            (*raw_self).agent.take().map(|agent| {
+                                let agent_stopped = agent.stop().unwrap();
+                                agent_stopped.shutdown();
+                                gst::debug!(CAT, "Pyroscope agent stopped");
+                            });
+                        }
                     }
                 }
             }
@@ -109,22 +148,22 @@ mod imp {
         fn bin_add_post(
             &self,
             _ts: u64,
-            _bin: &gstreamer::Bin,
+            bin: &gstreamer::Bin,
             _element: &gstreamer::Element,
             success: bool,
         ) {
-            // If the agent is not running, start it
-            // This is unsafe but whatever.
+            // If the agent is not running, start it now
             if success && self.agent.is_none() {
                 gst::debug!(CAT, "Pyroscope agent not running, starting it up");
                 // Lock to ensure thread safety
                 let _lock = self.lock.lock().unwrap();
+                // Recheck inside the lock
                 if self.agent.is_none() {
                     gst::debug!(CAT, "Creating new Pyroscope agent");
                     unsafe {
                         let raw_self: *mut imp::PyroscopeTracer =
                             self as *const _ as *mut imp::PyroscopeTracer;
-                        (*raw_self).agent = Some(create_pyroscope_agent());
+                        (*raw_self).agent = Some(create_pyroscope_agent(vec![]));
                     };
                 }
             }
