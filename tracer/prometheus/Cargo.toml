@@ -18,7 +18,6 @@ tiny_http = "0.12.0"
 once_cell = "1.19.0"
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["blocking"] }
-cargo-audit = { version = "0.21.2", features = ["fix"] }
 
 [features]
 noop = []

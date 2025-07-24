@@ -9,20 +9,32 @@ setup:
 clean:
   cargo clean
 
+
 # Build the project with a specific profile and target.
-build profile="test" target="x86_64-unknown-linux-gnu":
-  cargo build --profile "{{profile}}" --target "{{target}}"
+[group('build')]
+build profile="release":
+  cargo build --profile "{{profile}}"
+
+# Build a specific package; accepts: gst-otel-tracer, gst-prometheus-tracer, or gst-pyroscope-tracer.
+[group('build')]
+build-package package="gst-prometheus-tracer" profile="release":
+  cargo build  --package "{{package}}" --profile "{{profile}}"
 
 # Format and lint the codebase.
 [group('lint')]
 lint:
   cargo fmt --all -- --check
-  cargo clippy --all-features -- -D warnings
+  cargo clippy --workspace --all-features -- -D warnings
 
 # Run security audits on the project dependencies.
 [group('lint')]
 audit:
   cargo audit
+
+# Check for unused dependencies.
+[group('udeps')]
+udeps:
+  cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer -p gst-pyroscope-tracer --all-targets
 
 # Run tests with coverage analysis.
 [group('lint')]

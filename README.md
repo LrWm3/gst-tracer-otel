@@ -8,18 +8,19 @@ A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/
 
 The table below contains the plugins available in this repository.
 
-| plugin name  | description                                                                                                               | performance | stability |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
-| prom-latency | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
-| otel-tracer  | captures per element latencies as otel traces, gst::logs as otel logs, and otel-compatiable metrics with full association | very slow   | pre-alpha |
-| pyroscope    | captures pyroscope profiles for the Gstreamer pipeline                                                                    | optimized   | pre-alpha |
-| noop-latency | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
+| plugin name                                 | description                                                                                                               | performance | stability |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
+| [prom-latency](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
+| [otel-tracer](tracer/otel/README.md)        | captures per element latencies as otel traces, gst::logs as otel logs, and otel-compatiable metrics with full association | very slow   | pre-alpha |
+| [pyroscope](tracer/pyroscope/README.md)     | captures pyroscope profiles for the Gstreamer pipeline                                                                    | optimized   | pre-alpha |
+| [noop-latency](tracer/noop/README.md)       | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
 
 In general `prom-latency` is recommended for now, and `otel-tracer` is still a work in progress.
 
 > Currently, the way per element latency is calculated using the `prom-latency` element does not cleanly handle
-> thread-boundaries introduced by the `threadshare` plugin. However, it should work fine for most pipelines that do not
-> use actix powered elements.
+> thread-boundaries introduced by the `threadshare` plugin.
+>
+> However, it should work fine for most pipelines that do not use async runtime powered elements; additionally it works fine across regular thread boundaries introduced by elements like `queue` and `multiqueue`.
 >
 > A future change will address this issue to more precisely measure latency across elements even in the presence of
 > async runtime elements.
@@ -60,74 +61,27 @@ just setup
 
 Alternatively, you can use the provided DevContainer setup. This requires Docker and VSCode with the Remote - Containers extension.
 
-## Building
+## Quickstart
 
-The plugins can be built with the command below:
-
-```bash
-just build
-# or
-cargo build
-
-# individually build only the plugin(s) you want
-cargo build -p gst-prometheus-tracer
-# or
-cargo build -p gst-otel-tracer
-```
-
-If using in production, building in release mode is recommended.
-
-## Installation
-
-Copy the built plugin into a directory on your GStreamer plugin search path, or update `GST_PLUGIN_PATH`:
+Build
 
 ```bash
-# System-wide install (requires permissions)
-sudo cp target/release/libgst*.so /usr/lib/gstreamer-1.0/
-
-# Or for a local setup (debug)
-export GST_PLUGIN_PATH="$PWD/target/debug/:$GST_PLUGIN_PATH"
-
-# Or local setup (release)
+just build-package gst-prometheus-tracer
 export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-```
-
-## Usage
-
-Enable the tracer by setting the following environment variables before running your pipeline:
-
-```bash
 export GST_TRACERS='prom-latency(flags=element)'
 export GST_DEBUG=GST_TRACER:5
 
-# Optionally, set the tracer to expose metrics over a specific port
-# If not set, it will not expose metrics over HTTP
+# Defining this will expose metrics over HTTP, otherwise it will not expose metrics
+# and they must be requested via the 'request-metrics' signal to the tracer.
 export GST_PROMETHEUS_TRACER_PORT=9092
-```
 
-Then launch your pipeline as usual, for example:
+# Run a GStreamer pipeline to test the tracer
+gst-launch-1.0 fakesrc ! identity ! fakesink
 
-```bash
-gst-launch-1.0 videotestsrc ! videoconvert ! autovideosink
-```
+# While its running, you can check the metrics at http://localhost:9092/metrics
+curl http://localhost:9092/metrics
 
-## Collecting Metrics via HTTP
-
-If you wish to have Prometheus scrape metrics over HTTP, set `GST_PROMETHEUS_TRACER_PORT` to a valid port number:
-
-```bash
-export GST_PROMETHEUS_TRACER_PORT=9092
-```
-
-The plugin will spawn an HTTP server on `0.0.0.0:9092`. To retrieve metrics:
-
-```bash
-curl http://localhost:9092
-```
-
-### Example Output
-
-```plaintext
+# Output:
 # HELP gstreamer_element_latency_count_count Count of latency measurements per element
 # TYPE gstreamer_element_latency_count_count counter
 gstreamer_element_latency_count_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 591573
@@ -135,41 +89,16 @@ gstreamer_element_latency_count_count{element="identity0",sink_pad="identity0.si
 # HELP gstreamer_element_latency_last_gauge Last latency in nanoseconds per element
 # TYPE gstreamer_element_latency_last_gauge gauge
 gstreamer_element_latency_last_gauge{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 5104
-gstreamer_element_latency_last_gauge{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 14423
-# HELP gstreamer_element_latency_sum_count Sum of latencies in nanoseconds per element
-# TYPE gstreamer_element_latency_sum_count counter
-gstreamer_element_latency_sum_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 3036567246
-gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7819315483
+.. etc. ..
 ```
 
-## Collecting Metrics via the `request-metrics` Signal
+## Usage
 
-> Requires building against GStreamer 1.18 or later.
+See the individual plugin README files for usage instructions:
 
-Alternatively, you can pull metrics on demand within your application using the `request-metrics` signal. This allows
-for dynamic retrieval of metrics without needing an HTTP server & can be used to merge metrics into upstream
-Prometheus exporters.
-
-### In C
-
-```c
-GstTracer *tracer = gst_tracer_find("prom-latency");
-char *metrics = NULL;
-g_signal_emit_by_name(tracer, "request-metrics", &metrics);
-printf("%s", metrics);
-g_free(metrics);
-```
-
-### In Rust (glib)
-
-```rust
-if let Some(tracer) = gst::Tracer::get_by_name("prom-latency") {
-    let metrics: Option<String> = tracer.emit_by_name("request-metrics", &[]);
-    if let Some(output) = metrics {
-        println!("{}", output);
-    }
-}
-```
+- [prom-latency](tracer/prometheus/README.md)
+- [otel-tracer](tracer/otel/README.md)
+- [pyroscope](tracer/pyroscope/README.md)
 
 ## Testing
 
@@ -184,12 +113,12 @@ cargo test
 ## Ongoing work
 
 - [x] Cache relationship information on `pad_link_post` and `pad_unlink_post` to minimize the `pad_push_pre` and `pad_push_post` look-up time.
-- [ ] Measure latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
-- [ ] Port performance improvements made to prom-latency to the otel plugin.
+- [x] Measure latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
 - [ ] Support latency measurements across bin elements.
 - [ ] Split count metric into `buf_in_count` and `buf_out_count` to capture behavior of muxer & demuxer elements.
 - [ ] Better support latency measurements for elements and bins with multiple sink and src pads.
 - [ ] Reimplement `pad_pull_pre` and `pad_pull_post` hooks to properly capture latency (unsure exactly how this will look at this point).
+- [ ] Port performance & implementation improvements made to `prom-latency` to the `otel-tracer` tracer.
 
 ## License
 

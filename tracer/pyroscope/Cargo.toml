@@ -13,8 +13,7 @@ gobject-sys.workspace=true
 gstreamer.workspace=true       
 gstreamer-sys.workspace=true
 pyroscope = "0.5.4"
-pyroscope_pprofrs = "0.2"
-pprof = { version = "0.15.0", features = ["frame-pointer"] }
+pyroscope_pprofrs = { version = "0.2", features = ["frame-pointer"] }
 
 [features]
 pyroscope = []

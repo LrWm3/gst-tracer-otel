@@ -33,5 +33,5 @@ gst::plugin_define!(
     "LGPL",
     "gst_opentelemetry_tracer",
     "gst_opentelemetry_tracer",
-    "https://example.com"
+    "https://github.com/LrWm3/gst-tracer-otel"
 );

@@ -7,6 +7,7 @@ use glib::Quark;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
+// TODO - remove once_cell in exchange for the std::lib equivalent
 use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
 use std::sync::LazyLock;

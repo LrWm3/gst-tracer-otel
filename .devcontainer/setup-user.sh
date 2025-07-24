@@ -5,11 +5,12 @@ set -euo pipefail
 
 CARGO_EXTRAS=(
   cargo-audit
-  cargo-watch
+  cargo-udeps
   cargo-deny
-  cargo-release
-  cargo-smart-release
   cargo-tarpaulin
+  cargo-release
+  cargo-watch
+  cargo-smart-release
 )
 
 if ! command -v rustup &> /dev/null; then
