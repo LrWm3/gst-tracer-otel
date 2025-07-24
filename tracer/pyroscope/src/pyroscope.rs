@@ -22,11 +22,10 @@ use gstreamer as gst;
 
 // Our Tracer subclass
 mod imp {
-    use std::{ops::Deref, sync::LazyLock};
+    use std::sync::LazyLock;
 
     use super::*;
 
-    use glib::translate::{FromGlibPtrNone, ToGlibPtr};
     use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
@@ -41,6 +40,7 @@ mod imp {
     #[derive(Default)]
     pub struct PyroscopeTracer {
         agent: Option<PyroscopeAgent<PyroscopeAgentRunning>>,
+        lock: std::sync::Mutex<()>,
     }
 
     #[glib::object_subclass]
@@ -51,11 +51,15 @@ mod imp {
 
         fn new() -> Self {
             gst::debug!(CAT, "Creating new PyroscopeTracer instance");
-            Self { agent: None }
+            Self {
+                agent: None,
+                lock: std::sync::Mutex::new(()),
+            }
         }
     }
 
     fn create_pyroscope_agent() -> PyroscopeAgent<PyroscopeAgentRunning> {
+        // TODO - make all configurable.
         PyroscopeAgent::builder("http://localhost:4040", "pyroscope_tracer")
             .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
             .build()
@@ -68,56 +72,62 @@ mod imp {
         // Called once when the class is initialized
         fn constructed(&self) {
             self.parent_constructed();
-            gst::debug!(CAT, "PyroscopeTracer constructed");
-            let obj = self.obj();
-            let tracer_obj: &gst::Tracer = obj.upcast_ref();
-
             self.register_hook(TracerHook::BinAddPost);
         }
 
         fn dispose(&self) {
-            gst::debug!(CAT, "PyroscopeTracer disposed");
+            // Stop the agent when the tracer is dropped
+            if self.agent.is_some() {
+                let _guard = self.lock.lock().unwrap();
+                if self.agent.is_some() {
+                    gst::debug!(
+                        CAT,
+                        "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
+                    );
+                    // TODO - if we aren't configured to stop the agent properly, we should exit instead of stopping
+                    //        the agent properly. Stopping the agent can take two minutes easily.
+                    unsafe {
+                        let raw_self: *mut imp::PyroscopeTracer =
+                            self as *const _ as *mut imp::PyroscopeTracer;
+                        (*raw_self).agent.take().map(|agent| {
+                            let agent_stopped = agent.stop().unwrap();
+                            agent_stopped.shutdown();
+                            gst::debug!(CAT, "Pyroscope agent stopped");
+                        });
+                    }
+                }
+            }
         }
     }
 
     impl GstObjectImpl for PyroscopeTracer {}
     impl TracerImpl for PyroscopeTracer {
+        /// Because the pipeline overall is a bin, we can use this hook as a
+        /// signal that the tracer should start collecting data.
+        ///
+        /// We shutdown in the corresponding dispose method.
         fn bin_add_post(
             &self,
-            ts: u64,
-            bin: &gstreamer::Bin,
-            element: &gstreamer::Element,
+            _ts: u64,
+            _bin: &gstreamer::Bin,
+            _element: &gstreamer::Element,
             success: bool,
         ) {
-            gst::debug!(
-                CAT,
-                "bin_add_post called on bin {} with element {} at timestamp {}, success: {}",
-                bin.name(),
-                element.name(),
-                ts,
-                success
-            );
-
             // If the agent is not running, start it
             // This is unsafe but whatever.
-            if self.agent.is_none() {
+            if success && self.agent.is_none() {
                 gst::debug!(CAT, "Pyroscope agent not running, starting it up");
-                unsafe {
-                    let raw_self: *mut imp::PyroscopeTracer =
-                        self as *const _ as *mut imp::PyroscopeTracer;
-                    (*raw_self).agent = Some(create_pyroscope_agent());
-                };
+                // Lock to ensure thread safety
+                let _lock = self.lock.lock().unwrap();
+                if self.agent.is_none() {
+                    gst::debug!(CAT, "Creating new Pyroscope agent");
+                    unsafe {
+                        let raw_self: *mut imp::PyroscopeTracer =
+                            self as *const _ as *mut imp::PyroscopeTracer;
+                        (*raw_self).agent = Some(create_pyroscope_agent());
+                    };
+                }
             }
-        }
-    }
-    impl Drop for PyroscopeTracer {
-        fn drop(&mut self) {
-            // Stop the agent when the tracer is dropped
-            self.agent.take().map(|agent| {
-                gst::debug!(CAT, "Stopping Pyroscope agent");
-                agent.stop().unwrap();
-                gst::debug!(CAT, "Pyroscope agent stopped");
-            });
         }
     }
 }
