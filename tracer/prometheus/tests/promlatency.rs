@@ -133,8 +133,9 @@ mod tests {
 
         // Sleep time 100 us
         // Identity itself adds about 9
+        // We add a sleep-time of 1 nano as the sleep operation itself takes time per buffer
         let pipeline_el = gst::parse::launch(
-            "fakesrc num-buffers=100 ! identity name=lm0 sleep-time=10000 ! identity name=lm1 sleep-time=1 ! fakesink",
+            "fakesrc sync=false num-buffers=100 ! identity name=lm0 sleep-time=1 ! identity name=lm1 sleep-time=10000 ! fakesink",
         )
         .expect("Failed to create pipeline from launch string");
         pipeline_el.set_property("name", "latency_metrics_match");
@@ -202,14 +203,14 @@ mod tests {
         }
         // Check that the latency is around 100 us
         let latency_value =
-            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm0\"")
-                .expect("Expected to find latency metric for lm0");
-        let latency_value_no_sleep =
             get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm1\"")
                 .expect("Expected to find latency metric for lm1");
+        let latency_value_no_sleep =
+            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm0\"")
+                .expect("Expected to find latency metric for lm0");
 
         // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 9e5;
+        let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 1e5;
 
         assert!(
             !last_check_failed,
@@ -217,14 +218,14 @@ mod tests {
         );
 
         // Check that the sum is around 1000 us
-        let sum_value = get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm0\"")
-            .expect("Expected to find sum metric for lm0");
+        let sum_value = get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm1\"")
+            .expect("Expected to find sum metric for lm1");
         let sum_value_no_sleep =
-            get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm1\"")
-                .expect("Expected to find sum metric for lm1");
+            get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm0\"")
+                .expect("Expected to find sum metric for lm0");
 
         // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let sum_check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 9e7;
+        let sum_check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 1e7;
 
         assert!(
             !sum_check_failed,
@@ -254,7 +255,7 @@ mod tests {
             .unwrap();
         let id2 = gst::ElementFactory::make("identity")
             .name("id2")
-            .property_from_str("sleep-time", "10000")
+            .property_from_str("sleep-time", "100")
             .build()
             .unwrap();
         let id3 = gst::ElementFactory::make("identity")
@@ -412,26 +413,27 @@ mod tests {
 
         env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
-        let debug_plugin_path = root_manifest_dir.join("target/debug");
-        let release_plugin_path = root_manifest_dir.join("target/release");
-        let profiling_plugin_path = root_manifest_dir.join("target/profiling");
-        let debug_plugin_with_target = debug_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
-        let release_plugin_with_target =
-            release_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
-        let profiling_plugin_with_target =
-            profiling_plugin_path.join(format!("{ARCH}-unknown-linux-gnu"));
-        env::set_var(
-            "GST_PLUGIN_PATH",
-            format!(
-                "{}:{}:{}:{}:{}:{}",
-                release_plugin_with_target.to_str().unwrap(),
-                release_plugin_path.to_str().unwrap(),
-                profiling_plugin_with_target.to_str().unwrap(),
-                profiling_plugin_path.to_str().unwrap(),
-                debug_plugin_with_target.to_str().unwrap(),
-                debug_plugin_path.to_str().unwrap(),
-            ),
-        );
+        let plugin_targets = [
+            // ("release", true),
+            // ("release", false),
+            // ("profiling", true),
+            // ("profiling", false),
+            ("debug", true),
+            ("debug", false),
+        ];
+        let plugin_paths = plugin_targets.iter().map(|(profile, with_target)| {
+            let base = root_manifest_dir.join(format!("target/{}", profile));
+            if *with_target {
+                base.join(format!("{ARCH}-unknown-linux-gnu"))
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            } else {
+                base.to_str().unwrap().to_owned()
+            }
+        });
+        let gst_plugin_path = plugin_paths.collect::<Vec<_>>().join(":");
+        env::set_var("GST_PLUGIN_PATH", gst_plugin_path);
 
         // Initialize GStreamer
         gst::init().expect("Failed to initialize GStreamer");
@@ -443,5 +445,15 @@ mod tests {
                 .any(|f| f.name() == "prom-latency"),
             "Expected to find the `prom-latency` element after registration"
         );
+
+        let binding = gst::active_tracers();
+        // println!("Active tracers: {}", binding.len());
+        let _tracer = binding
+            .iter()
+            .inspect(|_t| {
+                // println!("Active tracer: {}", t.name());
+            })
+            .find(|t| t.name() == "promlatencytracer0")
+            .expect(format!("Expected to find the `{}` tracer", "promlatencytracer0").as_str());
     }
 }
