@@ -1,8 +1,24 @@
-# Gstreamer Prometheus Latency Tracer
+# Gstreamer Otel Tracers
 
-A GStreamer `Tracer` plugin that measures per-element pad buffer processing latency and exports these metrics in Prometheus format.
+A collection of GStreamer `Tracer` plugins that measures per-element pad buffer processing latency and exports these metrics in Prometheus format & Otel format.
 
-A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus compatibility.
+A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus & Otel compatibility.
+
+## Plugins available
+
+The table below contains the plugins available in this repository.
+
+| plugin name  | description                                                                                                               | performance  | stability |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------ | --------- |
+| prom-latency | captures per element latencies as prometheus metrics                                                                      | optimized    | alpha     |
+| otel-tracer  | captures per element latencies as otel traces, gst::logs as otel logs, and otel-compatiable metrics with full association | very slow    | pre-alpha |
+| noop-latency | a test plugin, likely not useful for any real purpose                                                                     | slow         | none      |
+
+> Currently, the way per element latency is calculated is confusing in that it captures all
+> latency between the measured element and the next thread boundary, such as a queue, or a sink element.
+>
+> A future change will address this issue to capture latency across the element in question only, but for now
+> prom-latency and otel-tracer serve more as a POC that this is possible.
 
 ## Setup
 
@@ -42,11 +58,20 @@ Alternatively, you can use the provided DevContainer setup. This requires Docker
 
 ## Building
 
+The plugins can be built with the command below:
+
 ```bash
 just build
 # or
 cargo build
+
+# individually build only the plugin(s) you want
+cargo build -p gst-prometheus-tracer
+# or
+cargo build -p gst-otel-tracer
 ```
+
+If using in production, building in release mode is recommended.
 
 ## Installation
 
@@ -152,9 +177,15 @@ just test
 cargo test
 ```
 
-## Future work
+## Ongoing work
 
-Would like to support otel in addition to prometheus.
+- [x] Cache relationship information on `pad_link_post` and `pad_unlink_post` to minimize the `pad_push_pre` and `pad_push_post` look-up time.
+- [ ] Measure latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
+- [ ] Port performance improvements made to prom-latency to the otel plugin.
+- [ ] Support latency measurements across bin elements.
+- [ ] Split count metric into `buf_in_count` and `buf_out_count` to capture behavior of muxer & demuxer elements.
+- [ ] Better support latency measurements for elements and bins with multiple sink and src pads.
+- [ ] Reimplement `pad_pull_pre` and `pad_pull_post` hooks to properly capture latency (unsure exactly how this will look at this point).
 
 ## License
 
