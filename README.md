@@ -110,16 +110,21 @@ just test
 cargo test
 ```
 
-## Ongoing work
+## Roadmap
 
-- [x] Cache relationship information on `pad_link_post` and `pad_unlink_post` to minimize the `pad_push_pre` and `pad_push_post` look-up time.
-- [x] Measure latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
-- [ ] Support latency measurements across bin elements.
-- [ ] Split count metric into `buf_in_count` and `buf_out_count` to capture behavior of muxer & demuxer elements.
-- [ ] Better support latency measurements for elements and bins with multiple sink and src pads.
-- [ ] Reimplement `pad_pull_pre` and `pad_pull_post` hooks to properly capture latency (unsure exactly how this will look at this point).
-- [ ] Port performance & implementation improvements made to `prom-latency` to the `otel-tracer` tracer.
+- [x] Implement a working version of `prom-latency`, for measuring latency across elements.
+- [x] Implement a working version of `otel-tracer`, for spans & traces as buffers flow through the pipeline & log traceid correlation.
+- [x] Implement a working version of `pyroscope`, for collecting profiles from gstreamer pipelines.
+- [x] Have `prom-latency` cache relationship information on `pad_link_post` and `pad_unlink_post` to minimize the `pad_push_pre` and `pad_push_post` look-up time.
+- [x] Have `prom-latency` latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
+- [ ] Have `prom-latency` support latency measurements across bin elements.
+- [ ] In `prom-latency` split count metric into `buf_in_count` and `buf_out_count` to capture behavior of muxer & demuxer elements.
+- [ ] In `prom-latency`, add better support latency measurements for elements and bins with multiple sink and src pads.
+- [ ] In `prom-latency`, reimplement `pad_pull_pre` and `pad_pull_post` hooks to capture latency (unsure exactly how this will look at this point).
+- [ ] In `prom-latency`, implement `pad_push_list_pre` and `pad_pus_list_post` hooks to capture latency.
+- [ ] In `otel-tracer`, port performance & implementation improvements made to `prom-latency` such that `otel-tracer` can be used in production with similarly low overhead.
 - [ ] `otel-tracer` to collect metrics with trace and span data included in exemplars.
+- [ ] In `pyroscope`, determine how to get debug symbols for all of gstreamers dependencies.
 - [ ] Create an all-in-one tracer, `gst-instrument`, which can collect correlated logs, metrics, spans, traces and profiles with performance improvements & lessons learned from the above.
 
 ## License
