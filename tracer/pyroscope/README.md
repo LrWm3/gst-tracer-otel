@@ -2,12 +2,13 @@
 
 This crate provides a GStreamer tracer that sends profiling data to a Pyroscope server.
 
-## Proof of concept only
+## Kinda works
 
-This is a proof of concept implementation of a GStreamer tracer that sends profiling data to a Pyroscope server.
+For this to be useful, you must have debug symbols for all of your gstreamer dependencies.
 
-I was unhappy with the results and am not planning on developing this further at the moment. In particular, stack traces
-don't have the element names in them, so you can't see which elements are consuming the most CPU time.
+I am still trying to figure out how to do this myself; currently by going back and forth between perf & then installing missing dbgsym packages & rebuilding the world.
+
+If anyone has suggestions on how to more readily achieve this I would be open to learning.
 
 ## Usage
 
@@ -18,7 +19,7 @@ The following environment variables are used to configure the tracer:
 | `GST_PYROSCOPE_SERVER_URL`            | The URL of the Pyroscope server to send profiling data to.                                                                              | `http://localhost:4040` |
 | `GST_PYROSCOPE_TRACER_NAME`           | The name of the tracer. This is used to identify the tracer in the Pyroscope UI.                                                        | `gstreamer`             |
 | `GST_PYROSCOPE_SAMPLE_RATE`           | The sample rate in hz for the tracer. This controls how often profiling data is sent to the server.                                     | `100`                   |
-| `GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE` | Whether to stop the Pyroscope agent when the tracer is disposed.                                                                        | `true`                  |
+| `GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE` | Whether to stop the Pyroscope agent when the tracer is disposed. Stopping the agent can take up to 2 minutes.                           | `true`                  |
 | `GST_PYROSCOPE_TAGS`                  | Additional tags to add to the profiling data. This can be used to add custom metadata to the profiling data. Specified as 'k1=v1,k2=v2' | ``                      |
 
 ## Test locally
