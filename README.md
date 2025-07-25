@@ -119,6 +119,8 @@ cargo test
 - [ ] Better support latency measurements for elements and bins with multiple sink and src pads.
 - [ ] Reimplement `pad_pull_pre` and `pad_pull_post` hooks to properly capture latency (unsure exactly how this will look at this point).
 - [ ] Port performance & implementation improvements made to `prom-latency` to the `otel-tracer` tracer.
+- [ ] `otel-tracer` to collect metrics with trace and span data included in exemplars.
+- [ ] Create an all-in-one tracer, `gst-instrument`, which can collect correlated logs, metrics, spans, traces and profiles with performance improvements & lessons learned from the above.
 
 ## License
 
