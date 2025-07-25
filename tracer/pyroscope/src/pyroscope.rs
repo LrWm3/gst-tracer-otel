@@ -1,9 +1,9 @@
-/*
-*
-* This library is free software; you can redistribute it and/or
-* modify it under the terms of the GNU Library General Public
-* License as published by the Free Software Foundation; either
-* version 2 of the License, or (at your option) any later version.
+/* pyroscope.rs
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Library General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -20,14 +20,12 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
 
-// Our Tracer subclass
 mod imp {
     use std::sync::LazyLock;
 
     use super::*;
 
-    use glib::thread_guard::thread_id;
-    use pyroscope::{backend::Tag, pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
+    use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -40,8 +38,90 @@ mod imp {
 
     #[derive(Default)]
     pub struct PyroscopeTracer {
-        agent: Option<PyroscopeAgent<PyroscopeAgentRunning>>,
-        lock: std::sync::Mutex<()>,
+        agent: std::sync::RwLock<Option<PyroscopeAgent<PyroscopeAgentRunning>>>,
+    }
+
+    impl PyroscopeTracer {
+        fn create_first_agent(&self, tags: Vec<(&str, &str)>) {
+            // First, check with a read lock
+            {
+                let agent_read = self.agent.read().unwrap();
+                if agent_read.is_some() {
+                    return;
+                }
+            }
+            // If not present, acquire write lock and initialize
+            let mut agent_write = self.agent.write().unwrap();
+            if agent_write.is_none() {
+                gst::debug!(CAT, "Creating new Pyroscope agent");
+                *agent_write = Some(self.create_pyroscope_agent(tags));
+            }
+        }
+
+        fn remove_agent_if_present(&self) {
+            let mut agent_write = self.agent.write().unwrap();
+            if let Some(agent) = agent_write.take() {
+                gst::debug!(
+                    CAT,
+                    "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
+                );
+                let agent_stopped = agent.stop().unwrap();
+                agent_stopped.shutdown();
+                gst::debug!(CAT, "Pyroscope agent stopped");
+            }
+        }
+
+        fn create_pyroscope_agent(
+            &self,
+            tags: Vec<(&str, &str)>,
+        ) -> PyroscopeAgent<PyroscopeAgentRunning> {
+            // Messy config, should probably allow for setting through element properties.
+            let url = std::env::var("GST_PYROSCOPE_SERVER_URL")
+                .unwrap_or_else(|_| "http://localhost:4040".into());
+            gst::debug!(CAT, "Creating Pyroscope agent with URL: {}", url);
+            PyroscopeAgent::builder(
+                url,
+                std::env::var("GST_PYROSCOPE_TRACER_NAME")
+                    .unwrap_or_else(|_| "pyroscope_tracer".into()),
+            )
+            .tags(
+                vec![
+                    ("service", env!("CARGO_PKG_NAME")),
+                    ("version", env!("CARGO_PKG_VERSION")),
+                    ("repo", env!("CARGO_PKG_REPOSITORY")),
+                    ("os", std::env::consts::OS),
+                    ("arch", std::env::consts::ARCH),
+                ]
+                .into_iter()
+                .chain(
+                    std::env::var("GST_PYROSCOPE_TAGS")
+                        .unwrap_or_else(|_| String::new())
+                        .split(',')
+                        .filter_map(|tag| {
+                            let mut parts = tag.splitn(2, '=');
+                            if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                                Some((key, value))
+                            } else {
+                                None
+                            }
+                        }),
+                )
+                .chain(tags)
+                .collect(),
+            )
+            .backend(pprof_backend(
+                PprofConfig::new().sample_rate(
+                    std::env::var("GST_PYROSCOPE_SAMPLE_RATE")
+                        .unwrap_or_else(|_| "100".into())
+                        .parse()
+                        .unwrap_or(100),
+                ),
+            ))
+            .build()
+            .unwrap()
+            .start()
+            .unwrap()
+        }
     }
 
     #[glib::object_subclass]
@@ -53,89 +133,24 @@ mod imp {
         fn new() -> Self {
             gst::debug!(CAT, "Creating new PyroscopeTracer instance");
             Self {
-                agent: None,
-                lock: std::sync::Mutex::new(()),
+                agent: std::sync::RwLock::new(None),
             }
         }
     }
 
-    fn create_pyroscope_agent(tags: Vec<(&str, &str)>) -> PyroscopeAgent<PyroscopeAgentRunning> {
-        PyroscopeAgent::builder(
-            std::env::var("GST_PYROSCOPE_SERVER_URL")
-                .unwrap_or_else(|_| "http://localhost:4040".into()),
-            std::env::var("GST_PYROSCOPE_TRACER_NAME")
-                .unwrap_or_else(|_| "pyroscope_tracer".into()),
-        )
-        .tags(
-            vec![
-                ("service", "gst-pyroscope-tracer"),
-                ("version", env!("CARGO_PKG_VERSION")),
-                ("language", "rust"),
-            ]
-            .into_iter()
-            .chain(
-                std::env::var("GST_PYROSCOPE_TAGS")
-                    .unwrap_or_else(|_| String::new())
-                    .split(',')
-                    .filter_map(|tag| {
-                        let mut parts = tag.splitn(2, '=');
-                        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                            Some((key, value))
-                        } else {
-                            None
-                        }
-                    }),
-            )
-            .chain(tags.into_iter())
-            .collect(),
-        )
-        .backend(pprof_backend(
-            PprofConfig::new().sample_rate(
-                std::env::var("GST_PYROSCOPE_SAMPLE_RATE")
-                    .unwrap_or_else(|_| "100".into())
-                    .parse()
-                    .unwrap_or(100),
-            ),
-        ))
-        .build()
-        .unwrap()
-        .start()
-        .unwrap()
-    }
-
     impl ObjectImpl for PyroscopeTracer {
-        // Called once when the class is initialized
+        /// Called whenever the plugin itself is loaded; including during gst-inspect-1.0
+        /// and other utility commands; avoid starting collectors or doing other heavy work here.
         fn constructed(&self) {
             self.parent_constructed();
             self.register_hook(TracerHook::BinAddPost);
         }
 
+        /// Called when the tracer is disposed, typically when the pipeline is stopped or the plugin is unloaded.
+        /// This is where we stop the agent if it is running.
         fn dispose(&self) {
             // Stop the agent when the tracer is dropped
-            if self.agent.is_some() {
-                let _guard = self.lock.lock().unwrap();
-                if self.agent.is_some() {
-                    gst::debug!(
-                        CAT,
-                        "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
-                    );
-                    let stop_agent = std::env::var("GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE")
-                        .unwrap_or_else(|_| "true".into())
-                        .parse()
-                        .unwrap_or(true);
-                    if stop_agent {
-                        unsafe {
-                            let raw_self: *mut imp::PyroscopeTracer =
-                                self as *const _ as *mut imp::PyroscopeTracer;
-                            (*raw_self).agent.take().map(|agent| {
-                                let agent_stopped = agent.stop().unwrap();
-                                agent_stopped.shutdown();
-                                gst::debug!(CAT, "Pyroscope agent stopped");
-                            });
-                        }
-                    }
-                }
-            }
+            self.remove_agent_if_present();
         }
     }
 
@@ -143,6 +158,10 @@ mod imp {
     impl TracerImpl for PyroscopeTracer {
         /// Because the pipeline overall is a bin, we can use this hook as a
         /// signal that the tracer should start collecting data.
+        ///
+        /// In other plugins we prefer to use the ffi hooks for performance
+        /// reasons but this is typically not a hot hook, so we prefer to use
+        /// the safe variant.
         ///
         /// We shutdown in the corresponding dispose method.
         fn bin_add_post(
@@ -152,20 +171,9 @@ mod imp {
             _element: &gstreamer::Element,
             success: bool,
         ) {
-            // If the agent is not running, start it now
-            if success && self.agent.is_none() {
-                gst::debug!(CAT, "Pyroscope agent not running, starting it up");
-                // Lock to ensure thread safety
-                let _lock = self.lock.lock().unwrap();
-                // Recheck inside the lock
-                if self.agent.is_none() {
-                    gst::debug!(CAT, "Creating new Pyroscope agent");
-                    unsafe {
-                        let raw_self: *mut imp::PyroscopeTracer =
-                            self as *const _ as *mut imp::PyroscopeTracer;
-                        (*raw_self).agent = Some(create_pyroscope_agent(vec![]));
-                    };
-                }
+            // If the agent is not running & this is the pipeline bin, start it up.
+            if success && bin.downcast_ref::<gst::Pipeline>().is_some() {
+                self.create_first_agent(vec![("pipeline", bin.name().as_str())]);
             }
         }
     }

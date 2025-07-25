@@ -32,5 +32,5 @@ gst::plugin_define!(
     "LGPL",
     "gst_prometheus_tracer",
     "gst_prometheus_tracer",
-    "https://example.com"
+    "https://github.com/LrWm3/gst-tracer-otel"
 );

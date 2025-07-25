@@ -28,16 +28,18 @@ First build the plugin, as usual.
 Then run the following commands to set up a local Pyroscope server and Grafana instance:
 
 ```bash
-docker network create pyroscope-demo
-docker run --name pyroscope --network=pyroscope-demo -d -p 4040:4040 grafana/pyroscope
-docker run -d --name=grafana   --network=pyroscope-demo   -p 3000:3000   -e "GF_INSTALL_PLUGINS=grafana-pyroscope-app"  -e "GF_AUTH_ANONYMOUS_ENABLED=true"   -e "GF_AUTH_ANONYMOUS_ORG_ROLE=Admin"   -e "GF_AUTH_DISABLE_LOGIN_FORM=true"   grafana/grafana:main
+export GST_PYROSCOPE_SERVER_URL=http://localhost:4040
+
+# grafana as our UI
+# 4137 is grpc & 4318 is http otel, which we don't really need here, but kept for consistency
+docker run -p 3000:3000 -p 4040:4040 -p 4317:4317 -p 4318:4318 -d grafana/otel-lgtm
 ```
 
 Finally, run the following command to start the tracer:
 
 ```bash
-GST_PLUGIN_PATH=target/debug/ GST_TRACERS='pyroscope(flags=element)' GST_DEBUG=GST_TRACER:5 \
+GST_PLUGIN_PATH=target/release:target/debug/ GST_TRACERS='pyroscope(flags=element)' GST_DEBUG=GST_TRACER:5,pyroscope:6 \
 gst-launch-1.0 videotestsrc ! videoconvert ! autovideosink
 ```
 
-You can then access the Pyroscope UI at `http://localhost:4040` and Grafana at `http://localhost:3000` and see the profiling data.
+You can then access Grafana at `http://localhost:3000` and see the profiling data.
