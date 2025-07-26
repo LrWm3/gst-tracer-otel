@@ -22,8 +22,10 @@ jobs:
           just-version: "1.40.0"
 
       # 3. Install dependencies
-      - name: Install dependencies
-        run: just setup
+      - name: Install build dependencies
+        run: |
+          sudo .devcontainer/setup-root.sh
+          .devcontainer/setup-user.sh
 
       # 4. Run the benchmark update
       - name: Run bench-perf-update
@@ -31,11 +33,10 @@ jobs:
 
       # 5. Commit & push only if this is not already the “skip ci” commit
       - name: Commit updated benchmarks
-        if: "!contains(github.event.head_commit.message, '[skip ci]')"
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # adjust the glob/path to wherever your .data files land
           git add .github/perf/*.data
-          git commit -m "Update benchmarks [skip ci]"
+          git commit -m "🤖 update benchmarks [skip ci]"
           git push
