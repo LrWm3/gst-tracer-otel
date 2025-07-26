@@ -6,9 +6,36 @@ This crate provides a GStreamer tracer that sends profiling data to a Pyroscope 
 
 For this to be useful, you must have debug symbols for all of your gstreamer dependencies.
 
-I am still trying to figure out how to do this myself; currently by going back and forth between perf & then installing missing dbgsym packages & rebuilding the world.
+You can try and install them, or resolve them with `debuginfod`, but I was unable to do so easily.
 
-If anyone has suggestions on how to more readily achieve this I would be open to learning.
+The option which worked for me was to rebuild gstreamer and then link it.
+
+```bash
+# clone the repository
+git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git
+cd gstreamer
+
+# checkout the tag you want
+git checkout 1.24.0
+
+# or wherever this repo is on your filesystem.
+cp ../gst-tracer-otel/tracer/pyroscope/gstreamer/native.flags.ini .
+
+# build with native.flags.ini
+meson setup builddir -Dtests=disabled -Dexamples=disabled  -Dgpl=enabled --buildtype=debugoptimized -Dstrip=false --native-file native.flags.ini
+meson compile -C builddir
+
+# load the environment
+./gst-env.py bash
+
+# build this plugin
+cd ../gst-tracer-otel && just build-package gst-pyroscope-tracer
+
+# the plugin to your path
+export GST_PLUGIN_PATH="$GST_PLUGIN_PATH:$(pwd)/target/release"
+
+# at this point you will have the plugin available and all debug symbols in gstreamer.
+```
 
 ## Usage
 
