@@ -583,11 +583,15 @@ mod imp {
 
         // do the same for the source pad
         let src_pad_name = if !src_pad.is_null() {
-            let parent = get_real_pad_parent_ffi(src_pad).unwrap();
-            if !parent.is_null() {
-                let element_src = unsafe { gst::Element::from_glib_ptr_borrow(&parent) };
-                // If we have a parent element, use its name
-                element_src.name().to_string() + "." + &src_pad_s.name()
+            if let Some(parent) = get_real_pad_parent_ffi(src_pad) {
+                if !parent.is_null() {
+                    let element_src = unsafe { gst::Element::from_glib_ptr_borrow(&parent) };
+                    // If we have a parent element, use its name
+                    element_src.name().to_string() + "." + &src_pad_s.name()
+                } else {
+                    // Otherwise, just use the pad name
+                    src_pad_s.name().to_string()
+                }
             } else {
                 // Otherwise, just use the pad name
                 src_pad_s.name().to_string()
