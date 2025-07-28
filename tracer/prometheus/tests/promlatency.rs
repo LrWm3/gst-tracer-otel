@@ -49,18 +49,21 @@ mod tests {
         }
         // Get the active tracer and then emit to get the metrics.
 
-        let binding = gst::active_tracers();
-        println!("Active tracers: {}", binding.len());
-        let tracer = binding
-            .iter()
-            .inspect(|t| {
-                println!("Active tracer: {}", t.name());
-            })
-            .find(|t| t.name() == "promlatencytracer0")
-            .expect("Expected to find the `prom-latency` tracer");
-        let _metrics_from_signal = tracer
-            .emit_by_name::<Option<String>>("request-metrics", &[])
-            .expect("Expected to get metrics from signal");
+        #[cfg(feature = "v1_18")]
+        {
+            let binding = gst::active_tracers();
+            println!("Active tracers: {}", binding.len());
+            let tracer = binding
+                .iter()
+                .inspect(|t| {
+                    println!("Active tracer: {}", t.name());
+                })
+                .find(|t| t.name() == "promlatencytracer0")
+                .expect("Expected to find the `prom-latency` tracer");
+            let _metrics_from_signal = tracer
+                .emit_by_name::<Option<String>>("request-metrics", &[])
+                .expect("Expected to get metrics from signal");
+        }
 
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
