@@ -22,5 +22,5 @@ reqwest = { version = "0.12", features = ["blocking"] }
 [features]
 noop = []
 default = ["v1_18"]
-v1_16 = ["gstreamer/v1_16"]
-v1_18 = ["gstreamer/v1_18"]
+v1_16 = ["gstreamer/v1_16", "gstreamer-sys/v1_16"]
+v1_18 = ["gstreamer/v1_18", "gstreamer-sys/v1_18"]
