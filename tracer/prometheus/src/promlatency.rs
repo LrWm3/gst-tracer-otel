@@ -561,10 +561,10 @@ mod imp {
         let binding = get_real_pad_ffi(src_pad).unwrap();
         let src_pad_s = unsafe { gst::Pad::from_glib_ptr_borrow(&binding) };
 
-        // Get the parent of the sink, what we're measuring across.
-        let sink_element_parent = get_real_pad_parent_ffi(sink_pad).unwrap();
-
         let sink_name = sink_pad_s.name().to_string();
+        // Get the parent of the sink, what we're measuring across.
+        let sink_element_parent =
+            get_real_pad_parent_ffi(sink_pad).unwrap_or_else(std::ptr::null_mut);
         let element_latency_name = if !sink_element_parent.is_null() {
             let element_latency_s =
                 unsafe { gst::Element::from_glib_ptr_borrow(&sink_element_parent) };
@@ -583,17 +583,20 @@ mod imp {
 
         // do the same for the source pad
         let src_pad_name = if !src_pad.is_null() {
-            if let Some(parent) = get_real_pad_parent_ffi(src_pad) {
-                if !parent.is_null() {
-                    let element_src = unsafe { gst::Element::from_glib_ptr_borrow(&parent) };
-                    // If we have a parent element, use its name
-                    element_src.name().to_string() + "." + &src_pad_s.name()
-                } else {
-                    // Otherwise, just use the pad name
-                    src_pad_s.name().to_string()
-                }
+            let parent = get_real_pad_parent_ffi(src_pad).unwrap_or_else(std::ptr::null_mut);
+            if !parent.is_null() {
+                let element_src = unsafe { gst::Element::from_glib_ptr_borrow(&parent) };
+                // If we have a parent element, use its name
+                element_src.name().to_string() + "." + &src_pad_s.name()
             } else {
                 // Otherwise, just use the pad name
+                gst::warning!(
+                    CAT,
+                    "do_create_latency_cache_for_pad_pair called on src_pad: {:?}, but no parent found. (peer: {:?}: peer-parent: {:?})",
+                    src_pad_s.name(),
+                    sink_pad_name,
+                    element_latency_name,
+                );
                 src_pad_s.name().to_string()
             }
         } else {
