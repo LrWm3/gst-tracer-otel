@@ -44,7 +44,7 @@ The following environment variables are used to configure the tracer:
 | Variable                              | Description                                                                                                                             | Default                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | `GST_PYROSCOPE_SERVER_URL`            | The URL of the Pyroscope server to send profiling data to.                                                                              | `http://localhost:4040` |
-| `GST_PYROSCOPE_TRACER_NAME`           | The name of the tracer. This is used to identify the tracer in the Pyroscope UI.                                                        | `gstreamer`             |
+| `GST_PYROSCOPE_TRACER_NAME`           | The name of the tracer. This is used to identify the tracer in the Pyroscope UI.                                                        | `gst.otel`              |
 | `GST_PYROSCOPE_SAMPLE_RATE`           | The sample rate in hz for the tracer. This controls how often profiling data is sent to the server.                                     | `100`                   |
 | `GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE` | Whether to stop the Pyroscope agent when the tracer is disposed. Stopping the agent can take up to 2 minutes.                           | `true`                  |
 | `GST_PYROSCOPE_TAGS`                  | Additional tags to add to the profiling data. This can be used to add custom metadata to the profiling data. Specified as 'k1=v1,k2=v2' | ``                      |

@@ -56,7 +56,7 @@ fn init_otlp() -> global::BoxedTracer {
             )))
             .with_resource(
                 Resource::builder()
-                    .with_attributes(vec![KeyValue::new("service.name", "gst-prom-latency")])
+                    .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])
                     .build(),
             )
             .with_simple_exporter(otlp_exporter)
