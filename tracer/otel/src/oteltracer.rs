@@ -19,57 +19,6 @@ use opentelemetry_sdk::Resource;
 
 use opentelemetry::logs::LoggerProvider;
 
-/// GStreamer debug category for logs
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new(
-        "otel-tracer",
-        gst::DebugColorFlags::empty(),
-        Some("OTLP tracer with metrics"),
-    )
-});
-
-static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
-static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
-
-#[derive(Debug)]
-struct GstSpanSink<'a> {
-    // guard deallocation ends span
-    #[allow(dead_code)]
-    guard: opentelemetry::ContextGuard,
-    span: opentelemetry::trace::SpanRef<'a>,
-}
-
-/// Initialize both OTLP trace and metric exporters once
-fn init_otlp() -> global::BoxedTracer {
-    INIT_ONCE.get_or_init(|| {
-        // First, create a OTLP exporter builder. Configure it as you need.
-        // TODO - allow selecting between gRPC and HTTP exporters
-        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .build()
-            .expect("Failed to create OTLP exporter");
-
-        // Tracing pipeline
-        let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-            .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
-                opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
-            )))
-            .with_resource(
-                Resource::builder()
-                    .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])
-                    .build(),
-            )
-            .with_batch_exporter(otlp_exporter)
-            .build();
-        global::set_tracer_provider(tracer_provider);
-
-        gst::info!(CAT, "OTLP exporters initialized");
-
-        global::tracer("otel-tracer")
-    });
-    global::tracer("otel-tracer")
-}
-
 /// GStreamer Tracer subclass
 mod imp {
     use crate::otellogbridge::{init_logs_otlp, LogBridge, StructuredBridge};
@@ -85,6 +34,55 @@ mod imp {
     use opentelemetry::trace::TraceContextExt;
     use std::{os::raw::c_void, ptr};
 
+    /// GStreamer debug category for logs
+    static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+        gst::DebugCategory::new(
+            "otel-tracer",
+            gst::DebugColorFlags::empty(),
+            Some("OTLP tracer with metrics"),
+        )
+    });
+
+    static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
+    static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
+
+    #[derive(Debug)]
+    struct GstSpanSink<'a> {
+        // guard deallocation ends span
+        #[allow(dead_code)]
+        guard: opentelemetry::ContextGuard,
+        span: opentelemetry::trace::SpanRef<'a>,
+    }
+
+    /// Initialize both OTLP trace and metric exporters once
+    fn init_otlp() -> global::BoxedTracer {
+        INIT_ONCE.get_or_init(|| {
+            // First, create a OTLP exporter builder. Configure it as you need.
+            let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_http()
+                .build()
+                .expect("Failed to create OTLP exporter");
+
+            // Tracing pipeline
+            let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
+                    opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
+                )))
+                .with_resource(
+                    Resource::builder()
+                        .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])
+                        .build(),
+                )
+                .with_batch_exporter(otlp_exporter)
+                .build();
+            global::set_tracer_provider(tracer_provider);
+
+            gst::info!(CAT, "OTLP exporters initialized");
+
+            global::tracer("otel-tracer")
+        });
+        global::tracer("otel-tracer")
+    }
     #[repr(C)]
     pub struct GstOtelSpanBuf {
         parent: gst::ffi::GstMeta,

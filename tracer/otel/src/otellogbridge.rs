@@ -191,10 +191,10 @@ pub fn init_logs_otlp() -> SdkLoggerProvider {
     SdkLoggerProvider::builder()
         .with_resource(
             Resource::builder_empty()
-                .with_attribute(KeyValue::new("service.name", "gst-tracer-otel"))
+                .with_attribute(KeyValue::new("service.name", "gst.otel"))
                 .build(),
         )
-        .with_log_processor(opentelemetry_sdk::logs::SimpleLogProcessor::new(exporter))
+        .with_batch_exporter(exporter)
         // .with_log_processor(BatchLogProcessor::builder(exporter).build())
         .build()
 }
