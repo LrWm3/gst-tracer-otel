@@ -43,9 +43,9 @@ struct GstSpanSink<'a> {
 fn init_otlp() -> global::BoxedTracer {
     INIT_ONCE.get_or_init(|| {
         // First, create a OTLP exporter builder. Configure it as you need.
-        // TODO - will try and wire this up later
+        // TODO - allow selecting between gRPC and HTTP exporters
         let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
+            .with_tonic()
             .build()
             .expect("Failed to create OTLP exporter");
 
@@ -59,7 +59,7 @@ fn init_otlp() -> global::BoxedTracer {
                     .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])
                     .build(),
             )
-            .with_simple_exporter(otlp_exporter)
+            .with_batch_exporter(otlp_exporter)
             .build();
         global::set_tracer_provider(tracer_provider);
 
