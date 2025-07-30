@@ -2,7 +2,6 @@
 // Now uses OTLP exporter for both traces and metrics, removing Prometheus-specific HTTP server
 
 use glib::subclass::prelude::*;
-use glib::translate::IntoGlib;
 use glib::Quark;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -21,7 +20,10 @@ use opentelemetry::logs::LoggerProvider;
 
 /// GStreamer Tracer subclass
 mod imp {
-    use crate::otellogbridge::{init_logs_otlp, LogBridge, StructuredBridge};
+    use crate::{
+        otellogbridge::{init_logs_otlp, LogBridge, StructuredBridge},
+        pyroscopespanprocessor::imp::PyroscopeSpanProcessor,
+    };
 
     use super::*;
     use glib::{
@@ -63,11 +65,15 @@ mod imp {
                 .build()
                 .expect("Failed to create OTLP exporter");
 
+            let pyroscope_processor = PyroscopeSpanProcessor::default();
+            pyroscope_processor.create_first_agent(vec![("service.name", "gst.otel")]);
+
             // Tracing pipeline
             let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
                 .with_sampler(opentelemetry_sdk::trace::Sampler::ParentBased(Box::new(
                     opentelemetry_sdk::trace::Sampler::TraceIdRatioBased(1.0),
                 )))
+                .with_span_processor(pyroscope_processor)
                 .with_resource(
                     Resource::builder()
                         .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])

@@ -13,7 +13,7 @@ mod tests {
     fn given_basic_pipeline_when_run_otel_then_metrics_captured() {
         help_run_gstreamer_tests(
             "basic",
-            "fakesrc num-buffers=3 ! identity ! identity ! identity ! identity ! fakesink",
+            "fakesrc num-buffers=30000 ! identity ! identity ! identity ! identity ! fakesink",
         );
     }
 
