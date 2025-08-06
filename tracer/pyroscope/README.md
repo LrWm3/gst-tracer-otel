@@ -66,7 +66,7 @@ docker run -p 3000:3000 -p 4040:4040 -p 4317:4317 -p 4318:4318 -d grafana/otel-l
 Finally, run the following command to start the tracer:
 
 ```bash
-GST_PLUGIN_PATH=target/release:target/debug/ GST_TRACERS='pyroscope(flags=element)' GST_DEBUG=GST_TRACER:5,pyroscope:6 \
+GST_PLUGIN_PATH=target/release:target/debug/ GST_TRACERS='pyroscope' GST_DEBUG=GST_TRACER:5,pyroscope:6 \
 gst-launch-1.0 videotestsrc ! videoconvert ! autovideosink
 ```
 
