@@ -123,8 +123,8 @@ mod imp {
             let obj = self.obj();
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
 
-            // Start the metrics server if not already started
-            METRICS_SERVER_ONCE.get_or_init(maybe_start_metrics_server);
+            // Register callback to start metrics server if needed.
+            self.register_hook(TracerHook::ElementNew);
 
             // Hook callbacks
             unsafe extern "C" fn do_push_buffer_pre(
@@ -311,7 +311,14 @@ mod imp {
     }
 
     impl GstObjectImpl for PromLatencyTracer {}
-    impl TracerImpl for PromLatencyTracer {}
+    impl TracerImpl for PromLatencyTracer {
+        fn element_new(&self, _ts: u64, element: &gst::Element) {
+            // Not performance sensitive; so we use the safe hook instead.
+            if element.is::<gst::Pipeline>() {
+                METRICS_SERVER_ONCE.get_or_init(maybe_start_metrics_server);
+            }
+        }
+    }
 
     // Add this function, which is the handler for the "request-metrics" signal
     fn request_metrics() -> String {
@@ -561,10 +568,10 @@ mod imp {
         let binding = get_real_pad_ffi(src_pad).unwrap();
         let src_pad_s = unsafe { gst::Pad::from_glib_ptr_borrow(&binding) };
 
-        // Get the parent of the sink, what we're measuring across.
-        let sink_element_parent = get_real_pad_parent_ffi(sink_pad).unwrap();
-
         let sink_name = sink_pad_s.name().to_string();
+        // Get the parent of the sink, what we're measuring across.
+        let sink_element_parent =
+            get_real_pad_parent_ffi(sink_pad).unwrap_or_else(std::ptr::null_mut);
         let element_latency_name = if !sink_element_parent.is_null() {
             let element_latency_s =
                 unsafe { gst::Element::from_glib_ptr_borrow(&sink_element_parent) };
@@ -583,13 +590,20 @@ mod imp {
 
         // do the same for the source pad
         let src_pad_name = if !src_pad.is_null() {
-            let parent = get_real_pad_parent_ffi(src_pad).unwrap();
+            let parent = get_real_pad_parent_ffi(src_pad).unwrap_or_else(std::ptr::null_mut);
             if !parent.is_null() {
                 let element_src = unsafe { gst::Element::from_glib_ptr_borrow(&parent) };
                 // If we have a parent element, use its name
                 element_src.name().to_string() + "." + &src_pad_s.name()
             } else {
                 // Otherwise, just use the pad name
+                gst::warning!(
+                    CAT,
+                    "do_create_latency_cache_for_pad_pair called on src_pad: {:?}, but no parent found. (peer: {:?}: peer-parent: {:?})",
+                    src_pad_s.name(),
+                    sink_pad_name,
+                    element_latency_name,
+                );
                 src_pad_s.name().to_string()
             }
         } else {
@@ -693,13 +707,16 @@ mod imp {
                     // spawn the server
                     thread::spawn(move || {
                         let addr = ("0.0.0.0", port);
-                        let server =
-                            Server::http(addr).expect("Failed to bind Prometheus metrics server");
-                        gst::info!(
-                            CAT,
-                            "Prometheus metrics server listening on 0.0.0.0:{}",
-                            port
-                        );
+                        let server_r = Server::http(addr);
+                        if server_r.is_err() {
+                            gst::warning!(
+                                CAT,
+                                "Failed to start Prometheus metrics server on 0.0.0.0:{}",
+                                port
+                            );
+                            return;
+                        };
+                        let server = server_r.unwrap();
 
                         for request in server.incoming_requests() {
                             // Gather and encode all registered metrics

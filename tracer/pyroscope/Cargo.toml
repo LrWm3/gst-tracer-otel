@@ -16,4 +16,4 @@ pyroscope = "0.5.4"
 pyroscope_pprofrs = { version = "0.2", features = ["frame-pointer"] }
 
 [features]
-pyroscope = []
+capi = []

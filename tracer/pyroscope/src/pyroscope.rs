@@ -81,8 +81,7 @@ mod imp {
             gst::debug!(CAT, "Creating Pyroscope agent with URL: {}", url);
             PyroscopeAgent::builder(
                 url,
-                std::env::var("GST_PYROSCOPE_TRACER_NAME")
-                    .unwrap_or_else(|_| "pyroscope_tracer".into()),
+                std::env::var("GST_PYROSCOPE_TRACER_NAME").unwrap_or_else(|_| "gst.otel".into()),
             )
             .tags(
                 vec![

@@ -18,6 +18,7 @@
 use gstreamer as gst;
 mod otellogbridge;
 mod oteltracer;
+mod pyroscopespanprocessor;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
