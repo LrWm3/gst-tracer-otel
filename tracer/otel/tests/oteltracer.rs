@@ -21,7 +21,7 @@ mod tests {
     fn given_mthread_pipeline_when_run_otel_then_traces_captured() {
         help_run_gstreamer_tests(
             "multithreaded",
-            "fakesrc num-buffers=5 ! queue max-size-buffers=3 ! fakesink",
+            "fakesrc num-buffers=500 ! queue max-size-buffers=3 ! fakesink",
         );
     }
 
@@ -34,10 +34,7 @@ mod tests {
         // Translates to directory containing this modules' Cargo.toml file.
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         // Set environment variables for the tracer
-        env::set_var(
-            "GST_TRACERS",
-            "otel-tracer(filters='GstBuffer',flags=element)",
-        );
+        env::set_var("GST_TRACERS", "otel-tracer");
         env::set_var(
             "GST_DEBUG",
             "fakesink:5,identity:5,GST_TRACER:5,otel-tracer:7",
