@@ -58,9 +58,6 @@ fn severity_of_debug_level(level: DebugLevel) -> Severity {
         DebugLevel::Debug => Severity::Debug,
         DebugLevel::Trace => Severity::Trace,
         DebugLevel::Memdump => Severity::Trace,
-        // Future versions of GStreamer might introduce additional debug levels.
-        // Instead of panicking on unrecognized values, map them to `Severity::Debug`
-        // so that log processing continues gracefully.
         DebugLevel::__Unknown(_) => Severity::Debug,
     }
 }
