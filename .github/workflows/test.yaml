@@ -8,47 +8,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository_owner }}/gst-tracer-otel-ci:latest
     steps:
-      # ────────────────────────────────────────────────
-      # Check out repo
-      # ────────────────────────────────────────────────
       - uses: actions/checkout@v4
-
-      # ────────────────────────────────────────────────
-      # Rust toolchain & GStreamer + gdb
-      # ────────────────────────────────────────────────
-      - name: Install latest stable
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      - uses: extractions/setup-just@v3
-        with:
-          just-version: 1.40.0
-      # ────────────────────────────────────────────────
-      # Cache Cargo registry + build artefacts
-      # ────────────────────────────────────────────────
-      - name: Cache APT packages (GStreamer)
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('.devcontainer/setup-root.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
-
-      - name: Cache User binaries (act)
-        uses: actions/cache@v4
-        with:
-          path: /home/runner/bin
-          key: ${{ runner.os }}-user-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-user-bin-
-
-      - name: Cache Cargo-installed binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -66,32 +28,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
-      - name: Install build dependencies
-        run: |
-          sudo .devcontainer/setup-root.sh
-          .devcontainer/setup-user.sh
-
-      # ────────────────────────────────────────────────
-      # Build plug-in (release w/ debuginfo)
-      # ────────────────────────────────────────────────
       - name: Cargo build (release)
         run: just build
 
-      # ────────────────────────────────────────────────
-      # Cargo test
-      # ────────────────────────────────────────────────
       - name: Cargo test
         run: just test
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
-          components: llvm-tools-preview
 
-      # ────────────────────────────────────────────────
-      #  Run tests with address sanitizer to look for
-      #    memory leaks
-      # ────────────────────────────────────────────────
       - name: Run tests with address sanitizer
-        run: |
-          just test-address-sanitizer
+        run: just test-address-sanitizer

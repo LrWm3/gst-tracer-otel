@@ -8,43 +8,9 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    container: ghcr.io/${{ github.repository_owner }}/gst-tracer-otel-ci:latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-      - uses: extractions/setup-just@v3
-        with:
-          just-version: 1.40.0
-      - name: Install build dependencies
-        run: |
-          sudo .devcontainer/setup-root.sh
-          .devcontainer/setup-user.sh
-      # ────────────────────────────────────────────────
-      # Cache Cargo registry + build artefacts
-      # ────────────────────────────────────────────────
-      - name: Cache APT packages (GStreamer)
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: ${{ runner.os }}-apt-${{ hashFiles('.devcontainer/setup-root.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-apt-
-
-      - name: Cache User binaries (act)
-        uses: actions/cache@v4
-        with:
-          path: /home/runner/bin
-          key: ${{ runner.os }}-user-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
-          restore-keys: |
-            ${{ runner.os }}-user-bin-
-
-      - name: Cache Cargo-installed binaries
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/
-          key: ${{ runner.os }}-cargo-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -61,6 +27,7 @@ jobs:
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-release
           restore-keys: |
             ${{ runner.os }}-cargo-target-
+
       - name: Run audit
         run: just audit
       - name: Run clippy
