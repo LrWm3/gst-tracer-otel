@@ -21,17 +21,35 @@ jobs:
         with:
           just-version: "1.40.0"
 
-      # 3. Install dependencies
+      # 3. Cache Cargo registry
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      # 4. Cache Cargo build
+      - name: Cache Cargo build
+        uses: actions/cache@v4
+        with:
+          path: target # caches debug or release, whichever you build
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-release
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
+
+      # 5. Install dependencies
       - name: Install build dependencies
         run: |
           sudo .devcontainer/setup-root.sh
           .devcontainer/setup-user.sh
 
-      # 4. Run the benchmark update
+      # 6. Run the benchmark update
       - name: Run bench-perf-update
         run: just bench-perf-update
 
-      # 5. Commit & push only if this is not already the “skip ci” commit
+      # 7. Commit & push only if this is not already the “skip ci” commit
       - name: Commit updated benchmarks
         run: |
           git config user.name "github-actions[bot]"
