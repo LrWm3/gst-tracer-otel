@@ -145,6 +145,23 @@ mod imp {
                 do_receive_and_record_latency_ts(ts, pad);
             }
 
+            unsafe extern "C" fn do_push_list_pre(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+                _list_ptr: *mut gst::ffi::GstBufferList,
+            ) {
+                do_send_latency_ts(ts, pad);
+            }
+
+            unsafe extern "C" fn do_push_list_post(
+                _tracer: *mut gst::Tracer,
+                ts: u64,
+                pad: *mut gst::ffi::GstPad,
+            ) {
+                do_receive_and_record_latency_ts(ts, pad);
+            }
+
             unsafe extern "C" fn do_pull_range_pre(
                 _tracer: *mut gst::Tracer,
                 _ts: u64,
@@ -248,6 +265,20 @@ mod imp {
                     c"pad-push-post".as_ptr(),
                     std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
                         do_push_buffer_post as *const (),
+                    ),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    c"pad-push-list-pre".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_list_pre as *const (),
+                    ),
+                );
+                ffi::gst_tracing_register_hook(
+                    tracer_obj.to_glib_none().0,
+                    c"pad-push-list-post".as_ptr(),
+                    std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
+                        do_push_list_post as *const (),
                     ),
                 );
                 // Pull hooks; far less common, but still useful.
