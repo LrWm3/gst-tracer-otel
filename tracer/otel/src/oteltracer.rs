@@ -6,11 +6,8 @@ use glib::Quark;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
-// TODO - remove once_cell in exchange for the std::lib equivalent
-use once_cell::sync::Lazy;
 use opentelemetry::global::BoxedSpan;
-use std::sync::LazyLock;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 // OpenTelemetry and OTLP exporter
 use opentelemetry::trace::{Span, SpanContext, Tracer};
 use opentelemetry::{global, KeyValue};
@@ -46,7 +43,8 @@ mod imp {
     });
 
     static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
-    static QUARK_SINK_SPAN: Lazy<u32> = Lazy::new(|| Quark::from_str("otel-trace").into_glib());
+    static QUARK_SINK_SPAN: LazyLock<u32> =
+        LazyLock::new(|| Quark::from_str("otel-trace").into_glib());
 
     #[derive(Debug)]
     struct GstSpanSink<'a> {
@@ -198,7 +196,7 @@ mod imp {
         unsafe impl Sync for MetaInfo {}
 
         // this closure runs exactly once, even in the face of threads
-        static META_INFO: Lazy<MetaInfo> = Lazy::new(|| unsafe {
+        static META_INFO: LazyLock<MetaInfo> = LazyLock::new(|| unsafe {
             MetaInfo(
                 ptr::NonNull::new(gst::ffi::gst_meta_register(
                     gst_span_buf_api_get_type().into_glib(),

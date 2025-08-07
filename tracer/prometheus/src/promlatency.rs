@@ -16,8 +16,7 @@
  * Boston, MA 02110-1301, USA.
  */
 use std::env;
-use std::sync::LazyLock;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::thread;
 
 use glib::subclass::prelude::*;
@@ -27,8 +26,6 @@ use gst::ffi;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gstreamer as gst;
-use lazy_static::lazy_static;
-use once_cell::sync::Lazy;
 use prometheus::{gather, Encoder, TextEncoder};
 use tiny_http::{Header, Response, Server};
 
@@ -46,26 +43,30 @@ mod imp {
     };
 
     // Define Prometheus metrics, all in nanoseconds
-    lazy_static! {
-        static ref LATENCY_LAST: IntGaugeVec = register_int_gauge_vec!(
+    static LATENCY_LAST: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+        register_int_gauge_vec!(
             "gst_element_latency_last_gauge",
             "Last latency in nanoseconds per element",
             &["element", "src_pad", "sink_pad"]
         )
-        .unwrap();
-        static ref LATENCY_SUM: IntCounterVec = register_int_counter_vec!(
+        .unwrap()
+    });
+    static LATENCY_SUM: LazyLock<IntCounterVec> = LazyLock::new(|| {
+        register_int_counter_vec!(
             "gst_element_latency_sum_count",
             "Sum of latencies in nanoseconds per element",
             &["element", "src_pad", "sink_pad"]
         )
-        .unwrap();
-        static ref LATENCY_COUNT: IntCounterVec = register_int_counter_vec!(
+        .unwrap()
+    });
+    static LATENCY_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
+        register_int_counter_vec!(
             "gst_element_latency_count_count",
             "Count of latency measurements per element",
             &["element", "src_pad", "sink_pad"]
         )
-        .unwrap();
-    }
+        .unwrap()
+    });
 
     thread_local! {
         /// Experimental approach to seeing if we set the span latency if
@@ -73,8 +74,8 @@ mod imp {
         pub static SPAN_LATENCY: Cell<u64> = const { Cell::new(0) };
     }
 
-    static PAD_CACHE_QUARK: Lazy<glib::ffi::GQuark> =
-        Lazy::new(|| Quark::from_str("promlatency.pad_cache").into_glib());
+    static PAD_CACHE_QUARK: LazyLock<glib::ffi::GQuark> =
+        LazyLock::new(|| Quark::from_str("promlatency.pad_cache").into_glib());
 
     static METRICS_SERVER_ONCE: OnceLock<()> = OnceLock::new();
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
