@@ -11,9 +11,6 @@ ARG USER_GID=$USER_UID
 
 RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
 
-# Add user to the docker group
-RUN usermod -aG docker $USERNAME
-
 # Install dependencies which require root privileges
 COPY .devcontainer/setup-root.sh /tmp/setup-root.sh
 RUN /tmp/setup-root.sh
