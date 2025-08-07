@@ -19,6 +19,7 @@ pub(crate) mod imp {
         agent: std::sync::RwLock<Option<PyroscopeAgent<PyroscopeAgentRunning>>>,
     }
     impl PyroscopeSpanProcessor {
+        #[allow(dead_code)]
         pub fn new() -> Self {
             Self::default()
         }
@@ -39,6 +40,7 @@ pub(crate) mod imp {
             }
         }
 
+        #[allow(dead_code)]
         pub fn remove_agent_if_present(&self) {
             let mut agent_write = self.agent.write().unwrap();
             if let Some(agent) = agent_write.take() {
@@ -112,16 +114,13 @@ pub(crate) mod imp {
                 span.set_attribute(KeyValue::new("pyroscope.profile.id", s_str.clone()));
                 // python version
                 // pyroscope.add_thread_tag(threading.get_ident(), PROFILE_ID_PYROSCOPE_TAG_KEY, s_str)
-                match self.agent.write().as_mut() {
-                    Ok(agent) => {
-                        let a = agent.as_ref().unwrap();
-                        a.add_thread_tag(
-                            thread_id::get() as u64,
-                            Tag::new("span_id".to_owned(), s_str),
-                        )
-                        .expect("Failed to add thread tag");
-                    }
-                    Err(_) => {}
+                if let Ok(agent) = self.agent.write().as_mut() {
+                    let a = agent.as_ref().unwrap();
+                    a.add_thread_tag(
+                        thread_id::get() as u64,
+                        Tag::new("span_id".to_owned(), s_str),
+                    )
+                    .expect("Failed to add thread tag");
                 }
             }
         }
@@ -132,29 +131,26 @@ pub(crate) mod imp {
                 // python version
                 // pyroscope.remove_thread_tag(threading.get_ident(), PROFILE_ID_PYROSCOPE_TAG_KEY, s_str)
                 let s_str = span.span_context.span_id().to_string();
-                match self.agent.write().as_mut() {
-                    Ok(agent) => {
-                        let a = agent.as_ref().unwrap();
-                        a.remove_thread_tag(
-                            thread_id::get() as u64,
-                            Tag::new("span_id".to_owned(), s_str),
-                        )
-                        .expect("Failed to remove thread id");
-                    }
-                    Err(_) => {}
+                if let Ok(agent) = self.agent.write().as_mut() {
+                    let a = agent.as_ref().unwrap();
+                    a.remove_thread_tag(
+                        thread_id::get() as u64,
+                        Tag::new("span_id".to_owned(), s_str),
+                    )
+                    .expect("Failed to remove thread id");
                 }
             }
         }
 
         fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
-            return Ok(());
+            Ok(())
         }
 
         fn shutdown_with_timeout(
             &self,
             _timeout: std::time::Duration,
         ) -> opentelemetry_sdk::error::OTelSdkResult {
-            return Ok(());
+            Ok(())
         }
     }
 }
