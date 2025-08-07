@@ -4,14 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 SHELL ["/bin/bash", "-lc"]
 
-ARG USERNAME=ubuntu
-ARG USER_UID=1000
-ARG USER_GID=$USER_UID
-
-# Create a non-root user
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
-
 # Install git and docker then clean up
 RUN apt-get update \
     && apt-get install -y git docker.io \
