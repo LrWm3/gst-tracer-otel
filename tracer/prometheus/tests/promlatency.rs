@@ -5,7 +5,7 @@ mod tests {
     use std::{
         env::{self, consts::ARCH},
         path::Path,
-        time::Instant,
+        time::{Duration, Instant},
         vec,
     };
 
@@ -341,7 +341,12 @@ mod tests {
     #[test]
     fn bench_prom_latency_through_pipeline() {
         setup_test();
-        run_bench("prom-latency");
+        let elapsed = run_bench("prom-latency");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Pipeline benchmark took too long: {:?}",
+            elapsed
+        );
     }
 
     fn run_bench(tracer_name: &str) -> std::time::Duration {
