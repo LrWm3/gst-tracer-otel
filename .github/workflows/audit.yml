@@ -21,16 +21,46 @@ jobs:
         run: |
           sudo .devcontainer/setup-root.sh
           .devcontainer/setup-user.sh
-      - name: Cache cargo registry
+      # ────────────────────────────────────────────────
+      # Cache Cargo registry + build artefacts
+      # ────────────────────────────────────────────────
+      - name: Cache APT packages (GStreamer)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.devcontainer/setup-root.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Cache User binaries (act)
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/bin
+          key: ${{ runner.os }}-user-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-user-bin-
+
+      - name: Cache Cargo-installed binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/
+          key: ${{ runner.os }}-cargo-bin-${{ hashFiles('.devcontainer/setup-user.sh') }}
+
+      - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-      - name: Cache build artifacts
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache Cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}-release
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-
       - name: Run audit
         run: just audit
       - name: Run clippy
