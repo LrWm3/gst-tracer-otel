@@ -3,7 +3,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 SHELL ["/bin/bash", "-lc"]
-
+ARG USERNAME=ubuntu
 # Install git and docker then clean up
 RUN apt-get update \
     && apt-get install -y git docker.io \
