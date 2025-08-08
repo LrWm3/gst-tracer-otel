@@ -8,8 +8,9 @@ SHELL ["/bin/bash", "-lc"]
 ARG USERNAME=ubuntu
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
+ENV GITHUB_ACTIONS=true
 
-RUN apt-get update && apt-get install -y docker.io && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y openssl libssl-dev docker.io && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies which require root privileges
 COPY .devcontainer/setup-root.sh /tmp/setup-root.sh

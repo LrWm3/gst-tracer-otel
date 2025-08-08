@@ -14,6 +14,7 @@ else
       ca-certificates \
       gdb \
       libgstreamer1.0-dev \
+      lsb-release \
       libgstreamer-plugins-base1.0-dev \
       gstreamer1.0-tools \
       gstreamer1.0-plugins-base \
