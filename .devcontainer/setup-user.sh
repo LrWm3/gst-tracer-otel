@@ -25,7 +25,7 @@ fi
 if ! command -v just &> /dev/null; then
   echo "Installing just..."
   # Install just
-  curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to "/home/$USER/bin"
+  curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to "$HOME/.local/bin"
 else
   echo "just is already installed."
 fi
@@ -40,7 +40,7 @@ PATH="$HOME/.cargo/bin:$PATH"
 # Install act for local CI testing
 if ! command -v act &> /dev/null; then
   echo "Installing act..."
-  curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | bash -s -- -b "/home/$USER/bin"
+  curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | bash -s -- -b "$HOME/.local/bin"
 else
   echo "act is already installed."
 fi
