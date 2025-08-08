@@ -17,4 +17,4 @@ RUN /tmp/setup-root.sh
 COPY .devcontainer/setup-user.sh /tmp/setup-user.sh
 RUN /tmp/setup-user.sh
 
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.cargo/bin:/root/.local/bin:$PATH"
