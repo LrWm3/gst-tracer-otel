@@ -17,6 +17,7 @@
  */
 use gstreamer as gst;
 mod promlatency;
+mod promlatencyimp;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
