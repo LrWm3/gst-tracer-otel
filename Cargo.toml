@@ -24,6 +24,9 @@ gobject-sys = "0.20"
 gstreamer         = { version = "0.23.6" }
 gstreamer-sys     = "0.23.6"  # raw FFI for hook registration
 
+[package.metadata.release]
+pre-release-hook = ["git-cliff", "--output", "CHANGELOG.md"]
+
 [profile.profiling]
 inherits = "release"
 debug = true
