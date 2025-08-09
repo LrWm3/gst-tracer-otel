@@ -5,12 +5,14 @@ use crate::promlatencyimp::{PromLatencyTracerImp, CAT};
 
 mod imp {
     use super::*;
+    use glib::{ParamSpec, ParamSpecUInt, Value};
     use gst::subclass::prelude::*;
-    use std::sync::OnceLock;
+    use std::sync::{OnceLock, RwLock};
 
     #[derive(Default)]
     pub struct PromLatencyTracer {
         pub core: PromLatencyTracerImp,
+        pub metrics_port: RwLock<u16>,
     }
 
     #[glib::object_subclass]
@@ -21,6 +23,34 @@ mod imp {
     }
 
     impl ObjectImpl for PromLatencyTracer {
+        fn properties() -> &'static [ParamSpec] {
+            static PROPERTIES: OnceLock<Vec<ParamSpec>> = OnceLock::new();
+            PROPERTIES.get_or_init(|| {
+                vec![ParamSpecUInt::builder("server-port")
+                    .nick("Server Port")
+                    .blurb("Port for the metrics HTTP server (0 disables)")
+                    .default_value(0)
+                    .build()]
+            })
+        }
+
+        fn set_property(&self, id: usize, value: &Value, pspec: &ParamSpec) {
+            match id {
+                1 => {
+                    let v = value.get::<u32>().unwrap();
+                    *self.metrics_port.write().unwrap() = v as u16;
+                }
+                _ => panic!("Unknown property id {}", pspec.name()),
+            }
+        }
+
+        fn property(&self, id: usize, pspec: &ParamSpec) -> Value {
+            match id {
+                1 => (*self.metrics_port.read().unwrap() as u32).to_value(),
+                _ => panic!("Unknown property id {}", pspec.name()),
+            }
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
@@ -41,7 +71,11 @@ mod imp {
                     .return_type::<Option<String>>()
                     .class_handler(|_, _args| {
                         let ret = PromLatencyTracerImp::request_metrics();
-                        gst::info!(CAT, "Prometheus metrics requested via signal, returning {} bytes", ret.len());
+                        gst::info!(
+                            CAT,
+                            "Prometheus metrics requested via signal, returning {} bytes",
+                            ret.len()
+                        );
                         Some(ret.to_value())
                     })
                     .accumulator(|_hint, ret, value| {
@@ -57,7 +91,8 @@ mod imp {
 
     impl TracerImpl for PromLatencyTracer {
         fn element_new(&self, ts: u64, element: &gst::Element) {
-            self.core.element_new(ts, element);
+            let port = *self.metrics_port.read().unwrap();
+            self.core.element_new(ts, element, port);
         }
     }
 }
@@ -76,4 +111,3 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     )?;
     Ok(())
 }
-
