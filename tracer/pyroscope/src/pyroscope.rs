@@ -27,6 +27,7 @@ mod imp {
 
     use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
+    use glib::{ParamSpec, ParamSpecBoolean, ParamSpecString, ParamSpecUInt, Value};
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
@@ -36,9 +37,26 @@ mod imp {
         )
     });
 
-    #[derive(Default)]
     pub struct PyroscopeTracer {
         agent: std::sync::RwLock<Option<PyroscopeAgent<PyroscopeAgentRunning>>>,
+        server_url: std::sync::RwLock<String>,
+        tracer_name: std::sync::RwLock<String>,
+        sample_rate: std::sync::RwLock<u32>,
+        stop_agent_on_dispose: std::sync::RwLock<bool>,
+        tags: std::sync::RwLock<String>,
+    }
+
+    impl Default for PyroscopeTracer {
+        fn default() -> Self {
+            Self {
+                agent: std::sync::RwLock::new(None),
+                server_url: std::sync::RwLock::new("http://localhost:4040".into()),
+                tracer_name: std::sync::RwLock::new("gst.otel".into()),
+                sample_rate: std::sync::RwLock::new(100),
+                stop_agent_on_dispose: std::sync::RwLock::new(true),
+                tags: std::sync::RwLock::new(String::new()),
+            }
+        }
     }
 
     impl PyroscopeTracer {
@@ -75,51 +93,45 @@ mod imp {
             &self,
             tags: Vec<(&str, &str)>,
         ) -> PyroscopeAgent<PyroscopeAgentRunning> {
-            // Messy config, should probably allow for setting through element properties.
-            let url = std::env::var("GST_PYROSCOPE_SERVER_URL")
-                .unwrap_or_else(|_| "http://localhost:4040".into());
+            let url = self.server_url.read().unwrap().clone();
+            let tracer_name = self.tracer_name.read().unwrap().clone();
+            let sample_rate = *self.sample_rate.read().unwrap();
+            let tags_str = self.tags.read().unwrap().clone();
             gst::debug!(CAT, "Creating Pyroscope agent with URL: {}", url);
-            PyroscopeAgent::builder(
-                url,
-                std::env::var("GST_PYROSCOPE_TRACER_NAME").unwrap_or_else(|_| "gst.otel".into()),
-            )
-            .tags(
-                vec![
-                    ("service", env!("CARGO_PKG_NAME")),
-                    ("version", env!("CARGO_PKG_VERSION")),
-                    ("repo", env!("CARGO_PKG_REPOSITORY")),
-                    ("os", std::env::consts::OS),
-                    ("arch", std::env::consts::ARCH),
-                ]
-                .into_iter()
-                .chain(
-                    std::env::var("GST_PYROSCOPE_TAGS")
-                        .unwrap_or_else(|_| String::new())
-                        .split(',')
-                        .filter_map(|tag| {
-                            let mut parts = tag.splitn(2, '=');
-                            if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                                Some((key, value))
-                            } else {
-                                None
-                            }
-                        }),
-                )
-                .chain(tags)
-                .collect(),
-            )
-            .backend(pprof_backend(
-                PprofConfig::new().sample_rate(
-                    std::env::var("GST_PYROSCOPE_SAMPLE_RATE")
-                        .unwrap_or_else(|_| "100".into())
-                        .parse()
-                        .unwrap_or(100),
-                ),
-            ))
-            .build()
-            .unwrap()
-            .start()
-            .unwrap()
+
+            let parsed_tags: Vec<(String, String)> = tags_str
+                .split(',')
+                .filter_map(|tag| {
+                    let mut parts = tag.splitn(2, '=');
+                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                        Some((key.to_string(), value.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let all_tags: Vec<(&str, &str)> = vec![
+                ("service", env!("CARGO_PKG_NAME")),
+                ("version", env!("CARGO_PKG_VERSION")),
+                ("repo", env!("CARGO_PKG_REPOSITORY")),
+                ("os", std::env::consts::OS),
+                ("arch", std::env::consts::ARCH),
+            ]
+            .into_iter()
+            .chain(parsed_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .chain(tags)
+            .collect();
+
+            PyroscopeAgent::builder(url, tracer_name)
+                .tags(all_tags)
+                .backend(pprof_backend(
+                    PprofConfig::new().sample_rate(sample_rate),
+                ))
+                .build()
+                .unwrap()
+                .start()
+                .unwrap()
         }
     }
 
@@ -131,13 +143,82 @@ mod imp {
 
         fn new() -> Self {
             gst::debug!(CAT, "Creating new PyroscopeTracer instance");
-            Self {
-                agent: std::sync::RwLock::new(None),
-            }
+            Self::default()
         }
     }
 
     impl ObjectImpl for PyroscopeTracer {
+        fn properties() -> &'static [ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<ParamSpec>> = LazyLock::new(|| {
+                vec![
+                    ParamSpecString::builder("server-url")
+                        .nick("Server URL")
+                        .blurb("Pyroscope server URL")
+                        .default_value(Some("http://localhost:4040"))
+                        .build(),
+                    ParamSpecString::builder("tracer-name")
+                        .nick("Tracer Name")
+                        .blurb("Tracer name")
+                        .default_value(Some("gst.otel"))
+                        .build(),
+                    ParamSpecUInt::builder("sample-rate")
+                        .nick("Sample Rate")
+                        .blurb("Sample rate in Hz")
+                        .default_value(100)
+                        .build(),
+                    ParamSpecBoolean::builder("stop-agent-on-dispose")
+                        .nick("Stop Agent On Dispose")
+                        .blurb("Stop Pyroscope agent on dispose")
+                        .default_value(true)
+                        .build(),
+                    ParamSpecString::builder("tags")
+                        .nick("Tags")
+                        .blurb("Additional tags in the form k1=v1,k2=v2")
+                        .default_value(Some(""))
+                        .build(),
+                ]
+            });
+
+            PROPERTIES.as_ref()
+        }
+
+        fn set_property(&self, id: usize, value: &Value, pspec: &ParamSpec) {
+            match id {
+                1 => {
+                    let v = value.get::<String>().unwrap();
+                    *self.server_url.write().unwrap() = v;
+                }
+                2 => {
+                    let v = value.get::<String>().unwrap();
+                    *self.tracer_name.write().unwrap() = v;
+                }
+                3 => {
+                    let v = value.get::<u32>().unwrap();
+                    *self.sample_rate.write().unwrap() = v;
+                }
+                4 => {
+                    let v = value.get::<bool>().unwrap();
+                    *self.stop_agent_on_dispose.write().unwrap() = v;
+                }
+                5 => {
+                    let v = value.get::<String>().unwrap();
+                    *self.tags.write().unwrap() = v;
+                }
+                _ => panic!("Unknown property id {}", pspec.name()),
+            }
+        }
+
+        fn property(&self, id: usize, pspec: &ParamSpec) -> Value {
+            match id {
+                1 => self.server_url.read().unwrap().to_value(),
+                2 => self.tracer_name.read().unwrap().to_value(),
+                3 => self.sample_rate.read().unwrap().to_value(),
+                4 => self.stop_agent_on_dispose.read().unwrap().to_value(),
+                5 => self.tags.read().unwrap().to_value(),
+                _ => panic!("Unknown property id {}", pspec.name()),
+            }
+        }
+
         /// Called whenever the plugin itself is loaded; including during gst-inspect-1.0
         /// and other utility commands; avoid starting collectors or doing other heavy work here.
         fn constructed(&self) {
@@ -148,8 +229,9 @@ mod imp {
         /// Called when the tracer is disposed, typically when the pipeline is stopped or the plugin is unloaded.
         /// This is where we stop the agent if it is running.
         fn dispose(&self) {
-            // Stop the agent when the tracer is dropped
-            self.remove_agent_if_present();
+            if *self.stop_agent_on_dispose.read().unwrap() {
+                self.remove_agent_if_present();
+            }
         }
     }
 

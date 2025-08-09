@@ -39,15 +39,19 @@ export GST_PLUGIN_PATH="$GST_PLUGIN_PATH:$(pwd)/target/release"
 
 ## Usage
 
-The following environment variables are used to configure the tracer:
+The tracer exposes the following properties, mirroring the previous environment variables:
 
-| Variable                              | Description                                                                                                                             | Default                 |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| `GST_PYROSCOPE_SERVER_URL`            | The URL of the Pyroscope server to send profiling data to.                                                                              | `http://localhost:4040` |
-| `GST_PYROSCOPE_TRACER_NAME`           | The name of the tracer. This is used to identify the tracer in the Pyroscope UI.                                                        | `gst.otel`              |
-| `GST_PYROSCOPE_SAMPLE_RATE`           | The sample rate in hz for the tracer. This controls how often profiling data is sent to the server.                                     | `100`                   |
-| `GST_PYROSCOPE_STOP_AGENT_ON_DISPOSE` | Whether to stop the Pyroscope agent when the tracer is disposed. Stopping the agent can take up to 2 minutes.                           | `true`                  |
-| `GST_PYROSCOPE_TAGS`                  | Additional tags to add to the profiling data. This can be used to add custom metadata to the profiling data. Specified as 'k1=v1,k2=v2' | ``                      |
+- `server-url` – URL of the Pyroscope server (**default:** `http://localhost:4040`)
+- `tracer-name` – name used to identify the tracer in Pyroscope (**default:** `gst.otel`)
+- `sample-rate` – sampling rate in Hz (**default:** `100`)
+- `stop-agent-on-dispose` – whether to stop the Pyroscope agent on dispose (**default:** `true`)
+- `tags` – additional tags in the form `k1=v1,k2=v2` (**default:** empty)
+
+Enable the tracer with custom properties via `GST_TRACERS`:
+
+```bash
+GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=gst.otel,sample-rate=100,stop-agent-on-dispose=true,tags="k1=v1")'
+```
 
 ## Test locally
 
@@ -56,8 +60,6 @@ First build the plugin, as usual.
 Then run the following commands to set up a local Pyroscope server and Grafana instance:
 
 ```bash
-export GST_PYROSCOPE_SERVER_URL=http://localhost:4040
-
 # grafana as our UI
 # 4137 is grpc & 4318 is http otel, which we don't really need here, but kept for consistency
 docker run -p 3000:3000 -p 4040:4040 -p 4317:4317 -p 4318:4318 -d grafana/otel-lgtm
