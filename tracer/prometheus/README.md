@@ -39,12 +39,8 @@ export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
 Enable the tracer by setting the following environment variables before running your pipeline:
 
 ```bash
-export GST_TRACERS='prom-latency(flags=element)'
+export GST_TRACERS='prom-latency(server-port=9092,flags=element)'
 export GST_DEBUG=GST_TRACER:5
-
-# Optionally, set the tracer to expose metrics over a specific port
-# If not set, it will not expose metrics over HTTP
-export GST_PROMETHEUS_TRACER_PORT=9092
 ```
 
 Then launch your pipeline as usual, for example:
@@ -55,10 +51,10 @@ gst-launch-1.0 fakesrc ! identity ! fakesink
 
 ## Collecting Metrics via HTTP
 
-If you wish to have Prometheus scrape metrics over HTTP, set `GST_PROMETHEUS_TRACER_PORT` to a valid port number:
+If you wish to have Prometheus scrape metrics over HTTP, configure the tracer with a `server-port`:
 
 ```bash
-export GST_PROMETHEUS_TRACER_PORT=9092
+export GST_TRACERS='prom-latency(server-port=9092,flags=element)'
 ```
 
 The plugin will spawn an HTTP server on `0.0.0.0:9092`. To retrieve metrics:

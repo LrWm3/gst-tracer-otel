@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    env,
     os::raw::c_void,
     sync::{LazyLock, OnceLock},
     thread,
@@ -279,9 +278,9 @@ impl PromLatencyTracerImp {
     }
 
     /// Handle the element-new hook
-    pub fn element_new(&self, _ts: u64, element: &gst::Element) {
-        if element.is::<gst::Pipeline>() {
-            METRICS_SERVER_ONCE.get_or_init(Self::maybe_start_metrics_server);
+    pub fn element_new(&self, _ts: u64, element: &gst::Element, port: u16) {
+        if element.is::<gst::Pipeline>() && port > 0 {
+            METRICS_SERVER_ONCE.get_or_init(|| Self::maybe_start_metrics_server(port));
         }
     }
 
@@ -519,55 +518,37 @@ impl PromLatencyTracerImp {
         SPAN_LATENCY.with(|v| v.set(span_diff));
     }
 
-    /// If the env var is set and valid, spawn the HTTP server in a new thread.
-    fn maybe_start_metrics_server() {
-        if let Ok(port_str) = env::var("GST_PROMETHEUS_TRACER_PORT") {
-            match port_str.parse::<u16>() {
-                Ok(port) => {
-                    // spawn the server
-                    thread::spawn(move || {
-                        let addr = ("0.0.0.0", port);
-                        let server_r = Server::http(addr);
-                        if server_r.is_err() {
-                            gst::warning!(
-                                CAT,
-                                "Failed to start Prometheus metrics server on 0.0.0.0:{}",
-                                port
-                            );
-                            return;
-                        };
-                        let server = server_r.unwrap();
+    /// Spawn the HTTP server in a new thread on the provided port.
+    fn maybe_start_metrics_server(port: u16) {
+        thread::spawn(move || {
+            let addr = ("0.0.0.0", port);
+            let server_r = Server::http(addr);
+            if server_r.is_err() {
+                gst::warning!(
+                    CAT,
+                    "Failed to start Prometheus metrics server on 0.0.0.0:{}",
+                    port
+                );
+                return;
+            };
+            let server = server_r.unwrap();
 
-                        for request in server.incoming_requests() {
-                            // Gather and encode all registered metrics
-                            let metric_families = gather();
-                            let mut buffer = Vec::new();
-                            TextEncoder::new()
-                                .encode(&metric_families, &mut buffer)
-                                .expect("Failed to encode metrics");
+            for request in server.incoming_requests() {
+                // Gather and encode all registered metrics
+                let metric_families = gather();
+                let mut buffer = Vec::new();
+                TextEncoder::new()
+                    .encode(&metric_families, &mut buffer)
+                    .expect("Failed to encode metrics");
 
-                            // Build and send HTTP response
-                            let response = Response::from_data(buffer).with_header(
-                                Header::from_bytes(
-                                    &b"Content-Type"[..],
-                                    &b"text/plain; charset=utf-8"[..],
-                                )
-                                .unwrap(),
-                            );
-                            let _ = request.respond(response);
-                        }
-                    });
-                }
-                Err(e) => {
-                    gst::error!(
-                        CAT,
-                        "GST_PROMETHEUS_TRACER_PORT is not a valid port number (`{}`): {}",
-                        port_str,
-                        e
-                    );
-                }
+                // Build and send HTTP response
+                let response = Response::from_data(buffer).with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..])
+                        .unwrap(),
+                );
+                let _ = request.respond(response);
             }
-        }
+        });
     }
 
     pub(crate) fn compute_element_latency(span_diff: u64, ts_latency: u64) -> u64 {

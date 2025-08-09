@@ -5,9 +5,12 @@ mod tests {
     use std::{
         env::{self, consts::ARCH},
         path::Path,
+        thread,
         time::{Duration, Instant},
         vec,
     };
+
+    const PROM_PORT: u16 = 9999;
 
     #[test]
     fn given_basic_pipeline_when_run_then_metrics_captured() {
@@ -60,6 +63,7 @@ mod tests {
                 })
                 .find(|t| t.name() == "promlatencytracer0")
                 .expect("Expected to find the `prom-latency` tracer");
+            assert_eq!(tracer.property::<u32>("server-port"), PROM_PORT as u32);
             let _metrics_from_signal = tracer
                 .emit_by_name::<Option<String>>("request-metrics", &[])
                 .expect("Expected to get metrics from signal");
@@ -67,12 +71,11 @@ mod tests {
 
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
+        thread::sleep(Duration::from_millis(100));
 
         // Get the metrics by performing an http request to the Prometheus endpoint
         // in >1.18, could use a signal.
-        let prometheus_port =
-            env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{prometheus_port}");
+        let prometheus_url = format!("http://localhost:{PROM_PORT}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
@@ -172,11 +175,10 @@ mod tests {
         }
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
+        thread::sleep(Duration::from_millis(100));
 
         // Get the metrics by performing an http request to the Prometheus endpoint
-        let prometheus_port =
-            env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{prometheus_port}");
+        let prometheus_url = format!("http://localhost:{PROM_PORT}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
@@ -204,6 +206,7 @@ mod tests {
                 .and_then(|line| line.split_whitespace().nth(1))
                 .and_then(|value| value.parse::<f64>().ok())
         }
+
         // Check that the latency is around 100 us
         let latency_value =
             get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm1\"")
@@ -213,7 +216,7 @@ mod tests {
                 .expect("Expected to find latency metric for lm0");
 
         // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 5e5;
+        let last_check_failed = ((latency_value_no_sleep - latency_value) - 1e7).abs() >= 5e5;
 
         assert!(
             !last_check_failed,
@@ -228,7 +231,7 @@ mod tests {
                 .expect("Expected to find sum metric for lm0");
 
         // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let sum_check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 5e7;
+        let sum_check_failed = ((sum_value_no_sleep - sum_value) - 1e9).abs() >= 5e7;
 
         assert!(
             !sum_check_failed,
@@ -325,11 +328,10 @@ mod tests {
         }
         // Stop the pipeline
         pipeline.set_state(gst::State::Null).unwrap();
+        thread::sleep(Duration::from_millis(100));
 
         // Get the metrics by performing an http request to the Prometheus endpoint
-        let prometheus_port =
-            env::var("GST_PROMETHEUS_TRACER_PORT").expect("GST_PROMETHEUS_TRACER_PORT not set");
-        let prometheus_url = format!("http://localhost:{prometheus_port}");
+        let prometheus_url = format!("http://localhost:{PROM_PORT}");
         let response = reqwest::blocking::get(&prometheus_url)
             .expect("Failed to fetch metrics from Prometheus endpoint");
         let metrics = response.text().expect("Failed to read response text");
@@ -418,17 +420,8 @@ mod tests {
             "prom-latency(filters='GstBuffer',flags=element)",
         );
         env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:6");
-
-        env::set_var("GST_PROMETHEUS_TRACER_PORT", "9999");
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
-        let plugin_targets = [
-            // ("release", true),
-            // ("release", false),
-            // ("profiling", true),
-            // ("profiling", false),
-            ("debug", true),
-            ("debug", false),
-        ];
+        let plugin_targets = [("debug", true), ("debug", false)];
         let plugin_paths = plugin_targets.iter().map(|(profile, with_target)| {
             let base = root_manifest_dir.join(format!("target/{}", profile));
             if *with_target {
@@ -455,13 +448,10 @@ mod tests {
         );
 
         let binding = gst::active_tracers();
-        // println!("Active tracers: {}", binding.len());
-        let _tracer = binding
+        let tracer = binding
             .iter()
-            .inspect(|_t| {
-                // println!("Active tracer: {}", t.name());
-            })
             .find(|t| t.name() == "promlatencytracer0")
-            .expect(format!("Expected to find the `{}` tracer", "promlatencytracer0").as_str());
+            .expect("Expected to find the `promlatencytracer0` tracer");
+        tracer.set_property("server-port", PROM_PORT as u32);
     }
 }
