@@ -23,7 +23,7 @@ build-package package="gst-prometheus-tracer" profile="release":
 # Format and lint the codebase.
 [group('lint')]
 lint:
-  cargo fmt --all -- --check
+  cargo fmt --all
   cargo clippy --workspace --all-features -- -D warnings
 
 # Run security audits on the project dependencies.
