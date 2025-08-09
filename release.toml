@@ -1,0 +1,8 @@
+# See https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+pre-release-commit-message = "chore(release): {{version}}"
+tag-message = "chore(release): {{version}}"
+pre-release-hook = ["git-cliff", "--output", "CHANGELOG.md"]
+consolidate-pushes = true
+enable-features = ["cliff"]
+dependent-version = "upgrade"
+publish = false
