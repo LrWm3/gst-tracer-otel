@@ -40,7 +40,7 @@ udeps:
 [group('lint')]
 coverage:
   cargo build --profile test
-  cargo tarpaulin --skip-clean --out Html
+  cargo tarpaulin --engine llvm --skip-clean --out Html
 
 # Run the tests, or run a specific test if provided.
 [group('test')]
