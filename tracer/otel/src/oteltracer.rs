@@ -45,6 +45,7 @@ mod imp {
     static INIT_ONCE: OnceLock<global::BoxedTracer> = OnceLock::new();
     static QUARK_SINK_SPAN: LazyLock<u32> =
         LazyLock::new(|| Quark::from_str("otel-trace").into_glib());
+    static PIPELINE_INIT_ONCE: OnceLock<()> = OnceLock::new();
 
     #[derive(Debug)]
     struct GstSpanSink<'a> {
@@ -250,34 +251,9 @@ mod imp {
             // this registers the actual GstMetaInfo (size + init/free/transform)
             // gst_span_buf_get_info();
 
-            init_otlp();
             gst::info!(CAT, "OtelTracerImpl constructed");
 
-            // Install the bridge into GStreamer
-            let log_provider = init_logs_otlp();
-            let logger = log_provider.logger("otel-tracer");
-
-            // Create a bridge to handle GStreamer logs
-            let bridge_clone = Box::new(StructuredBridge::new(logger));
-
-            gst::log::remove_default_log_function();
-            gst::log::add_log_function(move |cat, lvl, file, func, line, obj, msg| {
-                // Extract trace/span from current context:
-
-                let trace_id = opentelemetry::Context::current()
-                    .span()
-                    .span_context()
-                    .trace_id()
-                    .to_string();
-                let span_id = opentelemetry::Context::current()
-                    .span()
-                    .span_context()
-                    .span_id()
-                    .to_string();
-
-                bridge_clone
-                    .log_message(&cat, lvl, file, func, line, msg, obj, &trace_id, &span_id);
-            });
+            self.register_hook(TracerHook::ElementNew);
 
             // Omit ffi hooks for now, we will use safe Rust API to start with
             //   as its easier to implement & we can use the unsafe API for performance-critical parts later.
@@ -347,7 +323,41 @@ mod imp {
     }
 
     impl GstObjectImpl for OtelTracerImpl {}
-    impl TracerImpl for OtelTracerImpl {}
+    impl TracerImpl for OtelTracerImpl {
+        fn element_new(&self, _ts: u64, element: &gst::Element) {
+            // Not performance sensitive; so we use the safe hook instead.
+            if element.is::<gst::Pipeline>() {
+                PIPELINE_INIT_ONCE.get_or_init(|| {
+                    init_otlp();
+
+                    let log_provider = init_logs_otlp();
+                    let logger = log_provider.logger("otel-tracer");
+
+                    // Create a bridge to handle GStreamer logs
+                    let bridge_clone = Box::new(StructuredBridge::new(logger));
+
+                    gst::log::remove_default_log_function();
+                    gst::log::add_log_function(move |cat, lvl, file, func, line, obj, msg| {
+                        // Extract trace/span from current context:
+                        let trace_id = opentelemetry::Context::current()
+                            .span()
+                            .span_context()
+                            .trace_id()
+                            .to_string();
+                        let span_id = opentelemetry::Context::current()
+                            .span()
+                            .span_context()
+                            .span_id()
+                            .to_string();
+
+                        bridge_clone.log_message(
+                            &cat, lvl, file, func, line, msg, obj, &trace_id, &span_id,
+                        );
+                    });
+                });
+            }
+        }
+    }
 
     unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
         debug_assert!(!ptr.is_null());
