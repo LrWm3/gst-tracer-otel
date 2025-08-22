@@ -25,9 +25,9 @@ mod imp {
 
     use super::*;
 
+    use glib::{ParamSpec, ParamSpecBoolean, ParamSpecString, ParamSpecUInt, Value};
     use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
-    use glib::{ParamSpec, ParamSpecBoolean, ParamSpecString, ParamSpecUInt, Value};
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
@@ -125,9 +125,7 @@ mod imp {
 
             PyroscopeAgent::builder(url, tracer_name)
                 .tags(all_tags)
-                .backend(pprof_backend(
-                    PprofConfig::new().sample_rate(sample_rate),
-                ))
+                .backend(pprof_backend(PprofConfig::new().sample_rate(sample_rate)))
                 .build()
                 .unwrap()
                 .start()

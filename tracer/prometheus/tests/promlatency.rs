@@ -216,7 +216,7 @@ mod tests {
                 .expect("Expected to find latency metric for lm0");
 
         // TODO - lower this thresholds once we have fixed how we are measuring latency
-       let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 5e8;
+        let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 5e8;
 
         assert!(
             !last_check_failed,
