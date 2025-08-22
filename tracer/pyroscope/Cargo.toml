@@ -14,6 +14,8 @@ gstreamer.workspace=true
 gstreamer-sys.workspace=true
 pyroscope = "0.5.4"
 pyroscope_pprofrs = { version = "0.2", features = ["frame-pointer"] }
+pyroscope_pyspy = "0.2"
+console = { version = "0.16", features = ["std"] }
 
 [features]
 capi = []
