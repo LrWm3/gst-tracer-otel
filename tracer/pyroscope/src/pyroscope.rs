@@ -1,6 +1,8 @@
-/* pyroscope.rs
- *
- * This library is free software; you can redistribute it and/or
+// pyroscope.rs
+//
+// SPDX-License-Identifier: LGPL
+
+/* This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
  * License as published by the Free Software Foundation; either
  * version 2 of the License, or (at your option) any later version.
@@ -14,6 +16,52 @@
  * License along with this library; if not, write to the
  * Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
  * Boston, MA 02110-1301, USA.
+ */
+
+/**
+ * pyroscope:
+ *
+ * This tracer uses [Pyroscope](https://pyroscope.io/) to collect and visualize performance data.
+ *
+ * Example:
+ *
+ * ```console
+ * $ GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=myapp,sample-rate=100,tags=env=dev,team=video)'
+ * ```
+ *
+ * ## Parameters
+ *
+ * ### server-url
+ *
+ * The URL of the Pyroscope server to which the agent will send profiling data.
+ *
+ * Default: `http://localhost:4040`
+ *
+ * ### tracer-name
+ *
+ * The name of the tracer, which will appear in the Pyroscope UI.
+ *
+ * Default: `gst.pyroscope`
+ *
+ * ### sample-rate
+ *
+ * The sampling rate in Hz (samples per second).
+ *
+ * Default: `100`
+ *
+ * ### stop-agent-on-dispose
+ *
+ * Whether to stop the Pyroscope agent when the tracer is disposed.
+ *
+ * Default: `true`
+ *
+ * ### tags
+ *
+ * Additional tags to attach to the profiling data, comma-separated, in the form `key=value`.
+ *
+ * Example: `env=dev,team=video`
+ *
+ * Default: empty
  */
 use glib::subclass::prelude::*;
 use gst::prelude::*;
@@ -49,7 +97,7 @@ mod imp {
         fn default() -> Self {
             Self {
                 server_url: "http://localhost:4040".into(),
-                tracer_name: "gst.otel".into(),
+                tracer_name: "gst.pyroscope".into(),
                 sample_rate: 100,
                 stop_agent_on_dispose: true,
                 tags: vec![],
