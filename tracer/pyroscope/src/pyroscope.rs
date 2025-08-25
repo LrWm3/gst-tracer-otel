@@ -120,8 +120,8 @@ mod imp {
             if let Ok(v) = s.get::<String>("tracer-name") {
                 self.tracer_name = v;
             }
-            if let Ok(v) = s.get::<u32>("sample-rate") {
-                self.sample_rate = v;
+            if let Ok(v) = s.get::<i32>("sample-rate") {
+                self.sample_rate = v as u32;
             }
             if let Ok(v) = s.get::<bool>("stop-agent-on-dispose") {
                 self.stop_agent_on_dispose = v;
