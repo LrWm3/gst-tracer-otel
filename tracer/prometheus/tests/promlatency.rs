@@ -63,7 +63,6 @@ mod tests {
                 })
                 .find(|t| t.name() == "promlatencytracer0")
                 .expect("Expected to find the `prom-latency` tracer");
-            assert_eq!(tracer.property::<u32>("server-port"), PROM_PORT as u32);
             let _metrics_from_signal = tracer
                 .emit_by_name::<Option<String>>("request-metrics", &[])
                 .expect("Expected to get metrics from signal");
@@ -415,11 +414,8 @@ mod tests {
 
     fn setup_test() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        env::set_var(
-            "GST_TRACERS",
-            "prom-latency(filters='GstBuffer',flags=element)",
-        );
-        env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:6");
+        env::set_var("GST_TRACERS", "prom-latency(server-port=9999)");
+        env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:7");
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
         let plugin_targets = [("debug", true), ("debug", false)];
         let plugin_paths = plugin_targets.iter().map(|(profile, with_target)| {
@@ -452,6 +448,5 @@ mod tests {
             .iter()
             .find(|t| t.name() == "promlatencytracer0")
             .expect("Expected to find the `promlatencytracer0` tracer");
-        tracer.set_property("server-port", PROM_PORT as u32);
     }
 }

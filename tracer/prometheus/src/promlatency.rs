@@ -26,14 +26,15 @@ mod imp {
 
     impl Settings {
         fn update_from_params(&mut self, imp: &PromLatencyTracer, params: String) {
-            let s = match gst::Structure::from_str(&format!("promlatency,{params}")) {
+            let s = match gst::Structure::from_str(&format!("prom-latency,{params}")) {
                 Ok(s) => s,
                 Err(err) => {
                     gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
                     return;
                 }
             };
-            if let Ok(v) = s.get::<u32>("server-port") {
+            if let Ok(v) = s.get::<i32>("server-port") {
+                gst::log!(CAT, imp = imp, "setting server-port to {}", v);
                 self.server_port = v as u16;
             }
         }
@@ -58,18 +59,11 @@ mod imp {
             let obj = self.obj();
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
 
-            // Initialize settings with default values
-            let settings = Settings::default();
             // Update settings from parameters if provided
             if let Some(params) = self.obj().property::<Option<String>>("params") {
                 let mut settings = self.settings.write().unwrap();
                 settings.update_from_params(self, params);
-            }
-
-            // Store settings
-            {
-                let mut s = self.settings.write().unwrap();
-                *s = settings;
+                gst::debug!(CAT, imp = self, "using settings: {:?}", *settings);
             }
 
             // Register all tracer hooks via the core implementation

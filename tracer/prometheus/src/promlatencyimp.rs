@@ -533,6 +533,8 @@ impl PromLatencyTracerImp {
             };
             let server = server_r.unwrap();
 
+            gst::info!(CAT, "Prometheus metrics server listening on {}", port);
+
             for request in server.incoming_requests() {
                 // Gather and encode all registered metrics
                 let metric_families = gather();
