@@ -21,11 +21,10 @@ use gst::subclass::prelude::*;
 use gstreamer as gst;
 
 mod imp {
-    use std::sync::LazyLock;
+    use std::{str::FromStr, sync::LazyLock};
 
     use super::*;
 
-    use glib::{ParamSpec, ParamSpecBoolean, ParamSpecString, ParamSpecUInt, Value};
     use pyroscope::{pyroscope::PyroscopeAgentRunning, PyroscopeAgent};
     use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 
@@ -37,48 +36,97 @@ mod imp {
         )
     });
 
-    pub struct PyroscopeTracer {
-        agent: std::sync::RwLock<Option<PyroscopeAgent<PyroscopeAgentRunning>>>,
-        server_url: std::sync::RwLock<String>,
-        tracer_name: std::sync::RwLock<String>,
-        sample_rate: std::sync::RwLock<u32>,
-        stop_agent_on_dispose: std::sync::RwLock<bool>,
-        tags: std::sync::RwLock<String>,
+    #[derive(Debug)]
+    struct Settings {
+        server_url: String,
+        tracer_name: String,
+        sample_rate: u32,
+        stop_agent_on_dispose: bool,
+        tags: Vec<(String, String)>,
     }
 
-    impl Default for PyroscopeTracer {
+    impl Default for Settings {
         fn default() -> Self {
             Self {
-                agent: std::sync::RwLock::new(None),
-                server_url: std::sync::RwLock::new("http://localhost:4040".into()),
-                tracer_name: std::sync::RwLock::new("gst.otel".into()),
-                sample_rate: std::sync::RwLock::new(100),
-                stop_agent_on_dispose: std::sync::RwLock::new(true),
-                tags: std::sync::RwLock::new(String::new()),
+                server_url: "http://localhost:4040".into(),
+                tracer_name: "gst.otel".into(),
+                sample_rate: 100,
+                stop_agent_on_dispose: true,
+                tags: vec![],
             }
         }
+    }
+
+    impl Settings {
+        fn update_from_params(&mut self, imp: &PyroscopeTracer, params: String) {
+            let s = match gst::Structure::from_str(&format!("pyroscope,{params}")) {
+                Ok(s) => s,
+                Err(err) => {
+                    gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
+                    return;
+                }
+            };
+            if let Ok(v) = s.get::<String>("server-url") {
+                self.server_url = v;
+            }
+            if let Ok(v) = s.get::<String>("tracer-name") {
+                self.tracer_name = v;
+            }
+            if let Ok(v) = s.get::<u32>("sample-rate") {
+                self.sample_rate = v;
+            }
+            if let Ok(v) = s.get::<bool>("stop-agent-on-dispose") {
+                self.stop_agent_on_dispose = v;
+            }
+            if let Ok(v) = s.get::<String>("tags") {
+                let parsed_tags: Vec<(String, String)> = v
+                    .split(',')
+                    .filter_map(|tag| {
+                        let mut parts = tag.splitn(2, '=');
+                        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+                            Some((key.to_string(), value.to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                self.tags = parsed_tags;
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct State {
+        agent: Option<PyroscopeAgent<PyroscopeAgentRunning>>,
+    }
+
+    #[derive(Debug, Default)]
+    pub struct PyroscopeTracer {
+        state: std::sync::RwLock<State>,
+        settings: std::sync::RwLock<Settings>,
     }
 
     impl PyroscopeTracer {
         fn create_first_agent(&self, tags: Vec<(&str, &str)>) {
-            // First, check with a read lock
+            // First, check with a read lock to save time
             {
-                let agent_read = self.agent.read().unwrap();
-                if agent_read.is_some() {
+                let state_read = &self.state.read().unwrap();
+                if state_read.agent.is_some() {
                     return;
                 }
             }
-            // If not present, acquire write lock and initialize
-            let mut agent_write = self.agent.write().unwrap();
-            if agent_write.is_none() {
+            // If not present, acquire write lock and initialize if still not present
+            let mut state_write = self.state.write().unwrap();
+            if state_write.agent.is_none() {
                 gst::debug!(CAT, "Creating new Pyroscope agent");
-                *agent_write = Some(self.create_pyroscope_agent(tags));
+                state_write.agent =
+                    Some(self.create_pyroscope_agent(&self.settings.read().unwrap(), tags));
             }
         }
 
         fn remove_agent_if_present(&self) {
-            let mut agent_write = self.agent.write().unwrap();
-            if let Some(agent) = agent_write.take() {
+            let mut agent_write = self.state.write().unwrap();
+            if let Some(agent) = agent_write.agent.take() {
                 gst::debug!(
                     CAT,
                     "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
@@ -91,25 +139,16 @@ mod imp {
 
         fn create_pyroscope_agent(
             &self,
+            settings: &Settings,
             tags: Vec<(&str, &str)>,
         ) -> PyroscopeAgent<PyroscopeAgentRunning> {
-            let url = self.server_url.read().unwrap().clone();
-            let tracer_name = self.tracer_name.read().unwrap().clone();
-            let sample_rate = *self.sample_rate.read().unwrap();
-            let tags_str = self.tags.read().unwrap().clone();
-            gst::debug!(CAT, "Creating Pyroscope agent with URL: {}", url);
+            let url = settings.server_url.clone();
+            let tracer_name = settings.tracer_name.clone();
+            let sample_rate = settings.sample_rate;
 
-            let parsed_tags: Vec<(String, String)> = tags_str
-                .split(',')
-                .filter_map(|tag| {
-                    let mut parts = tag.splitn(2, '=');
-                    if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                        Some((key.to_string(), value.to_string()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            let settings_tags = settings.tags.clone();
+
+            gst::debug!(CAT, "Creating Pyroscope agent with URL: {}", url);
 
             let all_tags: Vec<(&str, &str)> = vec![
                 ("service", env!("CARGO_PKG_NAME")),
@@ -119,7 +158,7 @@ mod imp {
                 ("arch", std::env::consts::ARCH),
             ]
             .into_iter()
-            .chain(parsed_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .chain(settings_tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .chain(tags)
             .collect();
 
@@ -146,88 +185,24 @@ mod imp {
     }
 
     impl ObjectImpl for PyroscopeTracer {
-        fn properties() -> &'static [ParamSpec] {
-            static PROPERTIES: LazyLock<Vec<ParamSpec>> = LazyLock::new(|| {
-                vec![
-                    ParamSpecString::builder("server-url")
-                        .nick("Server URL")
-                        .blurb("Pyroscope server URL")
-                        .default_value(Some("http://localhost:4040"))
-                        .build(),
-                    ParamSpecString::builder("tracer-name")
-                        .nick("Tracer Name")
-                        .blurb("Tracer name")
-                        .default_value(Some("gst.otel"))
-                        .build(),
-                    ParamSpecUInt::builder("sample-rate")
-                        .nick("Sample Rate")
-                        .blurb("Sample rate in Hz")
-                        .default_value(100)
-                        .build(),
-                    ParamSpecBoolean::builder("stop-agent-on-dispose")
-                        .nick("Stop Agent On Dispose")
-                        .blurb("Stop Pyroscope agent on dispose")
-                        .default_value(true)
-                        .build(),
-                    ParamSpecString::builder("tags")
-                        .nick("Tags")
-                        .blurb("Additional tags in the form k1=v1,k2=v2")
-                        .default_value(Some(""))
-                        .build(),
-                ]
-            });
-
-            PROPERTIES.as_ref()
-        }
-
-        fn set_property(&self, id: usize, value: &Value, pspec: &ParamSpec) {
-            match id {
-                1 => {
-                    let v = value.get::<String>().unwrap();
-                    *self.server_url.write().unwrap() = v;
-                }
-                2 => {
-                    let v = value.get::<String>().unwrap();
-                    *self.tracer_name.write().unwrap() = v;
-                }
-                3 => {
-                    let v = value.get::<u32>().unwrap();
-                    *self.sample_rate.write().unwrap() = v;
-                }
-                4 => {
-                    let v = value.get::<bool>().unwrap();
-                    *self.stop_agent_on_dispose.write().unwrap() = v;
-                }
-                5 => {
-                    let v = value.get::<String>().unwrap();
-                    *self.tags.write().unwrap() = v;
-                }
-                _ => panic!("Unknown property id {}", pspec.name()),
-            }
-        }
-
-        fn property(&self, id: usize, pspec: &ParamSpec) -> Value {
-            match id {
-                1 => self.server_url.read().unwrap().to_value(),
-                2 => self.tracer_name.read().unwrap().to_value(),
-                3 => self.sample_rate.read().unwrap().to_value(),
-                4 => self.stop_agent_on_dispose.read().unwrap().to_value(),
-                5 => self.tags.read().unwrap().to_value(),
-                _ => panic!("Unknown property id {}", pspec.name()),
-            }
-        }
-
         /// Called whenever the plugin itself is loaded; including during gst-inspect-1.0
         /// and other utility commands; avoid starting collectors or doing other heavy work here.
         fn constructed(&self) {
             self.parent_constructed();
+
+            // Get parameterized settings.
+            if let Some(params) = self.obj().property::<Option<String>>("params") {
+                let mut settings = self.settings.write().unwrap();
+                settings.update_from_params(self, params);
+            }
+
             self.register_hook(TracerHook::BinAddPost);
         }
 
         /// Called when the tracer is disposed, typically when the pipeline is stopped or the plugin is unloaded.
         /// This is where we stop the agent if it is running.
         fn dispose(&self) {
-            if *self.stop_agent_on_dispose.read().unwrap() {
+            if self.settings.read().unwrap().stop_agent_on_dispose {
                 self.remove_agent_if_present();
             }
         }
