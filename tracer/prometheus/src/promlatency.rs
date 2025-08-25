@@ -5,14 +5,44 @@ use crate::promlatencyimp::{PromLatencyTracerImp, CAT};
 
 mod imp {
     use super::*;
-    use glib::{ParamSpec, ParamSpecUInt, Value};
     use gst::subclass::prelude::*;
-    use std::sync::{OnceLock, RwLock};
+    use std::{
+        str::FromStr,
+        sync::{OnceLock, RwLock},
+    };
+
+    #[derive(Debug)]
+    struct Settings {
+        pub server_port: u16,
+    }
+
+    impl Default for Settings {
+        fn default() -> Self {
+            Self {
+                server_port: 8080u16,
+            }
+        }
+    }
+
+    impl Settings {
+        fn update_from_params(&mut self, imp: &PromLatencyTracer, params: String) {
+            let s = match gst::Structure::from_str(&format!("promlatency,{params}")) {
+                Ok(s) => s,
+                Err(err) => {
+                    gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
+                    return;
+                }
+            };
+            if let Ok(v) = s.get::<u32>("server-port") {
+                self.server_port = v as u16;
+            }
+        }
+    }
 
     #[derive(Default)]
     pub struct PromLatencyTracer {
-        pub core: PromLatencyTracerImp,
-        pub metrics_port: RwLock<u16>,
+        core: PromLatencyTracerImp,
+        settings: RwLock<Settings>,
     }
 
     #[glib::object_subclass]
@@ -23,38 +53,24 @@ mod imp {
     }
 
     impl ObjectImpl for PromLatencyTracer {
-        fn properties() -> &'static [ParamSpec] {
-            static PROPERTIES: OnceLock<Vec<ParamSpec>> = OnceLock::new();
-            PROPERTIES.get_or_init(|| {
-                vec![ParamSpecUInt::builder("server-port")
-                    .nick("Server Port")
-                    .blurb("Port for the metrics HTTP server (0 disables)")
-                    .default_value(0)
-                    .build()]
-            })
-        }
-
-        fn set_property(&self, id: usize, value: &Value, pspec: &ParamSpec) {
-            match id {
-                1 => {
-                    let v = value.get::<u32>().unwrap();
-                    *self.metrics_port.write().unwrap() = v as u16;
-                }
-                _ => panic!("Unknown property id {}", pspec.name()),
-            }
-        }
-
-        fn property(&self, id: usize, pspec: &ParamSpec) -> Value {
-            match id {
-                1 => (*self.metrics_port.read().unwrap() as u32).to_value(),
-                _ => panic!("Unknown property id {}", pspec.name()),
-            }
-        }
-
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
+
+            // Initialize settings with default values
+            let settings = Settings::default();
+            // Update settings from parameters if provided
+            if let Some(params) = self.obj().property::<Option<String>>("params") {
+                let mut settings = self.settings.write().unwrap();
+                settings.update_from_params(self, params);
+            }
+
+            // Store settings
+            {
+                let mut s = self.settings.write().unwrap();
+                *s = settings;
+            }
 
             // Register all tracer hooks via the core implementation
             self.core.constructed(tracer_obj);
@@ -91,7 +107,7 @@ mod imp {
 
     impl TracerImpl for PromLatencyTracer {
         fn element_new(&self, ts: u64, element: &gst::Element) {
-            let port = *self.metrics_port.read().unwrap();
+            let port = self.settings.read().unwrap().server_port;
             self.core.element_new(ts, element, port);
         }
     }
