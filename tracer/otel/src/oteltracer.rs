@@ -65,7 +65,7 @@ mod imp {
                 .expect("Failed to create OTLP exporter");
 
             let pyroscope_processor = PyroscopeSpanProcessor::default();
-            pyroscope_processor.create_first_agent(vec![("service.name", "gst.otel")]);
+            pyroscope_processor.create_first_agent(vec![("service.name", "gst.pyroscope")]);
 
             // Tracing pipeline
             let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -75,7 +75,7 @@ mod imp {
                 .with_span_processor(pyroscope_processor)
                 .with_resource(
                     Resource::builder()
-                        .with_attributes(vec![KeyValue::new("service.name", "gst.otel")])
+                        .with_attributes(vec![KeyValue::new("service.name", "gst.pyroscope")])
                         .build(),
                 )
                 .with_batch_exporter(otlp_exporter)

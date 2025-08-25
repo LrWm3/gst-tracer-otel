@@ -42,7 +42,7 @@ export GST_PLUGIN_PATH="$GST_PLUGIN_PATH:$(pwd)/target/release"
 The tracer exposes the following properties, mirroring the previous environment variables:
 
 - `server-url` – URL of the Pyroscope server (**default:** `http://localhost:4040`)
-- `tracer-name` – name used to identify the tracer in Pyroscope (**default:** `gst.otel`)
+- `tracer-name` – name used to identify the tracer in Pyroscope (**default:** `gst.pyroscope`)
 - `sample-rate` – sampling rate in Hz (**default:** `100`)
 - `stop-agent-on-dispose` – whether to stop the Pyroscope agent on dispose (**default:** `true`)
 - `tags` – additional tags in the form `k1=v1,k2=v2` (**default:** empty)
@@ -50,7 +50,7 @@ The tracer exposes the following properties, mirroring the previous environment 
 Enable the tracer with custom properties via `GST_TRACERS`:
 
 ```bash
-GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=gst.otel,sample-rate=100,stop-agent-on-dispose=true,tags="k1=v1")'
+GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=gst.pyroscope,sample-rate=100,stop-agent-on-dispose=true,tags="k1=v1")'
 ```
 
 ## Test locally

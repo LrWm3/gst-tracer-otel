@@ -191,7 +191,7 @@ pub fn init_logs_otlp() -> SdkLoggerProvider {
     SdkLoggerProvider::builder()
         .with_resource(
             Resource::builder_empty()
-                .with_attribute(KeyValue::new("service.name", "gst.otel"))
+                .with_attribute(KeyValue::new("service.name", "gst.pyroscope"))
                 .build(),
         )
         .with_batch_exporter(exporter)
