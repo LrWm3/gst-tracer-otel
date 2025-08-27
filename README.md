@@ -68,7 +68,7 @@ Build
 ```bash
 just build-package gst-prometheus-tracer
 export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-export GST_TRACERS='prom-latency(server-port=9092,flags=element)'
+export GST_TRACERS='prom-latency(port=9092,flags=element)'
 export GST_DEBUG=GST_TRACER:5
 
 # Run a GStreamer pipeline to test the tracer

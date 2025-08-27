@@ -414,7 +414,7 @@ mod tests {
 
     fn setup_test() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        env::set_var("GST_TRACERS", "prom-latency(server-port=9999)");
+        env::set_var("GST_TRACERS", "prom-latency(port=9999)");
         env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:7");
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
         let plugin_targets = [("debug", true), ("debug", false)];

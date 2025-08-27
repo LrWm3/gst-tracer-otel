@@ -33,8 +33,8 @@ mod imp {
                     return;
                 }
             };
-            if let Ok(v) = s.get::<i32>("server-port") {
-                gst::log!(CAT, imp = imp, "setting server-port to {}", v);
+            if let Ok(v) = s.get::<i32>("port") {
+                gst::log!(CAT, imp = imp, "setting port to {}", v);
                 self.server_port = v as u16;
             }
         }
