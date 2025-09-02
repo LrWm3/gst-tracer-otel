@@ -80,11 +80,11 @@ gstreamer_element_latency_sum_count{element="fakesink0",sink_pad="fakesink0.sink
 gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7819315483
 ```
 
-## Collecting Metrics via the `request-metrics` Signal
+## Collecting Metrics via the `metrics` Signal
 
 > Requires building against GStreamer 1.18 or later to use `gst_tracing_get_active_tracers()`.
 
-Alternatively, you can pull metrics on demand within your application using the `request-metrics` signal. This allows
+Alternatively, you can pull metrics on demand within your application using the `metrics` signal. This allows
 for dynamic retrieval of metrics without needing an HTTP server & can be used to merge metrics into upstream
 Prometheus exporters.
 
@@ -109,7 +109,7 @@ int main(int argc, char *argv[]) {
         const gchar *name = gst_object_get_name(GST_OBJECT(tracer));
 
         if (g_str_has_prefix(name, "promlatency")) {
-            GstStructure *metrics = gst_tracer_emit(tracer, "request-metrics", NULL);
+            GstStructure *metrics = gst_tracer_emit(tracer, "metrics", NULL);
             if (metrics) {
                 gchar *s = gst_structure_to_string(metrics);
                 g_print("Metrics: %s\n", s);
@@ -147,7 +147,7 @@ fn main() {
         .iter()
         .find(|t| t.name().starts_with("promlatency"))
     {
-        match tracer.emit("request-metrics", &[]) {
+        match tracer.emit("metrics", &[]) {
             Ok(Some(metrics)) => {
                 println!("{:?}", metrics);
             }
@@ -183,6 +183,6 @@ pipeline.set_state(Gst.State.PLAYING)
 time.sleep(3)
 
 latency_tracer = next((t for t in Gst.tracing_get_active_tracers() if t.get_name().startswith('promlatency')), None)
-metrics = latency_tracer.emit("request-metrics")
+metrics = latency_tracer.emit("metrics")
 print(metrics)
 ```

@@ -76,7 +76,7 @@ mod imp {
         fn signals() -> &'static [glib::subclass::Signal] {
             static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| {
-                vec![glib::subclass::Signal::builder("request-metrics")
+                vec![glib::subclass::Signal::builder("metrics")
                     .flags(glib::SignalFlags::ACTION)
                     .return_type::<Option<String>>()
                     .class_handler(|_, _args| {

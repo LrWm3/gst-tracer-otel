@@ -64,7 +64,7 @@ mod tests {
                 .find(|t| t.name() == "promlatencytracer0")
                 .expect("Expected to find the `prom-latency` tracer");
             let _metrics_from_signal = tracer
-                .emit_by_name::<Option<String>>("request-metrics", &[])
+                .emit_by_name::<Option<String>>("metrics", &[])
                 .expect("Expected to get metrics from signal");
         }
 

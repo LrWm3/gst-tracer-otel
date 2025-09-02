@@ -284,7 +284,7 @@ impl PromLatencyTracerImp {
         }
     }
 
-    // Add this function, which is the handler for the "request-metrics" signal
+    // Add this function, which is the handler for the "metrics" signal
     pub fn request_metrics() -> String {
         let metric_families = gather();
         let mut buffer = Vec::new();
