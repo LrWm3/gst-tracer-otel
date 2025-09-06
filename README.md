@@ -12,7 +12,7 @@ The table below contains the plugins available in this repository.
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
 | [prom-latency](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
 | [otel-tracer](tracer/otel/README.md)        | captures per element latencies as otel traces, gst::logs as otel logs, and otel-compatiable metrics with full association | very slow   | pre-alpha |
-| [pyroscope](tracer/pyroscope/README.md)     | captures pyroscope profiles for the Gstreamer pipeline                                                                    | optimized   | pre-alpha |
+| [pyroscope](tracer/pyroscope/README.md)     | captures pyroscope profiles for the Gstreamer pipeline, requires debug symbols for best results | optimized   | alpha |
 | [noop-latency](tracer/noop/README.md)       | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
 
 In general `prom-latency` is recommended for now, and `otel-tracer` is still a work in progress.
@@ -120,7 +120,7 @@ cargo test
 - [x] In `prom-latency`, implement `pad_push_list_pre` and `pad_pus_list_post` hooks to capture latency.
 - [ ] In `otel-tracer`, port performance & implementation improvements made to `prom-latency` such that `otel-tracer` can be used in production with similarly low overhead.
 - [ ] `otel-tracer` to collect metrics with trace and span data included in exemplars.
-- [ ] In `pyroscope`, determine how to get debug symbols for all of gstreamers dependencies.
+- [x] In `pyroscope`, determine how to get debug symbols for all of gstreamers dependencies.
 - [ ] Create an all-in-one tracer, `gst-instrument`, which can collect correlated logs, metrics, spans, traces and profiles with performance improvements & lessons learned from the above.
 
 ## License
