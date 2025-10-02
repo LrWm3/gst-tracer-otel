@@ -262,14 +262,14 @@ impl PromLatencyTracerImp {
             // Link hooks; allow us to populate and clear the pads' quark cache.
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
-                c"do_pad_link_post".as_ptr(),
+                c"pad-link-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
                     do_pad_link_post as *const (),
                 ),
             );
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
-                c"do_pad_unlink_post".as_ptr(),
+                c"pad-unlink-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
                     do_pad_unlink_post as *const (),
                 ),
@@ -329,7 +329,6 @@ impl PromLatencyTracerImp {
         ) == glib::ffi::GTRUE
     }
 
-    /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
     fn get_real_pad_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstPad> {
         let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
         let is_ghost_pad = unsafe {
@@ -354,17 +353,16 @@ impl PromLatencyTracerImp {
             return o_pad;
         }
 
-        let is_a_proxy_pad = unsafe { Self::is_proxy_pad(pad) };
-        if is_a_proxy_pad {
+        if unsafe { Self::is_proxy_pad(pad) } && unsafe { Self::is_pad(pad) } {
             let maybe_ghost_pad = unsafe {
                 ffi::gst_object_get_parent(pad as *mut ffi::GstObject) as *mut ffi::GstPad
             };
-            if maybe_ghost_pad.is_null() {
+            if maybe_ghost_pad.is_null() || !unsafe { Self::is_pad(maybe_ghost_pad) } {
                 None
             } else {
                 // get the peer, that might be our real pad
                 let maybe_real_pad = unsafe { ffi::gst_pad_get_peer(maybe_ghost_pad) };
-                if maybe_real_pad.is_null() {
+                if maybe_real_pad.is_null() || !unsafe { Self::is_pad(maybe_real_pad) } {
                     None
                 } else {
                     Self::get_real_pad_ffi(maybe_real_pad)
@@ -397,6 +395,17 @@ impl PromLatencyTracerImp {
         src_pad: *mut gst::ffi::GstPad,
         sink_pad: *mut gst::ffi::GstPad,
     ) -> *mut PadCacheData {
+        // FIXME - There is currently an issue with this approach.
+        //         What can happen is, if we have a complicated bin element, such as rtspsrc2, what can happen is
+        //         we link things in an order which results in not having the ability to go from 'real src pad' to
+        //         'real sink pad'. The reason being our intermediary proxy / ghost pads haven't actually been linked yet.
+        //         So we don't actually know what the real sink or src pad will be at this time.
+        //
+        //         When they are finally linked, we're linking two proxy pads. But really, we would want to revisit
+        //         the real pads and link those together instead, and remove any existing caches that contain the
+        //         proxy pads. This functionality is missing at this time, meaning some latencies will be measured
+        //         against proxy pads instead of real pads for complicated elements, which is not ideal.
+        // ---
         // Ensure pads are not null.
         if src_pad.is_null() || sink_pad.is_null() {
             gst::trace!(
