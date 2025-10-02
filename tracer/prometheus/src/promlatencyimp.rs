@@ -7,6 +7,7 @@ use std::{
 
 use glib::{
     ffi::{gboolean, GTRUE},
+    regex,
     translate::{FromGlibPtrNone, IntoGlib, ToGlibPtr},
     Quark,
 };
@@ -463,7 +464,21 @@ impl PromLatencyTracerImp {
     }
 
     fn pad_name(pad: *mut gst::ffi::GstPad) -> String {
-        unsafe { gst::Pad::from_glib_none(pad).name().to_string() }
+        let name = unsafe { gst::Pad::from_glib_none(pad).name().to_string() };
+        // apply regex to strip off trailing _0-9+ if present
+        //
+        // FIXME - Make stripping off the end regexp configurable.
+        // If ends in _[0-9]{2}[0-9]+[_0-9]+, strip that off the end to improve label cardinality
+        let re = glib::Regex::new(
+            r"_[0-9]{2}[0-9]+(_[0-9]+)?$",
+            glib::RegexCompileFlags::empty(),
+            glib::RegexMatchFlags::empty(),
+        )
+        .unwrap();
+        re.unwrap()
+            .replace(name, 0i32, "", glib::RegexMatchFlags::empty())
+            .unwrap()
+            .to_string()
     }
 
     unsafe fn do_send_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
