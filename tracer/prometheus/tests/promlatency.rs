@@ -340,6 +340,168 @@ mod tests {
     }
 
     #[test]
+    fn given_pipeline_with_two_bins_with_same_named_elements_when_run_then_metrics_are_correct() {
+        setup_test();
+
+        // Create the base pipeline
+        let pipeline = gst::Pipeline::with_name("test-pipeline");
+
+        // Source and sink setup
+        let src = gst::ElementFactory::make("fakesrc")
+            .name("fakesrc")
+            .property("num-buffers", 100)
+            .build()
+            .unwrap();
+
+        let tee = gst::ElementFactory::make("tee")
+            .name("tee")
+            .build()
+            .unwrap();
+
+        let sink1 = gst::ElementFactory::make("fakesink")
+            .name("fakesink1")
+            .build()
+            .unwrap();
+        let sink2 = gst::ElementFactory::make("fakesink")
+            .name("fakesink2")
+            .build()
+            .unwrap();
+
+        pipeline.add_many(&[&src, &tee, &sink1, &sink2]).unwrap();
+        gst::Element::link_many(&[&src, &tee]).unwrap();
+
+        // --- Bin 1 ---
+        let bin1 = gst::Bin::with_name("bin1");
+        let id1 = gst::ElementFactory::make("identity")
+            .name("id1")
+            .build()
+            .unwrap();
+        let id2 = gst::ElementFactory::make("identity")
+            .name("id2")
+            .property_from_str("sleep-time", "100")
+            .build()
+            .unwrap();
+        let id3 = gst::ElementFactory::make("identity")
+            .name("id3")
+            .build()
+            .unwrap();
+
+        bin1.add_many(&[&id1, &id2, &id3]).unwrap();
+        gst::Element::link_many(&[&id1, &id2, &id3]).unwrap();
+
+        let g_src1 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
+            .with_target(&id3.static_pad("src").unwrap())
+            .ok()
+            .expect("Failed to create GhostPad for src")
+            .build();
+        let g_sink1 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
+            .with_target(&id1.static_pad("sink").unwrap())
+            .ok()
+            .expect("Failed to create GhostPad for sink")
+            .build();
+        g_src1.set_active(true).unwrap();
+        g_sink1.set_active(true).unwrap();
+        bin1.add_pad(&g_src1).unwrap();
+        bin1.add_pad(&g_sink1).unwrap();
+
+        // --- Bin 2 ---
+        let bin2 = gst::Bin::with_name("bin2");
+        let id1_b = gst::ElementFactory::make("identity")
+            .name("id1")
+            .build()
+            .unwrap();
+        let id2_b = gst::ElementFactory::make("identity")
+            .name("id2")
+            .property_from_str("sleep-time", "100")
+            .build()
+            .unwrap();
+        let id3_b = gst::ElementFactory::make("identity")
+            .name("id3")
+            .build()
+            .unwrap();
+
+        bin2.add_many(&[&id1_b, &id2_b, &id3_b]).unwrap();
+        gst::Element::link_many(&[&id1_b, &id2_b, &id3_b]).unwrap();
+
+        let g_src2 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
+            .with_target(&id3_b.static_pad("src").unwrap())
+            .ok()
+            .expect("Failed to create GhostPad for src")
+            .build();
+        let g_sink2 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
+            .with_target(&id1_b.static_pad("sink").unwrap())
+            .ok()
+            .expect("Failed to create GhostPad for sink")
+            .build();
+        g_src2.set_active(true).unwrap();
+        g_sink2.set_active(true).unwrap();
+        bin2.add_pad(&g_src2).unwrap();
+        bin2.add_pad(&g_sink2).unwrap();
+
+        // Add both bins to the pipeline
+        pipeline.add_many(&[&bin1, &bin2]).unwrap();
+
+        // --- Tee branches ---
+        let q1 = gst::ElementFactory::make("queue")
+            .name("queue1")
+            .build()
+            .unwrap();
+        let q2 = gst::ElementFactory::make("queue")
+            .name("queue2")
+            .build()
+            .unwrap();
+        pipeline.add_many(&[&q1, &q2]).unwrap();
+
+        // Connect tee → queue → bin → sink
+        // link one at a time
+        tee.link(&q1).unwrap();
+        q1.link(&bin1).unwrap();
+        bin1.link(&sink1).unwrap();
+        tee.link(&q2).unwrap();
+        q2.link(&bin2).unwrap();
+        bin2.link(&sink2).unwrap();
+
+        // --- Run the pipeline ---
+        pipeline
+            .set_state(gst::State::Playing)
+            .expect("Unable to set the pipeline to Playing");
+
+        // Wait for EOS or error
+        let bus = pipeline.bus().unwrap();
+        for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(..) => break,
+                MessageView::Error(err) => {
+                    println!(
+                        "Error from {:?}: {} ({:?})",
+                        err.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    break;
+                }
+                _ => (),
+            }
+        }
+
+        pipeline.set_state(gst::State::Null).unwrap();
+        thread::sleep(Duration::from_millis(100));
+
+        // --- Metrics validation ---
+        let prometheus_url = format!("http://localhost:{PROM_PORT}");
+        let response = reqwest::blocking::get(&prometheus_url)
+            .expect("Failed to fetch metrics from Prometheus endpoint");
+        let metrics = response.text().expect("Failed to read response text");
+
+        println!("Metrics:\n{metrics}");
+        // Optionally, assert on the presence of id1/id2/id3 metrics from both bins
+        assert!(metrics.contains("id1"));
+        assert!(metrics.contains("id2"));
+        assert!(metrics.contains("id3"));
+    }
+
+    #[test]
     fn bench_prom_latency_through_pipeline() {
         setup_test();
         let elapsed = run_bench("prom-latency");
