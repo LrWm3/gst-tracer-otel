@@ -254,6 +254,9 @@ mod tests {
             .name("fakesink")
             .build()
             .unwrap();
+        pipeline.add(&bin).unwrap();
+        pipeline.add(&src).unwrap();
+        pipeline.add(&sink).unwrap();
         let id1 = gst::ElementFactory::make("identity")
             .name("id1")
             .build()
@@ -293,9 +296,6 @@ mod tests {
         bin.add_pad(&g_sink).unwrap();
 
         // Add the bin to the pipeline
-        pipeline.add(&bin).unwrap();
-        pipeline.add(&src).unwrap();
-        pipeline.add(&sink).unwrap();
 
         // Link the bin to the src and sink
         src.link(&bin).unwrap();

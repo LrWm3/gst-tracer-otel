@@ -447,6 +447,13 @@ impl PromLatencyTracerImp {
         let src_name = src_parent.name().to_string();
         let src_pad_name = Self::pad_name(src_pad);
         let sink_pad_name = Self::pad_name(sink_pad);
+
+        // FIXME - technically would only want to compute these when we switch to PLAYING state for the pipeline
+        //         otherwise the 'path' may not include the full path if the elements the bins have been added to
+        //         so far have not yet been added to the pipeline overall.
+        //
+        //         To fix this, it would be wise to move away from qdata, so we can more easily lock and iteratively
+        //         update our caches when the pipeline goes to PLAYING state, or in any other situation.
         let ancestor_path = src_parent
             .parent()
             .map(|p| p.path_string().to_string())
