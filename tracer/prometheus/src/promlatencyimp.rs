@@ -442,9 +442,9 @@ impl PromLatencyTracerImp {
         }
 
         // Prepare metrics
-        let src_parent = unsafe { gst::Element::from_glib_none(src_parent_element.unwrap()) };
-        let _sink_parent = unsafe { gst::Element::from_glib_none(sink_parent_element.unwrap()) };
-        let src_name = src_parent.name().to_string();
+        let _src_parent = unsafe { gst::Element::from_glib_none(src_parent_element.unwrap()) };
+        let sink_parent = unsafe { gst::Element::from_glib_none(sink_parent_element.unwrap()) };
+        let el_name = sink_parent.name().to_string();
         let src_pad_name = Self::pad_name(src_pad);
         let sink_pad_name = Self::pad_name(sink_pad);
 
@@ -454,11 +454,11 @@ impl PromLatencyTracerImp {
         //
         //         To fix this, it would be wise to move away from qdata, so we can more easily lock and iteratively
         //         update our caches when the pipeline goes to PLAYING state, or in any other situation.
-        let ancestor_path = src_parent
+        let ancestor_path = sink_parent
             .parent()
             .map(|p| p.path_string().to_string())
             .unwrap_or("none".to_string());
-        let labels = [&src_name, &src_pad_name, &sink_pad_name, &ancestor_path];
+        let labels = [&el_name, &src_pad_name, &sink_pad_name, &ancestor_path];
         let last_gauge = LATENCY_LAST.with_label_values(&labels);
         let sum_counter = LATENCY_SUM.with_label_values(&labels);
         let count_counter = LATENCY_COUNT.with_label_values(&labels);
