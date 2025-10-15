@@ -7,7 +7,6 @@ use std::{
 
 use glib::{
     ffi::{gboolean, GTRUE},
-    regex,
     translate::{FromGlibPtrNone, IntoGlib, ToGlibPtr},
     Quark,
 };
@@ -24,7 +23,7 @@ static LATENCY_LAST: LazyLock<IntGaugeVec> = LazyLock::new(|| {
     register_int_gauge_vec!(
         "gst_element_latency_last_gauge",
         "Last latency in nanoseconds per element",
-        &["element", "src_pad", "sink_pad"]
+        &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
 });
@@ -32,7 +31,7 @@ static LATENCY_SUM: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "gst_element_latency_sum_count",
         "Sum of latencies in nanoseconds per element",
-        &["element", "src_pad", "sink_pad"]
+        &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
 });
@@ -40,7 +39,7 @@ static LATENCY_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "gst_element_latency_count_count",
         "Count of latency measurements per element",
-        &["element", "src_pad", "sink_pad"]
+        &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
 });
@@ -448,7 +447,11 @@ impl PromLatencyTracerImp {
         let src_name = src_parent.name().to_string();
         let src_pad_name = Self::pad_name(src_pad);
         let sink_pad_name = Self::pad_name(sink_pad);
-        let labels = [&src_name, &src_pad_name, &sink_pad_name];
+        let ancestor_path = src_parent
+            .parent()
+            .map(|p| p.path_string().to_string())
+            .unwrap_or("none".to_string());
+        let labels = [&src_name, &src_pad_name, &sink_pad_name, &ancestor_path];
         let last_gauge = LATENCY_LAST.with_label_values(&labels);
         let sum_counter = LATENCY_SUM.with_label_values(&labels);
         let count_counter = LATENCY_COUNT.with_label_values(&labels);
