@@ -96,6 +96,7 @@ mod tests {
             "gst_element_latency_last_gauge",
             "gst_element_latency_sum_count",
             "gst_element_latency_count_count",
+            "gst_element_latency_seconds_histogram",
         ];
         for metric in metric_asserts {
             assert!(
@@ -190,6 +191,7 @@ mod tests {
             "gst_element_latency_last_gauge",
             "gst_element_latency_sum_count",
             "gst_element_latency_count_count",
+            "gst_element_latency_seconds_histogram",
         ];
         for metric in metric_asserts {
             assert!(
@@ -579,19 +581,19 @@ mod tests {
         env::set_var("GST_TRACERS", "prom-latency(port=9999)");
         env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:7");
         let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
-        let plugin_targets = [("debug", true), ("debug", false)];
-        let plugin_paths = plugin_targets.iter().map(|(profile, with_target)| {
+        let plugin_profiles = ["debug", "profiling", "release", "test"];
+        let mut plugin_paths = Vec::new();
+        for profile in plugin_profiles {
             let base = root_manifest_dir.join(format!("target/{}", profile));
-            if *with_target {
+            plugin_paths.push(base.to_str().unwrap().to_owned());
+            plugin_paths.push(
                 base.join(format!("{ARCH}-unknown-linux-gnu"))
                     .to_str()
                     .unwrap()
-                    .to_owned()
-            } else {
-                base.to_str().unwrap().to_owned()
-            }
-        });
-        let gst_plugin_path = plugin_paths.collect::<Vec<_>>().join(":");
+                    .to_owned(),
+            );
+        }
+        let gst_plugin_path = plugin_paths.join(":");
         env::set_var("GST_PLUGIN_PATH", gst_plugin_path);
 
         // Initialize GStreamer
@@ -606,7 +608,7 @@ mod tests {
         );
 
         let binding = gst::active_tracers();
-        let tracer = binding
+        let _tracer = binding
             .iter()
             .find(|t| t.name() == "promlatencytracer0")
             .expect("Expected to find the `promlatencytracer0` tracer");
