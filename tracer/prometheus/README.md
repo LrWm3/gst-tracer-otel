@@ -63,6 +63,19 @@ The plugin will spawn an HTTP server on `0.0.0.0:9092`. To retrieve metrics:
 curl http://localhost:9092
 ```
 
+### Histogram Sampling
+
+Histogram observation can be sampled using:
+
+```bash
+export GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE=1000
+```
+
+- `1` (default): observe every latency in the histogram.
+- `N > 1`: observe every `N`th latency in the histogram.
+- This sampling only affects histogram buckets/sum/count for `gst_element_latency_seconds_histogram`.
+- `gst_element_latency_last_gauge`, `gst_element_latency_sum_count`, and `gst_element_latency_count_count` are always recorded for every latency event.
+
 ### Example Output
 
 ```plaintext
@@ -78,6 +91,12 @@ gstreamer_element_latency_last_gauge{element="identity0",sink_pad="identity0.sin
 # TYPE gstreamer_element_latency_sum_count counter
 gstreamer_element_latency_sum_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 3036567246
 gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7819315483
+# HELP gst_element_latency_seconds_histogram Latency histogram in seconds per element
+# TYPE gst_element_latency_seconds_histogram histogram
+gst_element_latency_seconds_histogram_bucket{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src",le="0.01"} 591573
+gst_element_latency_seconds_histogram_bucket{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src",le="0.025"} 591573
+gst_element_latency_seconds_histogram_sum{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7.819315483
+gst_element_latency_seconds_histogram_count{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 591573
 ```
 
 ## Collecting Metrics via the `metrics` Signal

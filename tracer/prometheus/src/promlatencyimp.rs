@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    env,
     os::raw::c_void,
     sync::{LazyLock, OnceLock},
     thread,
@@ -13,8 +14,8 @@ use glib::{
 use gst::{ffi, prelude::*};
 use gstreamer as gst;
 use prometheus::{
-    gather, register_int_counter_vec, register_int_gauge_vec, Encoder, IntCounter, IntCounterVec,
-    IntGauge, IntGaugeVec, TextEncoder,
+    gather, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec, Encoder,
+    Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
 };
 use tiny_http::{Header, Response, Server};
 
@@ -42,6 +43,25 @@ static LATENCY_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
         &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
+});
+static LATENCY_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_latency_seconds_histogram",
+        "Latency histogram in seconds per element",
+        &["element", "src_pad", "sink_pad", "path"],
+        vec![
+            0.00001, 0.0001, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75,
+            1.0, 2.5, 5.0, 10.0, 20.0, 60.0, 240.0,
+        ]
+    )
+    .unwrap()
+});
+static HISTOGRAM_SAMPLE_RATE: LazyLock<u64> = LazyLock::new(|| {
+    env::var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1)
 });
 
 thread_local! {
@@ -81,6 +101,8 @@ struct PadCacheData {
     // TODO - at the moment we don't differentiate between buffers into the element vs buffers out, will require
     //          a change to what we are doing here to make that work.
     count_counter: IntCounter,
+    histogram: Histogram,
+    histogram_observe_counter: u64,
 }
 
 #[derive(Default)]
@@ -462,6 +484,7 @@ impl PromLatencyTracerImp {
         let last_gauge = LATENCY_LAST.with_label_values(&labels);
         let sum_counter = LATENCY_SUM.with_label_values(&labels);
         let count_counter = LATENCY_COUNT.with_label_values(&labels);
+        let histogram = LATENCY_HISTOGRAM.with_label_values(&labels);
 
         // Create cache
         Box::into_raw(Box::new(PadCacheData {
@@ -470,6 +493,8 @@ impl PromLatencyTracerImp {
             last_gauge,
             sum_counter,
             count_counter,
+            histogram,
+            histogram_observe_counter: 0,
         }))
     }
 
@@ -543,6 +568,15 @@ impl PromLatencyTracerImp {
             .set(el_diff.try_into().unwrap_or(i64::MAX));
         pad_cache.sum_counter.inc_by(el_diff);
         pad_cache.count_counter.inc();
+        pad_cache.histogram_observe_counter = pad_cache.histogram_observe_counter.wrapping_add(1);
+        if pad_cache
+            .histogram_observe_counter
+            .is_multiple_of(*HISTOGRAM_SAMPLE_RATE)
+        {
+            pad_cache
+                .histogram
+                .observe(el_diff as f64 / 1_000_000_000f64);
+        }
 
         // Reset the timestamp for the next push
         pad_cache.ts = 0;
