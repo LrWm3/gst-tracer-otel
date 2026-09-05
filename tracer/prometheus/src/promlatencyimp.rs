@@ -12,7 +12,7 @@ use std::{
 
 use glib::{
     ffi::{gboolean, GTRUE},
-    translate::{FromGlibPtrNone, IntoGlib, ToGlibPtr},
+    translate::{FromGlibPtrBorrow, IntoGlib, ToGlibPtr},
     Quark,
 };
 use gst::{ffi, prelude::*};
@@ -492,7 +492,11 @@ impl PromLatencyTracerImp {
 
     /// Resolve proxy pads using owned wrappers; each temporary reference drops.
     fn get_real_pad_parent_ffi(pad: *mut ffi::GstPad) -> Option<gst::Element> {
-        let mut pad = unsafe { gst::Pad::from_glib_none(pad) };
+        // from_glib_none sinks floating GObjects. Dynamic RTSP pads can still
+        // be floating here: consuming that reference would free the caller's
+        // pad when our wrapper drops. Borrow, then clone with g_object_ref.
+        let borrowed = unsafe { gst::Pad::from_glib_borrow(pad) };
+        let mut pad = (*borrowed).clone();
         // A malformed or changing topology must not recurse indefinitely.
         for _ in 0..64 {
             if let Some(ghost) = pad.downcast_ref::<gst::GhostPad>() {
@@ -631,7 +635,7 @@ impl PromLatencyTracerImp {
     }
 
     fn pad_name(pad: *mut gst::ffi::GstPad) -> String {
-        let name = unsafe { gst::Pad::from_glib_none(pad).name().to_string() };
+        let name = unsafe { gst::Pad::from_glib_borrow(pad).name().to_string() };
         // apply regex to strip off trailing _0-9+ if present
         //
         // FIXME - Make stripping off the end regexp configurable.
@@ -835,7 +839,7 @@ impl PromLatencyTracerImp {
     ) -> Option<f64> {
         let buffer = gst::Buffer::from_glib_none(buffer);
         let pts = buffer.pts()?;
-        let pad = gst::Pad::from_glib_none(src_pad);
+        let pad = gst::Pad::from_glib_borrow(src_pad);
         let segment_event = pad.sticky_event::<gst::event::Segment>(0)?;
         let segment = segment_event.segment().downcast_ref::<gst::ClockTime>()?;
         let buffer_running_time = segment.to_running_time(pts)?;
@@ -991,10 +995,32 @@ impl PromLatencyTracerImp {
 #[cfg(test)]
 mod tests {
     use super::{latency_buckets, CompletedSpan, PromLatencyTracerImp, SpanFrame};
-    use glib::translate::ToGlibPtr;
+    use glib::translate::{FromGlibPtrFull, ToGlibPtr};
     use gst::prelude::*;
     use gstreamer as gst;
     use std::sync::Arc;
+
+    #[test]
+    fn given_floating_pad_when_inspected_then_callers_reference_is_untouched() {
+        gst::init().unwrap();
+        // Unlike the Rust builder, this keeps the C caller's floating reference.
+        let pad = unsafe {
+            gst::Pad::from_glib_full(gst::ffi::gst_pad_new(
+                c"floating".as_ptr(),
+                gst::ffi::GST_PAD_SRC,
+            ))
+        };
+        let refs = pad.ref_count();
+        let floating = || unsafe { glib::gobject_ffi::g_object_is_floating(pad.as_ptr().cast()) };
+        assert_eq!(floating(), glib::ffi::GTRUE);
+        assert!(PromLatencyTracerImp::get_real_pad_parent_ffi(pad.to_glib_none().0).is_none());
+        assert_eq!(
+            PromLatencyTracerImp::pad_name(pad.to_glib_none().0),
+            "floating"
+        );
+        assert_eq!(floating(), glib::ffi::GTRUE);
+        assert_eq!(pad.ref_count(), refs);
+    }
 
     #[test]
     fn given_queue_types_when_detecting_queues_then_instance_names_do_not_matter() {

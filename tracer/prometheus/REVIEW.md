@@ -7,6 +7,12 @@ This is not a review of the processor's Rust/CUDA implementation.
 
 ## Fixes made
 
+- **Floating RTSP pad lifetime (found during follow-up benchmarking):** the
+  ownership cleanup initially used `from_glib_none` for incoming raw pads. That
+  conversion sinks floating GObjects, so dropping the wrapper could free a
+  newly created RTSP pad still owned by C. Raw pads are now borrowed, with a
+  normal reference-counted clone only when traversal needs ownership. Added a
+  regression checking both floating state and reference count are unchanged.
 - **DeepStream construction crash (found during follow-up benchmarking):**
   the element-new hook called `element.factory()` before construction finished.
   On an integrated memory nvidia device this crashed in `g_object_ref_sink` while reading the factory. Queue
@@ -109,7 +115,7 @@ into the correctness fixes.
 - `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
 - `cargo build -p gst-prometheus-tracer`, then `cargo test -- --test-threads=1`
   with `GST_PLUGIN_PATH` pointing at this worktree's `target/debug`: passed,
-  nine unit tests and eight integration tests. The workspace default member
+  ten unit tests and eight integration tests. The workspace default member
   is the Prometheus tracer; this is not a claim that every workspace test ran.
 - `cargo audit` and `cargo +nightly udeps ...`: attempted but unavailable;
   the corresponding Cargo extensions are not installed.
