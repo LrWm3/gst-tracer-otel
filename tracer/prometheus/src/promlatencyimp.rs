@@ -4,7 +4,7 @@ use std::{
     os::raw::c_void,
     sync::{
         atomic::{AtomicU64, Ordering},
-        LazyLock, Mutex, OnceLock,
+        Arc, LazyLock, Mutex, OnceLock,
     },
     thread,
     time::Duration,
@@ -199,8 +199,8 @@ fn latency_buckets() -> Vec<f64> {
     ]
 }
 
-#[derive(Debug)]
 struct SpanFrame {
+    cache: Option<Arc<PadCacheData>>,
     pad: *mut gst::ffi::GstPad,
     start_wall_ns: u64,
     start_cpu_ns: Option<u64>,
@@ -212,19 +212,23 @@ struct SpanFrame {
 #[derive(Debug, PartialEq, Eq)]
 struct CompletedSpan {
     exclusive_wall_ns: u64,
-    exclusive_cpu_ns: u64,
+    exclusive_cpu_ns: Option<u64>,
     sampled: bool,
 }
 
 struct QueueRegistration {
     element: glib::WeakRef<gst::Element>,
     metrics: Option<QueueMetrics>,
+    overruns: Arc<AtomicU64>,
+    underruns: Arc<AtomicU64>,
 }
 
 struct QueueMetrics {
     level_buffers: IntGauge,
     level_bytes: IntGauge,
     level_time: Gauge,
+    overruns: IntCounter,
+    underruns: IntCounter,
 }
 
 static PAD_CACHE_QUARK: LazyLock<glib::ffi::GQuark> =
@@ -248,7 +252,7 @@ const PAD_SKIP_SENTINEL: *mut c_void = std::ptr::null_mut();
 /// Data structure to hold cached pad information used for latency measurement.
 struct PadCacheData {
     /// Pointer to the peer pad, used during unlink to verify the pad pair.
-    peer: *mut c_void,
+    peer: usize,
 
     metrics: Option<PadMetrics>,
     sample_sequence: AtomicU64,
@@ -261,7 +265,7 @@ struct PadMetrics {
     wall_histogram: Histogram,
     cpu_histogram: Histogram,
     blocked_histogram: Histogram,
-    pts_age_histogram: Histogram,
+    pts_age_histogram: Option<Histogram>,
     sink_element: glib::WeakRef<gst::Element>,
 }
 
@@ -285,6 +289,7 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
+            _result: gst::ffi::GstFlowReturn,
         ) {
             PromLatencyTracerImp::do_receive_and_record_latency_ts(ts, pad);
         }
@@ -302,6 +307,7 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
+            _result: gst::ffi::GstFlowReturn,
         ) {
             PromLatencyTracerImp::do_receive_and_record_latency_ts(ts, pad);
         }
@@ -310,6 +316,8 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             _ts: u64,
             _pad: *mut gst::ffi::GstPad,
+            _offset: u64,
+            _size: libc::c_uint,
         ) {
             // TODO - revisit pull, which requires us to be careful about how we traverse proxy and ghost pads.
             // For pull, we treat sink as src, src as sink as we're going the other way
@@ -320,6 +328,8 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             _ts: u64,
             _pad: *mut gst::ffi::GstPad,
+            _buffer: *mut gst::ffi::GstBuffer,
+            _result: gst::ffi::GstFlowReturn,
         ) {
             // TODO - revisit pull, which requires us to be careful about how we traverse proxy and ghost pads.
             // For pull, we treat sink as src, src as sink as we're going the other way
@@ -352,7 +362,7 @@ impl PromLatencyTracerImp {
                     src_pad as *mut gobject_sys::GObject,
                     *PAD_CACHE_QUARK,
                     pad_latency_cache as *mut c_void,
-                    Some(PromLatencyTracerImp::drop_value::<PadCacheData>),
+                    Some(PromLatencyTracerImp::drop_pad_cache),
                 );
             }
         }
@@ -373,13 +383,10 @@ impl PromLatencyTracerImp {
                 // src_pad, but the sink_pad is not a pad, its something else. I am not sure what.
                 // Anyways, as a result, we confirm the sink_pad matches what we expect before
                 // unlinking.
-                let pad_cache = glib::gobject_ffi::g_object_get_qdata(
-                    src_pad as *mut gobject_sys::GObject,
-                    *PAD_CACHE_QUARK,
-                ) as *mut PadCacheData;
+                let pad_cache = PromLatencyTracerImp::pad_cache(src_pad);
 
                 // If the peer matches the provided sink, we remove the cache.
-                if !pad_cache.is_null() && sink_pad as *mut c_void == (*pad_cache).peer {
+                if pad_cache.is_some_and(|cache| sink_pad as usize == cache.peer) {
                     gst::trace!(
                         CAT,
                         "removing cache for src_pad: {:?}, sink_pad: {:?}",
@@ -483,21 +490,20 @@ impl PromLatencyTracerImp {
         String::from_utf8(buffer).expect("Metrics buffer is not valid UTF-8")
     }
 
-    /// Given an optional `Pad`, returns the real parent `Element`, skipping over a `GhostPad` proxy.
-    fn get_real_pad_parent_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstElement> {
-        // 1. Grab its parent as a generic `Object`.
-        let parent_obj = unsafe { ffi::gst_object_get_parent(pad as *mut ffi::GstObject) };
-        if parent_obj.is_null() {
-            return None;
+    /// Resolve proxy pads using owned wrappers; each temporary reference drops.
+    fn get_real_pad_parent_ffi(pad: *mut ffi::GstPad) -> Option<gst::Element> {
+        let mut pad = unsafe { gst::Pad::from_glib_none(pad) };
+        // A malformed or changing topology must not recurse indefinitely.
+        for _ in 0..64 {
+            if let Some(ghost) = pad.downcast_ref::<gst::GhostPad>() {
+                pad = ghost.target()?;
+            } else if pad.is::<gst::ProxyPad>() {
+                pad = pad.parent()?.downcast::<gst::Pad>().ok()?.peer()?;
+            } else {
+                return pad.parent_element();
+            }
         }
-
-        // 2. Get the real pad
-        let real_pad = Self::get_real_pad_ffi(pad);
-
-        // 3. Finally, cast the resulting object to an Element.
-        real_pad.map(|p| unsafe {
-            ffi::gst_object_get_parent(p as *mut ffi::GstObject) as *mut ffi::GstElement
-        })
+        None
     }
 
     unsafe fn is_pad(pad: *mut ffi::GstPad) -> bool {
@@ -508,72 +514,27 @@ impl PromLatencyTracerImp {
         ) == glib::ffi::GTRUE
     }
 
-    unsafe fn is_proxy_pad(pad: *mut ffi::GstPad) -> bool {
-        let proxy_pad_type = ffi::gst_proxy_pad_get_type();
-        glib::gobject_ffi::g_type_check_instance_is_a(
-            pad as *mut glib::gobject_ffi::GTypeInstance,
-            proxy_pad_type,
-        ) == glib::ffi::GTRUE
+    /// Release qdata's ownership. In-flight spans retain their own reference.
+    unsafe extern "C" fn drop_pad_cache(ptr: *mut c_void) {
+        drop(Arc::from_raw(ptr.cast::<PadCacheData>()));
     }
 
-    fn get_real_pad_ffi(pad: *mut ffi::GstPad) -> Option<*mut ffi::GstPad> {
-        let ghost_pad_type = unsafe { ffi::gst_ghost_pad_get_type() };
-        let is_ghost_pad = unsafe {
-            glib::gobject_ffi::g_type_check_instance_is_a(
-                pad as *mut glib::gobject_ffi::GTypeInstance,
-                ghost_pad_type,
-            )
-        };
-        let o_pad = if is_ghost_pad == glib::ffi::GTRUE {
-            let maybe_real_pad =
-                unsafe { ffi::gst_ghost_pad_get_target(pad as *mut ffi::GstGhostPad) };
-            if maybe_real_pad.is_null() {
-                None
-            } else {
-                Self::get_real_pad_ffi(maybe_real_pad)
+    /// GLib holds the qdata lock while duplicating, so unlink cannot free the
+    /// cache between reading its pointer and acquiring our reference.
+    unsafe fn pad_cache(pad: *mut ffi::GstPad) -> Option<Arc<PadCacheData>> {
+        unsafe extern "C" fn retain(ptr: *mut c_void, _: *mut c_void) -> *mut c_void {
+            if !ptr.is_null() {
+                Arc::increment_strong_count(ptr.cast::<PadCacheData>());
             }
-        } else {
-            None
-        };
-
-        if o_pad.is_some() {
-            return o_pad;
+            ptr
         }
-
-        if unsafe { Self::is_proxy_pad(pad) } && unsafe { Self::is_pad(pad) } {
-            let maybe_ghost_pad = unsafe {
-                ffi::gst_object_get_parent(pad as *mut ffi::GstObject) as *mut ffi::GstPad
-            };
-            if maybe_ghost_pad.is_null() || !unsafe { Self::is_pad(maybe_ghost_pad) } {
-                None
-            } else {
-                // get the peer, that might be our real pad
-                let maybe_real_pad = unsafe { ffi::gst_pad_get_peer(maybe_ghost_pad) };
-                if maybe_real_pad.is_null() || !unsafe { Self::is_pad(maybe_real_pad) } {
-                    None
-                } else {
-                    Self::get_real_pad_ffi(maybe_real_pad)
-                }
-            }
-        } else {
-            Some(pad)
-        }
-    }
-
-    /// Drop function for the `gobject` quark data.
-    /// This is called when the `gobject` quark data is removed.
-    /// It safely converts the pointer back to a Box and drops it.
-    /// This is necessary to avoid memory leaks.
-    /// Note that this function is unsafe because it assumes
-    /// the pointer is valid and points to a `Box<QD>`.
-    /// It is the caller's responsibility to ensure this is the case.
-    unsafe extern "C" fn drop_value<QD>(ptr: *mut c_void) {
-        debug_assert!(!ptr.is_null());
-        let value: Box<QD> = Box::from_raw(ptr as *mut QD);
-
-        // Explicitly drop the value as I am still new to rust and this reminds
-        // me how it works.
-        drop(value)
+        let ptr = glib::gobject_ffi::g_object_dup_qdata(
+            pad.cast(),
+            *PAD_CACHE_QUARK,
+            Some(retain),
+            std::ptr::null_mut(),
+        );
+        (!ptr.is_null()).then(|| Arc::from_raw(ptr.cast::<PadCacheData>()))
     }
 
     /// Given a source and sink pad, returns the PadCacheData for the pad pair.
@@ -629,8 +590,7 @@ impl PromLatencyTracerImp {
         }
 
         // Prepare metrics
-        let _src_parent = unsafe { gst::Element::from_glib_none(src_parent_element.unwrap()) };
-        let sink_parent = unsafe { gst::Element::from_glib_none(sink_parent_element.unwrap()) };
+        let sink_parent = sink_parent_element.unwrap();
         let el_name = sink_parent.name().to_string();
         let src_pad_name = Self::pad_name(src_pad);
         let sink_pad_name = Self::pad_name(sink_pad);
@@ -656,17 +616,18 @@ impl PromLatencyTracerImp {
                 wall_histogram: SYNC_WALL_HISTOGRAM.with_label_values(&labels),
                 cpu_histogram: SYNC_CPU_HISTOGRAM.with_label_values(&labels),
                 blocked_histogram: SYNC_BLOCKED_HISTOGRAM.with_label_values(&labels),
-                pts_age_histogram: BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels),
+                pts_age_histogram: (*PTS_AGE_ENABLED)
+                    .then(|| BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels)),
                 sink_element,
             }
         });
 
         // Create cache
-        Box::into_raw(Box::new(PadCacheData {
-            peer: sink_pad as *mut c_void,
+        Arc::into_raw(Arc::new(PadCacheData {
+            peer: sink_pad as usize,
             metrics,
             sample_sequence: AtomicU64::new(0),
-        }))
+        })) as *mut PadCacheData
     }
 
     fn pad_name(pad: *mut gst::ffi::GstPad) -> String {
@@ -688,46 +649,44 @@ impl PromLatencyTracerImp {
     }
 
     unsafe fn do_send_latency_ts(
-        ts: u64,
+        _ts: u64,
         src_pad: *mut gst::ffi::GstPad,
         buffer: *mut gst::ffi::GstBuffer,
     ) {
-        let pad_cache = glib::gobject_ffi::g_object_get_qdata(
-            src_pad as *mut gobject_sys::GObject,
-            *PAD_CACHE_QUARK,
-        ) as *mut PadCacheData;
-        if pad_cache.is_null() {
-            return;
+        let cache = Self::pad_cache(src_pad);
+        let sampled = cache.as_ref().is_some_and(|cache| {
+            cache.metrics.is_some()
+                && Self::sample_sequence(
+                    cache.sample_sequence.fetch_add(1, Ordering::Relaxed),
+                    src_pad as usize as u64,
+                )
+        });
+        // Perform optional diagnostics before starting the span, and outside
+        // the mutable TLS borrow (GObject calls may invoke other callbacks).
+        if sampled && !buffer.is_null() {
+            if let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) {
+                if let Some(histogram) = &metrics.pts_age_histogram {
+                    if let Some(age) = Self::buffer_pts_age(src_pad, buffer, metrics) {
+                        histogram.observe(age);
+                    }
+                }
+            }
         }
-
-        let pad_cache = &*pad_cache;
         SPAN_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
-            let selected = pad_cache.metrics.is_some();
+            let selected = cache.as_ref().is_some_and(|cache| cache.metrics.is_some());
             if !selected && stack.is_empty() {
                 return;
-            }
-            let sampled = if selected {
-                let sequence = pad_cache.sample_sequence.fetch_add(1, Ordering::Relaxed);
-                Self::sample_sequence(sequence, src_pad as usize as u64)
-            } else {
-                false
-            };
-            if sampled && *PTS_AGE_ENABLED && !buffer.is_null() {
-                if let (Some(metrics), Some(age)) = (
-                    &pad_cache.metrics,
-                    Self::buffer_pts_age(src_pad, buffer, &pad_cache.metrics),
-                ) {
-                    metrics.pts_age_histogram.observe(age);
-                }
             }
             // A sampled parent needs child CPU spans even when that child is not
             // itself selected, otherwise child work gets charged to the parent.
             let measure_cpu = sampled || stack.iter().any(|frame| frame.start_cpu_ns.is_some());
+            let start_cpu_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
             stack.push(SpanFrame {
+                cache,
                 pad: src_pad,
-                start_wall_ns: ts,
-                start_cpu_ns: measure_cpu.then(Self::thread_cpu_time_ns).flatten(),
+                start_wall_ns: gst::get_timestamp().nseconds(),
+                start_cpu_ns,
                 child_wall_ns: 0,
                 child_cpu_ns: 0,
                 sampled,
@@ -735,22 +694,12 @@ impl PromLatencyTracerImp {
         });
     }
 
-    unsafe fn do_receive_and_record_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
-        let pad_cache = glib::gobject_ffi::g_object_get_qdata(
-            src_pad as *mut gobject_sys::GObject,
-            *PAD_CACHE_QUARK,
-        ) as *mut PadCacheData;
-        if pad_cache.is_null() {
-            return;
-        }
-
-        let pad_cache = &*pad_cache;
-        let frame_exists = SPAN_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .is_some_and(|frame| frame.pad == src_pad)
-        });
+    unsafe fn do_receive_and_record_latency_ts(_ts: u64, src_pad: *mut gst::ffi::GstPad) {
+        // Use the same clock at both boundaries, excluding this span's metric
+        // export work. Nested tracer bookkeeping still adds measurement noise.
+        let wall_end_ns = gst::get_timestamp().nseconds();
+        let frame_exists =
+            SPAN_STACK.with(|stack| stack.borrow().iter().any(|frame| frame.pad == src_pad));
         if !frame_exists {
             return;
         }
@@ -761,18 +710,17 @@ impl PromLatencyTracerImp {
                 .is_some_and(|frame| frame.start_cpu_ns.is_some())
         });
         let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
-        let completed = SPAN_STACK
-            .with(|stack| Self::complete_span(&mut stack.borrow_mut(), src_pad, ts, cpu_end_ns));
+        let cache =
+            SPAN_STACK.with(|stack| stack.borrow().last().and_then(|frame| frame.cache.clone()));
+        let completed = SPAN_STACK.with(|stack| {
+            Self::complete_span(&mut stack.borrow_mut(), src_pad, wall_end_ns, cpu_end_ns)
+        });
         let Some(completed) = completed else {
             return;
         };
-        let Some(metrics) = &pad_cache.metrics else {
+        let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) else {
             return;
         };
-        let blocked_ns = completed
-            .exclusive_wall_ns
-            .saturating_sub(completed.exclusive_cpu_ns);
-
         // Log the latency
         metrics
             .last_gauge
@@ -783,12 +731,14 @@ impl PromLatencyTracerImp {
             metrics
                 .wall_histogram
                 .observe(completed.exclusive_wall_ns as f64 / 1_000_000_000f64);
-            metrics
-                .cpu_histogram
-                .observe(completed.exclusive_cpu_ns as f64 / 1_000_000_000f64);
-            metrics
-                .blocked_histogram
-                .observe(blocked_ns as f64 / 1_000_000_000f64);
+            if let Some(cpu_ns) = completed.exclusive_cpu_ns {
+                metrics
+                    .cpu_histogram
+                    .observe(cpu_ns as f64 / 1_000_000_000f64);
+                metrics.blocked_histogram.observe(
+                    completed.exclusive_wall_ns.saturating_sub(cpu_ns) as f64 / 1_000_000_000f64,
+                );
+            }
         }
     }
 
@@ -813,16 +763,21 @@ impl PromLatencyTracerImp {
         let raw_wall_ns = wall_end_ns.saturating_sub(frame.start_wall_ns);
         let raw_cpu_ns = frame
             .start_cpu_ns
-            .and_then(|start| cpu_end_ns.map(|end| end.saturating_sub(start)))
-            .unwrap_or(0);
+            .and_then(|start| cpu_end_ns.map(|end| end.saturating_sub(start)));
         if let Some(parent) = stack.last_mut() {
             parent.child_wall_ns = parent.child_wall_ns.saturating_add(raw_wall_ns);
-            parent.child_cpu_ns = parent.child_cpu_ns.saturating_add(raw_cpu_ns);
+            if let Some(raw_cpu_ns) = raw_cpu_ns {
+                parent.child_cpu_ns = parent.child_cpu_ns.saturating_add(raw_cpu_ns);
+            } else {
+                // A failed child clock read invalidates parent CPU attribution.
+                parent.start_cpu_ns = None;
+            }
         }
 
         Some(CompletedSpan {
             exclusive_wall_ns: Self::compute_element_latency(raw_wall_ns, frame.child_wall_ns),
-            exclusive_cpu_ns: Self::compute_element_latency(raw_cpu_ns, frame.child_cpu_ns),
+            exclusive_cpu_ns: raw_cpu_ns
+                .map(|cpu| Self::compute_element_latency(cpu, frame.child_cpu_ns)),
             sampled: frame.sampled,
         })
     }
@@ -876,9 +831,8 @@ impl PromLatencyTracerImp {
     unsafe fn buffer_pts_age(
         src_pad: *mut gst::ffi::GstPad,
         buffer: *mut gst::ffi::GstBuffer,
-        metrics: &Option<PadMetrics>,
+        metrics: &PadMetrics,
     ) -> Option<f64> {
-        let metrics = metrics.as_ref()?;
         let buffer = gst::Buffer::from_glib_none(buffer);
         let pts = buffer.pts()?;
         let pad = gst::Pad::from_glib_none(src_pad);
@@ -900,35 +854,27 @@ impl PromLatencyTracerImp {
     }
 
     fn register_queue(element: &gst::Element) {
-        let overrun_element = glib::WeakRef::new();
-        overrun_element.set(Some(element));
-        element.connect("overrun", false, move |_| {
-            if let Some(element) = overrun_element.upgrade() {
-                let (element_name, path) = Self::queue_labels(&element);
-                QUEUE_OVERRUNS
-                    .with_label_values(&[&element_name, &path])
-                    .inc();
+        // queue2 exposes levels but has neither of queue's pressure signals.
+        // Keep streaming-thread callbacks allocation-free; export on sampler.
+        let overruns = Arc::new(AtomicU64::new(0));
+        let underruns = Arc::new(AtomicU64::new(0));
+        for (signal, counter) in [("overrun", &overruns), ("underrun", &underruns)] {
+            if glib::subclass::SignalId::lookup(signal, element.type_()).is_some() {
+                let counter = Arc::clone(counter);
+                element.connect(signal, false, move |_| {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    None
+                });
             }
-            None
-        });
-
-        let underrun_element = glib::WeakRef::new();
-        underrun_element.set(Some(element));
-        element.connect("underrun", false, move |_| {
-            if let Some(element) = underrun_element.upgrade() {
-                let (element_name, path) = Self::queue_labels(&element);
-                QUEUE_UNDERRUNS
-                    .with_label_values(&[&element_name, &path])
-                    .inc();
-            }
-            None
-        });
+        }
 
         let element_ref = glib::WeakRef::new();
         element_ref.set(Some(element));
         QUEUE_REGISTRATIONS.lock().unwrap().push(QueueRegistration {
             element: element_ref,
             metrics: None,
+            overruns,
+            underruns,
         });
     }
 
@@ -955,6 +901,16 @@ impl PromLatencyTracerImp {
                         return false;
                     };
 
+                    // Capture labels only after assembly, when streaming can start.
+                    if element.current_state() < gst::State::Paused {
+                        if let Some(metrics) = &registration.metrics {
+                            metrics.level_buffers.set(0);
+                            metrics.level_bytes.set(0);
+                            metrics.level_time.set(0.0);
+                        }
+                        return true;
+                    }
+
                     let metrics = registration.metrics.get_or_insert_with(|| {
                         let (element_name, path) = Self::queue_labels(&element);
                         let labels = [&element_name, &path];
@@ -962,6 +918,8 @@ impl PromLatencyTracerImp {
                             level_buffers: QUEUE_LEVEL_BUFFERS.with_label_values(&labels),
                             level_bytes: QUEUE_LEVEL_BYTES.with_label_values(&labels),
                             level_time: QUEUE_LEVEL_TIME.with_label_values(&labels),
+                            overruns: QUEUE_OVERRUNS.with_label_values(&labels),
+                            underruns: QUEUE_UNDERRUNS.with_label_values(&labels),
                         }
                     });
 
@@ -980,6 +938,12 @@ impl PromLatencyTracerImp {
                     metrics.level_buffers.set(i64::from(buffers));
                     metrics.level_bytes.set(i64::from(bytes));
                     metrics.level_time.set(time_ns as f64 / 1_000_000_000f64);
+                    metrics
+                        .overruns
+                        .inc_by(registration.overruns.swap(0, Ordering::Relaxed));
+                    metrics
+                        .underruns
+                        .inc_by(registration.underruns.swap(0, Ordering::Relaxed));
                     true
                 });
         });
@@ -1028,7 +992,84 @@ impl PromLatencyTracerImp {
 #[cfg(test)]
 mod tests {
     use super::{latency_buckets, CompletedSpan, PromLatencyTracerImp, SpanFrame};
+    use glib::translate::ToGlibPtr;
+    use gst::prelude::*;
     use gstreamer as gst;
+    use std::sync::Arc;
+
+    #[test]
+    fn given_inflight_span_when_cache_cleared_then_snapshot_survives_until_post() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("identity")
+            .name("cache_source")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("identity")
+            .name("cache_sink")
+            .build()
+            .unwrap();
+        let src_pad = source.static_pad("src").unwrap();
+        let sink_pad = sink.static_pad("sink").unwrap();
+        let source_refs = source.ref_count();
+        let sink_refs = sink.ref_count();
+        unsafe {
+            let cache = PromLatencyTracerImp::do_create_latency_cache_for_pad_pair(
+                src_pad.to_glib_none().0,
+                sink_pad.to_glib_none().0,
+            );
+            assert_ne!(cache.cast(), super::PAD_SKIP_SENTINEL);
+            assert_eq!(source.ref_count(), source_refs);
+            assert_eq!(sink.ref_count(), sink_refs);
+            glib::gobject_ffi::g_object_set_qdata_full(
+                src_pad.as_ptr().cast(),
+                *super::PAD_CACHE_QUARK,
+                cache.cast(),
+                Some(PromLatencyTracerImp::drop_pad_cache),
+            );
+            let snapshot = PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).unwrap();
+            let weak = Arc::downgrade(&snapshot);
+            // Parent forces accounting even when a test environment filters this element.
+            super::SPAN_STACK.with(|stack| {
+                stack.borrow_mut().push(SpanFrame {
+                    cache: Some(snapshot),
+                    pad: src_pad.to_glib_none().0,
+                    start_wall_ns: gst::get_timestamp().nseconds(),
+                    start_cpu_ns: None,
+                    child_wall_ns: 0,
+                    child_cpu_ns: 0,
+                    sampled: false,
+                })
+            });
+            glib::gobject_ffi::g_object_set_qdata_full(
+                src_pad.as_ptr().cast(),
+                *super::PAD_CACHE_QUARK,
+                std::ptr::null_mut(),
+                None,
+            );
+            assert!(PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).is_none());
+            assert!(weak.upgrade().is_some());
+            PromLatencyTracerImp::do_receive_and_record_latency_ts(0, src_pad.to_glib_none().0);
+            assert!(super::SPAN_STACK.with(|stack| stack.borrow().is_empty()));
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn given_failed_cpu_clock_when_finishing_then_cpu_measurement_is_absent() {
+        let pad = std::ptr::null_mut();
+        let mut stack = vec![SpanFrame {
+            cache: None,
+            pad,
+            start_wall_ns: 0,
+            start_cpu_ns: Some(0),
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            sampled: true,
+        }];
+        let span = PromLatencyTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
+        assert_eq!(span.exclusive_wall_ns, 10);
+        assert_eq!(span.exclusive_cpu_ns, None);
+    }
 
     #[test]
     fn given_child_time_when_computing_exclusive_latency_then_it_subtracts_and_saturates() {
@@ -1083,6 +1124,7 @@ mod tests {
         let first_child_pad = (&mut first_child_storage as *mut u8).cast::<gst::ffi::GstPad>();
         let second_child_pad = (&mut second_child_storage as *mut u8).cast::<gst::ffi::GstPad>();
         let mut stack = vec![SpanFrame {
+            cache: None,
             pad: parent_pad,
             start_wall_ns: 0,
             start_cpu_ns: Some(0),
@@ -1092,6 +1134,7 @@ mod tests {
         }];
 
         stack.push(SpanFrame {
+            cache: None,
             pad: first_child_pad,
             start_wall_ns: 10,
             start_cpu_ns: Some(5),
@@ -1101,6 +1144,7 @@ mod tests {
         });
         PromLatencyTracerImp::complete_span(&mut stack, first_child_pad, 30, Some(15));
         stack.push(SpanFrame {
+            cache: None,
             pad: second_child_pad,
             start_wall_ns: 35,
             start_cpu_ns: Some(20),
@@ -1114,7 +1158,7 @@ mod tests {
             PromLatencyTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50)),
             Some(CompletedSpan {
                 exclusive_wall_ns: 50,
-                exclusive_cpu_ns: 25,
+                exclusive_cpu_ns: Some(25),
                 sampled: true,
             })
         );
@@ -1127,6 +1171,7 @@ mod tests {
         let expected_pad = (&mut expected_storage as *mut u8).cast::<gst::ffi::GstPad>();
         let received_pad = (&mut received_storage as *mut u8).cast::<gst::ffi::GstPad>();
         let mut stack = vec![SpanFrame {
+            cache: None,
             pad: expected_pad,
             start_wall_ns: 0,
             start_cpu_ns: None,

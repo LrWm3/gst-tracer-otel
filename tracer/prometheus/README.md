@@ -113,6 +113,7 @@ export GST_PROM_LATENCY_PTS_AGE=true
 `gst_buffer_pts_age_seconds` measures current pipeline running-time minus
 segment-adjusted buffer PTS at each selected element input. Keep this disabled
 for unpaced file benchmarks and sources with unrelated timestamp domains.
+Future PTS values are clamped to zero age. This is not camera wall-clock latency.
 
 ### Queue Sampling
 
@@ -126,6 +127,11 @@ export GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS=100
 The tracer exports current buffer, byte, and media-time levels plus overrun and
 underrun counters. Gauges answer whether backlog exists. They do not provide a
 per-buffer queue-residence distribution.
+Only `queue` provides overrun/underrun signals; zero counters on `queue2` do not
+prove absence of pressure. Signal callbacks increment atomic counters, exported
+by the sampler. Levels can miss spikes between polls, and Prometheus can miss
+polled peaks between scrapes. These gauges cannot establish an exact worst-case
+queue capacity. Queue labels are initialized after the element reaches PAUSED.
 
 ### Metric Semantics
 
@@ -141,6 +147,15 @@ per-buffer queue-residence distribution.
 
 Asynchronous CUDA/VIC/TensorRT completion requires native metrics at submission
 and completion points. Generic pad hooks cannot infer that interval correctly.
+CPU and wall clocks are read sequentially, not simultaneously. Nested tracer
+bookkeeping also contributes noise, particularly for microsecond-scale stages.
+`blocked` is an estimate of off-CPU wall time, not a measurement of a particular
+lock or GPU fence. Failed CPU clock reads omit CPU/blocked observations instead
+of inventing a zero-CPU sample. Pull-mode latency remains unimplemented.
+
+Compatibility: the three legacy gauge/sum/count names remain. The former
+`gst_element_latency_seconds_histogram` was replaced by
+`gst_element_sync_wall_seconds`; histogram queries must migrate to that name.
 
 ### PromQL Examples
 
@@ -168,7 +183,7 @@ Do not graph `rate(gst_element_latency_sum_count[5m])` alone as latency. That
 value is accumulated nanoseconds per second. Likewise,
 `rate(gst_element_latency_count_count[5m])` is event throughput, not latency.
 
-Maximum observed queue depth over five minutes:
+Maximum scraped queue depth over five minutes (not every intervening peak):
 
 ```promql
 max_over_time(gst_queue_current_level_buffers[5m])
@@ -187,11 +202,15 @@ Controlled pipelines confirmed these boundaries:
 - Multiple sequential tee branches are accumulated and subtracted from their
   parent instead of retaining only the final child span.
 
-A release-build microbenchmark on an integrated memory nvidia device pushed one million buffers through two
-traced edges. Warm median runtime moved from 2.857 s on the previous tracer to
-3.043 s here: about 0.093 microseconds extra per edge event. At 120 frames/s and
-30 traced edges, that delta projects to about 0.034% of one CPU core. This is a
-synthetic CPU-overhead estimate, not a pipeline-throughput qualification.
+An earlier exploratory microbenchmark on an integrated memory nvidia device measured 2.857 s versus 3.043 s,
+but used different element-selection configurations. It does not establish
+matched per-edge overhead or a CPU-percentage estimate. Ownership and timing
+fixes made during review also require a new benchmark. Qualify the revised build
+with identical selected elements, sampling, queue topology, and scrape frequency,
+comparing tracer-off, baseline, and revised builds on the actual two-stream graph.
+No production overhead claim is made for the revised build.
+
+See [Rust review and cleanup plan](REVIEW.md) for fixes and remaining limitations.
 
 ### Example Output
 

@@ -540,6 +540,18 @@ mod tests {
     }
 
     #[test]
+    fn given_queue2_when_traced_then_pipeline_completes_without_signal_panic() {
+        setup_test();
+        let pipeline = gst::parse::launch("fakesrc num-buffers=10 ! queue2 ! fakesink")
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        wait_for_eos(&pipeline);
+        pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    #[test]
     fn given_buffered_queue_when_sampled_then_current_depth_is_exported() {
         setup_test();
         let pipeline = gst::parse::launch(
