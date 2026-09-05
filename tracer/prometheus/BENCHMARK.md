@@ -1,0 +1,202 @@
+# Tracer overhead on an integrated memory nvidia device — 2026-09-05
+
+The reviewed tracer showed **no material processor-throughput regression** in
+the short matched checks. The final build delivered 125.41 FPS versus 125.78 FPS
+with tracing off (−0.29%); an earlier reviewed build averaged 125.91 FPS versus
+125.78 FPS off. These small differences do not establish a speedup or a
+repeatable slowdown. The synthetic buffer-only loop does show additional
+instrumentation cost. Final-build RTSP throughput was 120.08 FPS.
+
+## Setup
+
+Measurements used an integrated memory nvidia device.
+The installed processor and tracer were not replaced. Existing monitoring
+services remained running. All measured runs use the same locally supplied benchmark container image.
+
+Tracer variants:
+
+- **Off:** no active tracer.
+- **Original:** `0f7504c`, before the new diagnostics.
+- **Pre-review:** `19a07e4`, new diagnostics before ownership/timing fixes.
+- **Reviewed, initial capacity build:** review fixes plus construction guard,
+  `53645e4`.
+- **Reviewed, final build:** also preserves floating RTSP pad ownership,
+  `b48f429`.
+
+For the processor tests, the pre-review version also receives the same tiny
+queue-type construction guard. Its other behavior is unchanged. Unguarded
+pre-review and reviewed builds crash during DeepStream graph construction, so
+their failed launches are not throughput measurements.
+
+Common configuration: every element selected (`*`), histogram sample rate 16,
+PTS age disabled, queue sampling every 100 ms where supported. Traced runs have
+an HTTP scrape every second. The original tracer does not implement CPU/blocked
+histograms or queue metrics; this is an overall feature-cost comparison, not a
+claim that it exports the same information. The pre-review/reviewed comparison
+isolates the review changes more closely.
+
+Each variant/workload has its own GStreamer registry, populated inside the
+NVIDIA-enabled runtime before measuring the processor. Plugin inspection verifies
+the loaded filename. Binaries have independent recorded SHA-256 identities.
+
+## Synthetic result
+
+One million buffers through `fakesrc ! identity ! fakesink`, two synchronous
+push edges. One discarded warm-up per variant, followed by five measured runs
+with rotated ordering. Child CPU seconds are measured directly with `getrusage`.
+These measurements precede the construction guard, which does not change the
+per-buffer path; they are not a fresh synthetic qualification of `53645e4`.
+
+| Variant | Median elapsed seconds | Median child CPU seconds |
+| --- | ---: | ---: |
+| Off | 1.272 | 1.233 |
+| Original | 2.723 | 2.680 |
+| Pre-review | 3.026 | 2.972 |
+| Reviewed, before construction guard | 3.226 | 3.194 |
+
+Review fixes add about 0.200 seconds elapsed and 0.222 CPU seconds over two
+million push edges: approximately 0.100 microseconds elapsed / 0.111 CPU
+microseconds per edge. This buffer-only loop is intentionally sensitive to
+instrumentation overhead. Its 6.6% elapsed increase over pre-review must not be
+interpreted as a 6.6% loss in video-processing throughput.
+
+## Processor capacity
+
+The repeated-file full Rust path uses the established 1080p configuration:
+55 decoder extras, 80 owned block-linear copy surfaces, mux pool 4, B16, three
+asynchronous inference slots, GPU preprocessing, persistent RGBA hash/IQ,
+tracker and non-publishing terminal output. Each run lasts 60 seconds in PLAYING;
+the steady window begins ten seconds after the first terminal buffer. Two runs
+per variant rotate order. FPS and tails come from the existing terminal probe,
+not from the tracer being evaluated.
+The table below uses `53645e4`; the subsequent floating-pad correction is
+covered by the final-build checks below, not silently treated as the same binary.
+
+Results are recorded under `/home/user/tracer-perf-46efcd7/capacity-guard-*`.
+
+| Variant | Warmed FPS, run 1 / run 2 | Mean FPS | Mean child CPU seconds, including startup |
+| --- | ---: | ---: | ---: |
+| Off | 125.901 / 125.661 | 125.781 | 91.092 |
+| Original | 125.564 / 125.427 | 125.496 | 92.173 |
+| Pre-review + construction guard | 125.372 / 125.686 | 125.529 | 92.041 |
+| Reviewed | 125.994 / 125.825 | 125.910 | 91.755 |
+
+Reviewed versus off is +0.10%; reviewed versus pre-review is +0.30%. With only
+two runs per variant these are effectively tied, not statistically established
+improvements. Every run exceeds the 121 FPS gate. Process CPU measurements
+include initialization and teardown, so they are not steady-state CPU load or
+a precise attribution of sub-percent overhead.
+
+Independent terminal-probe B16 interval tails:
+
+| Variant | p99 milliseconds, run 1 / run 2 |
+| --- | ---: |
+| Off | 195.319 / 171.134 |
+| Original | 173.879 / 151.155 |
+| Pre-review + construction guard | 144.593 / 186.046 |
+| Reviewed | 174.328 / 190.273 |
+
+Tails vary substantially between runs; there is no consistent reviewed-versus-off
+worsening here. These short samples cannot qualify p99.9 behavior or rare stalls.
+Traced runs successfully served 63–65 scrapes each. Maximum scrape payload fell
+from about 1.31 MB pre-review to 1.00 MB reviewed, mainly because disabled PTS
+histogram series are no longer allocated. These are uncompressed local payloads.
+
+## Final-build capacity check
+
+After fixing floating-pad ownership, the final `b48f429` binary and tracer-off
+each ran the same 60-second capacity workload once, with the same ten-second
+warm-up exclusion. Both exited cleanly. Files: `capacity-final-*`.
+
+| Variant | Warmed FPS | B16 interval p99, ms | Child CPU seconds, including startup |
+| --- | ---: | ---: | ---: |
+| Off | 125.779 | 184.514 | 91.227 |
+| Reviewed, final | 125.409 | 149.603 | 93.111 |
+
+The final build is 0.369 FPS / 0.29% below its off comparator, within the range
+of the earlier matched run-to-run results. This one pair cannot establish a
+sub-percent overhead estimate. Both exceed 121 FPS; the final traced run's
+minimum rolling five- and ten-second output was 124.8 FPS. Its lower p99 is also
+not evidence of a tail-latency improvement from this single pair. CPU seconds
+include startup/teardown and must not be interpreted as steady CPU utilization.
+The endpoint served 65 successful scrapes during the final capacity run.
+
+## Two-stream check
+
+The separate RTSP harness uses two locally paced stream-copy publishers and
+source-local H.264 metadata joins, without source decode/re-encode or cloud
+publishing. This is a camera-paced check, not a headroom measurement. Its
+parameters and service cleanup are in `run_device_rtsp_matched.sh`.
+
+One 90-second run per variant, ten-second warm-up, B16, mux pool 8,
+55 decoder extras, 80 block-linear copy surfaces, 4-second join deadline.
+The two publishers use the same sample, independently paced; this does not
+exercise different scene content per source. Final reviewed binary: `b48f429`.
+
+| Variant | Warmed aggregate FPS | B16 interval p99, ms | Process exit | Successful scrapes |
+| --- | ---: | ---: | --- | ---: |
+| Off | 120.123 | 138.299 | SIGSEGV after result output | 0 |
+| Pre-review + construction guard | 120.209 | 137.963 | Clean | 93 |
+| Reviewed, final | 120.082 | 137.688 | Clean | 92 |
+
+The off run produced a complete runtime-limited JSON result, then exited with
+SIGSEGV. Its in-run counters are shown for transparency, **not as a clean
+qualification pass**. The exact failure cause has not been traced; tracing was
+disabled, so it cannot be assigned to active tracer hooks. Both traced runs
+completed cleanly. The revised build sustained the two-stream arrival rate,
+with no observed p99 deterioration in this short check. This is not a long soak.
+
+Every metadata frame received by the join matched: 5,296 per source pre-review,
+5,288 per source reviewed. Wrong-source, duplicate, late and pending metadata
+counters were zero. This does **not** mean every encoded frame was annotated:
+passthrough counts were 25 per source pre-review, 26 reviewed, and 32 off.
+Those passthroughs were not separately diagnosed by this overhead experiment.
+The revised metric endpoint served 92 scrapes, with maximum payload 681,684
+bytes versus 890,718 pre-review (about 23% smaller).
+
+## Failure investigation
+
+An initial attempt reused synthetic registries built without NVIDIA runtime
+mounts; those registries had blacklisted DeepStream plugins. These attempts were
+discarded and registries are now workload-specific.
+
+Fresh registries exposed a separate tracer crash. GDB stopped in
+`g_type_check_instance_is_fundamentally_a` → `g_object_ref_sink` → tracer
+`element_new`, called during `gst_element_constructed`. Queue identification
+called `element.factory()` too early. Checking the already-valid GType avoids
+that factory dereference. A queue-type regression test was added.
+
+The initial reviewed RTSP build then crashed in `remove_event_by_type`, while
+`rtspsrc` was pushing a sticky event. The review's raw-pad ownership cleanup had
+used `from_glib_none`, which sinks a floating GObject rather than always taking
+an additional reference. For an RTSP pad not yet parented, dropping that wrapper
+could destroy the C caller's pad. The final build borrows incoming pads and uses
+a normal clone only for owned traversal. A regression verifies reference count
+and floating state remain unchanged. Eighteen local tracer tests and workspace
+Clippy pass. Failed RTSP launches are excluded from performance results.
+
+Shared Cargo target directories also produced identical copied binaries during
+staging. SHA verification caught this before the guarded measurements. The
+reviewed build was rebuilt in an independent target directory.
+
+## Reproduction and artifacts
+
+- `bench_matched.py`: rotated variants, exact commands, plugin hashes, subprocess
+  elapsed/CPU time, scrape counts and logs.
+- `run_device_matched.sh`: full-path capacity test.
+- `run_device_rtsp_matched.sh`: temporary stream-copy relay and two-stream test.
+- Raw results/logs on an integrated memory nvidia device: `/home/user/tracer-perf-46efcd7/`.
+- Native crash traces: `startup-gdb.txt` and `rtsp-gdb.txt` in that directory.
+
+Final reviewed tracer SHA-256:
+`4f1a6ee285c97d8292f63733a4c60112262be20b2037da3e2c3d3ec2c2a6f1fa`.
+
+All temporary benchmark/RTSP/debug containers are stopped. The installed
+processor and tracer remain unchanged; existing monitoring remains running.
+
+Processor plugin SHA-256:
+`2490abe2803a184ece603dde775d89daf7b1536bdca818b247b697fe5ec769ea`.
+TensorRT FP16 engine (`model_b16_gpu0_fp16.engine`) SHA-256:
+`6069c4c4afdfa95424e4c8cd5e45d9b6afb6373364fe19823830542535fd972b`.
+Repeated input (`test_live_stream.mp4`) SHA-256:
+`e3dee02187aa661e9b171a38dfe4c5b66299bb846730310a693e36d8a2b46246`.

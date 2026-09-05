@@ -105,9 +105,11 @@ into the correctness fixes.
 - The former histogram name was not retained by the original changes. Existing
   gauge/sum/count queries remain supported; migrate histogram queries as noted
   in the README.
-- No revised-build overhead on an integrated memory nvidia device or long-soak qualification has been run.
-  Compare tracer-off/baseline/revised using identical configuration, then measure
-  FPS, CPU, memory/cardinality and tail latency with actual scraping enabled.
+- [Matched overhead checks on an integrated memory nvidia device](BENCHMARK.md) now cover synthetic pushes,
+  processor capacity and two-stream RTSP with actual scraping. No material
+  throughput regression appeared in the short processor checks. Long-soak,
+  memory growth and rare-tail qualification remain outstanding; an off-run
+  shutdown SIGSEGV is documented separately rather than counted as a clean pass.
 
 ## Validation
 

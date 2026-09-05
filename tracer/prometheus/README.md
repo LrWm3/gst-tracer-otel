@@ -204,11 +204,13 @@ Controlled pipelines confirmed these boundaries:
 
 An earlier exploratory microbenchmark on an integrated memory nvidia device measured 2.857 s versus 3.043 s,
 but used different element-selection configurations. It does not establish
-matched per-edge overhead or a CPU-percentage estimate. Ownership and timing
-fixes made during review also require a new benchmark. Qualify the revised build
-with identical selected elements, sampling, queue topology, and scrape frequency,
-comparing tracer-off, baseline, and revised builds on the actual two-stream graph.
-No production overhead claim is made for the revised build.
+matched per-edge overhead or a CPU-percentage estimate. Subsequent
+[matched benchmarks on an integrated memory nvidia device](BENCHMARK.md) compare tracer-off, original,
+pre-review and reviewed builds with identical instrumentation settings and
+actual scraping. Short processor runs showed no material throughput penalty;
+the buffer-only loop did reveal additional instrumentation cost. The report
+separates build versions, startup fixes and an off-run shutdown failure.
+Long-soak and rare-tail qualification remain outstanding.
 
 See [Rust review and cleanup plan](REVIEW.md) for fixes and remaining limitations.
 
