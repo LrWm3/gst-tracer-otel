@@ -7,6 +7,11 @@ This is not a review of the processor's Rust/CUDA implementation.
 
 ## Fixes made
 
+- **DeepStream construction crash (found during follow-up benchmarking):**
+  the element-new hook called `element.factory()` before construction finished.
+  On an integrated memory nvidia device this crashed in `g_object_ref_sink` while reading the factory. Queue
+  identification now checks the already-valid GType instead. Both pre-review
+  and reviewed implementations required this guard for processor benchmarking.
 - **Process abort with queue2:** reproduced with `fakesrc ! queue2 ! fakesink`.
   `queue2` exposes queue levels but not `queue`'s overrun/underrun signals.
   Signal existence is now checked before connecting. Added an EOS regression.
@@ -104,10 +109,11 @@ into the correctness fixes.
 - `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
 - `cargo build -p gst-prometheus-tracer`, then `cargo test -- --test-threads=1`
   with `GST_PLUGIN_PATH` pointing at this worktree's `target/debug`: passed,
-  eight unit tests and eight integration tests. The workspace default member
+  nine unit tests and eight integration tests. The workspace default member
   is the Prometheus tracer; this is not a claim that every workspace test ran.
 - `cargo audit` and `cargo +nightly udeps ...`: attempted but unavailable;
   the corresponding Cargo extensions are not installed.
 
 Tests used Rust 1.89.0 through the repository's mise executable. Changes remain
-local to this tracer branch; no deployment to an integrated memory nvidia device was performed during review.
+local to this tracer branch. Follow-up benchmarks stage isolated release plugins
+on an integrated memory nvidia device; they do not replace its installed tracer.

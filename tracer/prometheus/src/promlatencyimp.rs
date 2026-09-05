@@ -844,10 +844,9 @@ impl PromLatencyTracerImp {
     }
 
     fn is_queue(element: &gst::Element) -> bool {
-        element
-            .factory()
-            .map(|factory| matches!(factory.name().as_str(), "queue" | "queue2"))
-            .unwrap_or(false)
+        // element-new runs during construction. DeepStream elements may not
+        // have a usable factory pointer yet; their GType is already valid.
+        matches!(element.type_().name(), "GstQueue" | "GstQueue2")
             && element.find_property("current-level-buffers").is_some()
             && element.find_property("current-level-bytes").is_some()
             && element.find_property("current-level-time").is_some()
@@ -996,6 +995,23 @@ mod tests {
     use gst::prelude::*;
     use gstreamer as gst;
     use std::sync::Arc;
+
+    #[test]
+    fn given_queue_types_when_detecting_queues_then_instance_names_do_not_matter() {
+        gst::init().unwrap();
+        for factory in ["queue", "queue2"] {
+            let element = gst::ElementFactory::make(factory)
+                .name("not_a_queue_name")
+                .build()
+                .unwrap();
+            assert!(PromLatencyTracerImp::is_queue(&element));
+        }
+        let element = gst::ElementFactory::make("identity")
+            .name("queue")
+            .build()
+            .unwrap();
+        assert!(!PromLatencyTracerImp::is_queue(&element));
+    }
 
     #[test]
     fn given_inflight_span_when_cache_cleared_then_snapshot_survives_until_post() {
