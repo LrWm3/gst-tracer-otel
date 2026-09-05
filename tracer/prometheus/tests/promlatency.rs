@@ -96,7 +96,9 @@ mod tests {
             "gst_element_latency_last_gauge",
             "gst_element_latency_sum_count",
             "gst_element_latency_count_count",
-            "gst_element_latency_seconds_histogram",
+            "gst_element_sync_wall_seconds",
+            "gst_element_sync_cpu_seconds",
+            "gst_element_sync_blocked_seconds",
         ];
         for metric in metric_asserts {
             assert!(
@@ -191,7 +193,9 @@ mod tests {
             "gst_element_latency_last_gauge",
             "gst_element_latency_sum_count",
             "gst_element_latency_count_count",
-            "gst_element_latency_seconds_histogram",
+            "gst_element_sync_wall_seconds",
+            "gst_element_sync_cpu_seconds",
+            "gst_element_sync_blocked_seconds",
         ];
         for metric in metric_asserts {
             assert!(
@@ -284,13 +288,11 @@ mod tests {
 
         let g_src = gst::GhostPad::builder(gstreamer::PadDirection::Src)
             .with_target(&id3.static_pad("src").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for src")
             .build();
         g_src.set_active(true).unwrap();
         let g_sink = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
             .with_target(&id1.static_pad("sink").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for sink")
             .build();
         g_sink.set_active(true).unwrap();
@@ -369,8 +371,8 @@ mod tests {
             .build()
             .unwrap();
 
-        pipeline.add_many(&[&src, &tee, &sink1, &sink2]).unwrap();
-        gst::Element::link_many(&[&src, &tee]).unwrap();
+        pipeline.add_many([&src, &tee, &sink1, &sink2]).unwrap();
+        gst::Element::link_many([&src, &tee]).unwrap();
 
         // --- Bin 1 ---
         let bin1 = gst::Bin::with_name("bin1");
@@ -388,17 +390,15 @@ mod tests {
             .build()
             .unwrap();
 
-        bin1.add_many(&[&id1, &id2, &id3]).unwrap();
-        gst::Element::link_many(&[&id1, &id2, &id3]).unwrap();
+        bin1.add_many([&id1, &id2, &id3]).unwrap();
+        gst::Element::link_many([&id1, &id2, &id3]).unwrap();
 
         let g_src1 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
             .with_target(&id3.static_pad("src").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for src")
             .build();
         let g_sink1 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
             .with_target(&id1.static_pad("sink").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for sink")
             .build();
         g_src1.set_active(true).unwrap();
@@ -422,17 +422,15 @@ mod tests {
             .build()
             .unwrap();
 
-        bin2.add_many(&[&id1_b, &id2_b, &id3_b]).unwrap();
-        gst::Element::link_many(&[&id1_b, &id2_b, &id3_b]).unwrap();
+        bin2.add_many([&id1_b, &id2_b, &id3_b]).unwrap();
+        gst::Element::link_many([&id1_b, &id2_b, &id3_b]).unwrap();
 
         let g_src2 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
             .with_target(&id3_b.static_pad("src").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for src")
             .build();
         let g_sink2 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
             .with_target(&id1_b.static_pad("sink").unwrap())
-            .ok()
             .expect("Failed to create GhostPad for sink")
             .build();
         g_src2.set_active(true).unwrap();
@@ -441,7 +439,7 @@ mod tests {
         bin2.add_pad(&g_sink2).unwrap();
 
         // Add both bins to the pipeline
-        pipeline.add_many(&[&bin1, &bin2]).unwrap();
+        pipeline.add_many([&bin1, &bin2]).unwrap();
 
         // --- Tee branches ---
         let q1 = gst::ElementFactory::make("queue")
@@ -452,7 +450,7 @@ mod tests {
             .name("queue2")
             .build()
             .unwrap();
-        pipeline.add_many(&[&q1, &q2]).unwrap();
+        pipeline.add_many([&q1, &q2]).unwrap();
 
         // Connect tee → queue → bin → sink
         // link one at a time
@@ -501,6 +499,79 @@ mod tests {
         assert!(metrics.contains("id1"));
         assert!(metrics.contains("id2"));
         assert!(metrics.contains("id3"));
+    }
+
+    #[test]
+    fn given_sleeping_element_when_sampled_then_blocked_time_dominates_cpu_time() {
+        setup_test();
+        let pipeline = gst::parse::launch(
+            "fakesrc num-buffers=200 ! identity name=blocking_sleep sleep-time=10000 ! fakesink",
+        )
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        wait_for_eos(&pipeline);
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        let metrics = reqwest::blocking::get(format!("http://localhost:{PROM_PORT}"))
+            .unwrap()
+            .text()
+            .unwrap();
+        let wall = metric_value(
+            &metrics,
+            "gst_element_sync_wall_seconds_sum{element=\"blocking_sleep\"",
+        )
+        .unwrap();
+        let cpu = metric_value(
+            &metrics,
+            "gst_element_sync_cpu_seconds_sum{element=\"blocking_sleep\"",
+        )
+        .unwrap();
+        let blocked = metric_value(
+            &metrics,
+            "gst_element_sync_blocked_seconds_sum{element=\"blocking_sleep\"",
+        )
+        .unwrap();
+
+        assert!(wall > 0.01, "sampled wall time was {wall}");
+        assert!(blocked > cpu * 4.0, "blocked={blocked}, cpu={cpu}");
+        assert!(blocked <= wall);
+    }
+
+    #[test]
+    fn given_buffered_queue_when_sampled_then_current_depth_is_exported() {
+        setup_test();
+        let pipeline = gst::parse::launch(
+            "fakesrc num-buffers=200 ! queue name=observable_queue max-size-buffers=200 max-size-bytes=0 max-size-time=0 ! identity sleep-time=10000 ! fakesink",
+        )
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        thread::sleep(Duration::from_millis(300));
+
+        let metrics = reqwest::blocking::get(format!("http://localhost:{PROM_PORT}"))
+            .unwrap()
+            .text()
+            .unwrap();
+        let depth = metric_value(
+            &metrics,
+            "gst_queue_current_level_buffers{element=\"observable_queue\"",
+        )
+        .unwrap();
+        assert!(depth > 0.0, "sampled queue depth was {depth}");
+        let queue_metric = metrics
+            .lines()
+            .find(|line| {
+                line.starts_with("gst_queue_current_level_buffers{element=\"observable_queue\"")
+            })
+            .unwrap();
+        assert!(queue_metric.contains("path=\"/GstPipeline:"));
+        assert!(queue_metric.contains("/GstQueue:observable_queue\""));
+
+        wait_for_eos(&pipeline);
+        pipeline.set_state(gst::State::Null).unwrap();
     }
 
     #[test]
@@ -574,6 +645,30 @@ mod tests {
         pipeline_el
             .downcast::<gst::Pipeline>()
             .expect("Failed to downcast to gst::Pipeline")
+    }
+
+    fn metric_value(metrics: &str, prefix: &str) -> Option<f64> {
+        metrics
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<f64>().ok())
+    }
+
+    fn wait_for_eos(pipeline: &gst::Pipeline) {
+        let bus = pipeline.bus().unwrap();
+        for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            match msg.view() {
+                gst::MessageView::Eos(..) => break,
+                gst::MessageView::Error(err) => panic!(
+                    "Error from {:?}: {} ({:?})",
+                    err.src().map(|s| s.path_string()),
+                    err.error(),
+                    err.debug()
+                ),
+                _ => (),
+            }
+        }
     }
 
     fn setup_test() {

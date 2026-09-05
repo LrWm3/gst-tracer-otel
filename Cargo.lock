@@ -1040,6 +1040,7 @@ dependencies = [
  "gobject-sys",
  "gstreamer",
  "gstreamer-sys",
+ "libc",
  "prometheus",
  "reqwest",
  "tiny_http",

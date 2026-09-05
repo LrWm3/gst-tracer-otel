@@ -1,6 +1,13 @@
 # Prometheus Tracer Plugin for GStreamer
 
-This folder contains `prom-latency`, a GStreamer tracer plugin that captures per-element pad buffer processing latency and exports these metrics in a Prometheus format.
+This folder contains `prom-latency`, a GStreamer tracer plugin that exports
+synchronous push cost and queue pressure in Prometheus format.
+
+The synchronous metrics time `gst_pad_push()` from an upstream source pad until
+the downstream call returns. Direct child pushes are subtracted, including
+multiple sequential tee branches. This is useful for separating CPU work from
+blocking/backpressure, but it is not queue residence time, GPU completion time,
+or end-to-end source latency.
 
 ## Building
 
@@ -71,10 +78,120 @@ Histogram observation can be sampled using:
 export GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE=1000
 ```
 
-- `1` (default): observe every latency in the histogram.
-- `N > 1`: observe every `N`th latency in the histogram.
-- This sampling only affects histogram buckets/sum/count for `gst_element_latency_seconds_histogram`.
+- `16` (default): pseudo-randomly observe approximately one event in 16.
+- `1`: observe every event.
+- `N > 1`: observe approximately one event in `N`, without periodic batch aliasing.
+- This sampling affects `gst_element_sync_wall_seconds`,
+  `gst_element_sync_cpu_seconds`, and `gst_element_sync_blocked_seconds`.
 - `gst_element_latency_last_gauge`, `gst_element_latency_sum_count`, and `gst_element_latency_count_count` are always recorded for every latency event.
+
+Buckets begin at one microsecond so short decoder, inference, and tracker stages
+do not collapse into one millisecond bucket.
+
+### Element Selection
+
+Metric updates dominate tracer overhead in buffer-heavy pipelines. Restrict
+synchronous metrics to useful downstream element names with comma-separated
+exact names or simple `*` wildcards:
+
+```bash
+export GST_PROM_LATENCY_INCLUDE='bench-decoder,*infer*,*tracker,*publish'
+```
+
+Unselected child calls are still subtracted from a selected parent. If no
+selected parent is active, they skip stack and Prometheus work.
+
+### Live Buffer Age
+
+For live pipelines whose PTS shares pipeline running-time semantics, enable a
+sampled age measurement:
+
+```bash
+export GST_PROM_LATENCY_PTS_AGE=true
+```
+
+`gst_buffer_pts_age_seconds` measures current pipeline running-time minus
+segment-adjusted buffer PTS at each selected element input. Keep this disabled
+for unpaced file benchmarks and sources with unrelated timestamp domains.
+
+### Queue Sampling
+
+`queue` and `queue2` levels are polled by one background thread. No per-buffer
+queue probe is added. The default interval is 100 ms:
+
+```bash
+export GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS=100
+```
+
+The tracer exports current buffer, byte, and media-time levels plus overrun and
+underrun counters. Gauges answer whether backlog exists. They do not provide a
+per-buffer queue-residence distribution.
+
+### Metric Semantics
+
+| Metric | Meaning |
+| --- | --- |
+| `gst_element_sync_wall_seconds` | Exclusive synchronous wall time |
+| `gst_element_sync_cpu_seconds` | Exclusive streaming-thread CPU time |
+| `gst_element_sync_blocked_seconds` | `wall - CPU`; wait, scheduling, or backpressure |
+| `gst_buffer_pts_age_seconds` | Opt-in sampled live buffer age at selected inputs |
+| `gst_queue_current_level_*` | Sampled queue backlog |
+| `gst_queue_overruns_total` | Queue full signals |
+| `gst_queue_underruns_total` | Queue empty signals |
+
+Asynchronous CUDA/VIC/TensorRT completion requires native metrics at submission
+and completion points. Generic pad hooks cannot infer that interval correctly.
+
+### PromQL Examples
+
+Sampled p95 synchronous wall time:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, element) (rate(gst_element_sync_wall_seconds_bucket[5m]))
+)
+```
+
+Legacy unsampled average synchronous wall time, converted from nanoseconds to
+seconds:
+
+```promql
+sum by (element) (rate(gst_element_latency_sum_count[5m]))
+/
+sum by (element) (rate(gst_element_latency_count_count[5m]))
+/
+1e9
+```
+
+Do not graph `rate(gst_element_latency_sum_count[5m])` alone as latency. That
+value is accumulated nanoseconds per second. Likewise,
+`rate(gst_element_latency_count_count[5m])` is event throughput, not latency.
+
+Maximum observed queue depth over five minutes:
+
+```promql
+max_over_time(gst_queue_current_level_buffers[5m])
+```
+
+### Validation
+
+Controlled pipelines confirmed these boundaries:
+
+- `identity sleep-time=10000` reports about 10 ms wall and blocked time, with
+  much lower thread CPU time.
+- A one-buffer queue feeding a slow consumer reports admission blocking.
+- A deep queue feeding the same consumer reports low synchronous push time but
+  rising `gst_queue_current_level_buffers`, proving push time is not residence
+  time.
+- Multiple sequential tee branches are accumulated and subtracted from their
+  parent instead of retaining only the final child span.
+
+A release-build microbenchmark on an integrated memory nvidia device pushed one million buffers through two
+traced edges. Warm median runtime moved from 2.857 s on the previous tracer to
+3.043 s here: about 0.093 microseconds extra per edge event. At 120 frames/s and
+30 traced edges, that delta projects to about 0.034% of one CPU core. This is a
+synthetic CPU-overhead estimate, not a pipeline-throughput qualification.
 
 ### Example Output
 
@@ -91,12 +208,14 @@ gstreamer_element_latency_last_gauge{element="identity0",sink_pad="identity0.sin
 # TYPE gstreamer_element_latency_sum_count counter
 gstreamer_element_latency_sum_count{element="fakesink0",sink_pad="fakesink0.sink",src_pad="identity0.src"} 3036567246
 gstreamer_element_latency_sum_count{element="identity0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7819315483
-# HELP gst_element_latency_seconds_histogram Latency histogram in seconds per element
-# TYPE gst_element_latency_seconds_histogram histogram
-gst_element_latency_seconds_histogram_bucket{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src",le="0.01"} 591573
-gst_element_latency_seconds_histogram_bucket{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src",le="0.025"} 591573
-gst_element_latency_seconds_histogram_sum{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 7.819315483
-gst_element_latency_seconds_histogram_count{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 591573
+# HELP gst_element_sync_wall_seconds Sampled exclusive synchronous gst_pad_push wall time in seconds
+# TYPE gst_element_sync_wall_seconds histogram
+gst_element_sync_wall_seconds_bucket{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src",le="0.0001"} 36973
+gst_element_sync_wall_seconds_sum{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 0.488707
+gst_element_sync_wall_seconds_count{element="identity0",path="/pipeline0",sink_pad="identity0.sink",src_pad="fakesrc0.src"} 36973
+# HELP gst_queue_current_level_buffers Current number of buffers held by a GStreamer queue
+# TYPE gst_queue_current_level_buffers gauge
+gst_queue_current_level_buffers{element="infer_queue",path="/pipeline0/infer_queue"} 2
 ```
 
 ## Collecting Metrics via the `metrics` Signal

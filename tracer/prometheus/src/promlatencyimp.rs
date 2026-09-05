@@ -1,9 +1,13 @@
 use std::{
-    cell::Cell,
+    cell::RefCell,
     env,
     os::raw::c_void,
-    sync::{LazyLock, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        LazyLock, Mutex, OnceLock,
+    },
     thread,
+    time::Duration,
 };
 
 use glib::{
@@ -14,16 +18,18 @@ use glib::{
 use gst::{ffi, prelude::*};
 use gstreamer as gst;
 use prometheus::{
-    gather, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec, Encoder,
-    Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
+    gather, register_gauge_vec, register_histogram_vec, register_int_counter_vec,
+    register_int_gauge_vec, Encoder, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter,
+    IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
 };
 use tiny_http::{Header, Response, Server};
 
-// Define Prometheus metrics, all in nanoseconds
+// Legacy names remain for dashboard compatibility. Values are exclusive
+// synchronous gst_pad_push wall time in nanoseconds.
 static LATENCY_LAST: LazyLock<IntGaugeVec> = LazyLock::new(|| {
     register_int_gauge_vec!(
         "gst_element_latency_last_gauge",
-        "Last latency in nanoseconds per element",
+        "Last exclusive synchronous gst_pad_push wall time in nanoseconds",
         &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
@@ -31,7 +37,7 @@ static LATENCY_LAST: LazyLock<IntGaugeVec> = LazyLock::new(|| {
 static LATENCY_SUM: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "gst_element_latency_sum_count",
-        "Sum of latencies in nanoseconds per element",
+        "Sum of exclusive synchronous gst_pad_push wall time in nanoseconds",
         &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
@@ -39,20 +45,44 @@ static LATENCY_SUM: LazyLock<IntCounterVec> = LazyLock::new(|| {
 static LATENCY_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "gst_element_latency_count_count",
-        "Count of latency measurements per element",
+        "Count of synchronous gst_pad_push wall-time measurements",
         &["element", "src_pad", "sink_pad", "path"]
     )
     .unwrap()
 });
-static LATENCY_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
+static SYNC_WALL_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
     register_histogram_vec!(
-        "gst_element_latency_seconds_histogram",
-        "Latency histogram in seconds per element",
+        "gst_element_sync_wall_seconds",
+        "Sampled exclusive synchronous gst_pad_push wall time in seconds",
         &["element", "src_pad", "sink_pad", "path"],
-        vec![
-            0.00001, 0.0001, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75,
-            1.0, 2.5, 5.0, 10.0, 20.0, 60.0, 240.0,
-        ]
+        latency_buckets()
+    )
+    .unwrap()
+});
+static SYNC_CPU_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_sync_cpu_seconds",
+        "Sampled exclusive thread CPU time spent inside synchronous gst_pad_push calls",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
+    )
+    .unwrap()
+});
+static SYNC_BLOCKED_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_sync_blocked_seconds",
+        "Sampled exclusive synchronous wall time not accounted for by thread CPU time",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
+    )
+    .unwrap()
+});
+static BUFFER_PTS_AGE_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_buffer_pts_age_seconds",
+        "Sampled pipeline running-time minus buffer PTS running-time at an element input",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
     )
     .unwrap()
 });
@@ -61,13 +91,140 @@ static HISTOGRAM_SAMPLE_RATE: LazyLock<u64> = LazyLock::new(|| {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(1)
+        .unwrap_or(16)
+});
+static ELEMENT_INCLUDE_PATTERNS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    env::var("GST_PROM_LATENCY_INCLUDE")
+        .unwrap_or_else(|_| "*".to_string())
+        .split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect()
+});
+static PTS_AGE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    env::var("GST_PROM_LATENCY_PTS_AGE")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
 });
 
 thread_local! {
-    /// Experimental approach to seeing if we set the span latency if
-    /// we can use it to measure cross element latency.
-    pub static SPAN_LATENCY: Cell<u64> = const { Cell::new(0) };
+    /// Active synchronous push calls on this streaming thread. Child time gets
+    /// accumulated into the parent, including multiple sequential tee branches.
+    static SPAN_STACK: RefCell<Vec<SpanFrame>> = const { RefCell::new(Vec::new()) };
+}
+
+static QUEUE_LEVEL_BUFFERS: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    register_int_gauge_vec!(
+        "gst_queue_current_level_buffers",
+        "Current number of buffers held by a GStreamer queue",
+        &["element", "path"]
+    )
+    .unwrap()
+});
+static QUEUE_LEVEL_BYTES: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    register_int_gauge_vec!(
+        "gst_queue_current_level_bytes",
+        "Current bytes held by a GStreamer queue",
+        &["element", "path"]
+    )
+    .unwrap()
+});
+static QUEUE_LEVEL_TIME: LazyLock<GaugeVec> = LazyLock::new(|| {
+    register_gauge_vec!(
+        "gst_queue_current_level_time_seconds",
+        "Current media duration held by a GStreamer queue in seconds",
+        &["element", "path"]
+    )
+    .unwrap()
+});
+static QUEUE_OVERRUNS: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_queue_overruns_total",
+        "Number of GStreamer queue overrun signals",
+        &["element", "path"]
+    )
+    .unwrap()
+});
+static QUEUE_UNDERRUNS: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_queue_underruns_total",
+        "Number of GStreamer queue underrun signals",
+        &["element", "path"]
+    )
+    .unwrap()
+});
+static QUEUE_REGISTRATIONS: LazyLock<Mutex<Vec<QueueRegistration>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+static QUEUE_SAMPLER_ONCE: OnceLock<()> = OnceLock::new();
+static QUEUE_SAMPLE_INTERVAL_MS: LazyLock<u64> = LazyLock::new(|| {
+    env::var("GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(100)
+});
+
+fn latency_buckets() -> Vec<f64> {
+    vec![
+        0.000_001,
+        0.000_002_5,
+        0.000_005,
+        0.000_01,
+        0.000_025,
+        0.000_05,
+        0.000_1,
+        0.000_25,
+        0.000_5,
+        0.001,
+        0.0025,
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.075,
+        0.1,
+        0.25,
+        0.5,
+        0.75,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        15.0,
+        20.0,
+        30.0,
+        60.0,
+        240.0,
+    ]
+}
+
+#[derive(Debug)]
+struct SpanFrame {
+    pad: *mut gst::ffi::GstPad,
+    start_wall_ns: u64,
+    start_cpu_ns: Option<u64>,
+    child_wall_ns: u64,
+    child_cpu_ns: u64,
+    sampled: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompletedSpan {
+    exclusive_wall_ns: u64,
+    exclusive_cpu_ns: u64,
+    sampled: bool,
+}
+
+struct QueueRegistration {
+    element: glib::WeakRef<gst::Element>,
+    metrics: Option<QueueMetrics>,
+}
+
+struct QueueMetrics {
+    level_buffers: IntGauge,
+    level_bytes: IntGauge,
+    level_time: Gauge,
 }
 
 static PAD_CACHE_QUARK: LazyLock<glib::ffi::GQuark> =
@@ -90,19 +247,22 @@ const PAD_SKIP_SENTINEL: *mut c_void = std::ptr::null_mut();
 
 /// Data structure to hold cached pad information used for latency measurement.
 struct PadCacheData {
-    /// The verdict tag indicating whether to skip or measure latency.
-    ts: u64, // timestamp of the last push/pull
-
     /// Pointer to the peer pad, used during unlink to verify the pad pair.
     peer: *mut c_void,
 
+    metrics: Option<PadMetrics>,
+    sample_sequence: AtomicU64,
+}
+
+struct PadMetrics {
     last_gauge: IntGauge,
     sum_counter: IntCounter,
-    // TODO - at the moment we don't differentiate between buffers into the element vs buffers out, will require
-    //          a change to what we are doing here to make that work.
     count_counter: IntCounter,
-    histogram: Histogram,
-    histogram_observe_counter: u64,
+    wall_histogram: Histogram,
+    cpu_histogram: Histogram,
+    blocked_histogram: Histogram,
+    pts_age_histogram: Histogram,
+    sink_element: glib::WeakRef<gst::Element>,
 }
 
 #[derive(Default)]
@@ -116,9 +276,9 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
-            _buf_ptr: *mut gst::ffi::GstBuffer,
+            buf_ptr: *mut gst::ffi::GstBuffer,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts(ts, pad);
+            PromLatencyTracerImp::do_send_latency_ts(ts, pad, buf_ptr);
         }
 
         unsafe extern "C" fn do_push_buffer_post(
@@ -135,7 +295,7 @@ impl PromLatencyTracerImp {
             pad: *mut gst::ffi::GstPad,
             _list_ptr: *mut gst::ffi::GstBufferList,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts(ts, pad);
+            PromLatencyTracerImp::do_send_latency_ts(ts, pad, std::ptr::null_mut());
         }
 
         unsafe extern "C" fn do_push_list_post(
@@ -303,6 +463,11 @@ impl PromLatencyTracerImp {
     pub fn element_new(&self, _ts: u64, element: &gst::Element, port: u16) {
         if element.is::<gst::Pipeline>() && port > 0 {
             METRICS_SERVER_ONCE.get_or_init(|| Self::maybe_start_metrics_server(port));
+        }
+
+        if Self::is_queue(element) {
+            Self::register_queue(element);
+            QUEUE_SAMPLER_ONCE.get_or_init(Self::start_queue_sampler);
         }
     }
 
@@ -480,21 +645,27 @@ impl PromLatencyTracerImp {
             .parent()
             .map(|p| p.path_string().to_string())
             .unwrap_or("none".to_string());
-        let labels = [&el_name, &src_pad_name, &sink_pad_name, &ancestor_path];
-        let last_gauge = LATENCY_LAST.with_label_values(&labels);
-        let sum_counter = LATENCY_SUM.with_label_values(&labels);
-        let count_counter = LATENCY_COUNT.with_label_values(&labels);
-        let histogram = LATENCY_HISTOGRAM.with_label_values(&labels);
+        let metrics = Self::element_selected(&el_name).then(|| {
+            let labels = [&el_name, &src_pad_name, &sink_pad_name, &ancestor_path];
+            let sink_element = glib::WeakRef::new();
+            sink_element.set(Some(&sink_parent));
+            PadMetrics {
+                last_gauge: LATENCY_LAST.with_label_values(&labels),
+                sum_counter: LATENCY_SUM.with_label_values(&labels),
+                count_counter: LATENCY_COUNT.with_label_values(&labels),
+                wall_histogram: SYNC_WALL_HISTOGRAM.with_label_values(&labels),
+                cpu_histogram: SYNC_CPU_HISTOGRAM.with_label_values(&labels),
+                blocked_histogram: SYNC_BLOCKED_HISTOGRAM.with_label_values(&labels),
+                pts_age_histogram: BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels),
+                sink_element,
+            }
+        });
 
         // Create cache
         Box::into_raw(Box::new(PadCacheData {
-            ts: 0,
             peer: sink_pad as *mut c_void,
-            last_gauge,
-            sum_counter,
-            count_counter,
-            histogram,
-            histogram_observe_counter: 0,
+            metrics,
+            sample_sequence: AtomicU64::new(0),
         }))
     }
 
@@ -516,7 +687,11 @@ impl PromLatencyTracerImp {
             .to_string()
     }
 
-    unsafe fn do_send_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
+    unsafe fn do_send_latency_ts(
+        ts: u64,
+        src_pad: *mut gst::ffi::GstPad,
+        buffer: *mut gst::ffi::GstBuffer,
+    ) {
         let pad_cache = glib::gobject_ffi::g_object_get_qdata(
             src_pad as *mut gobject_sys::GObject,
             *PAD_CACHE_QUARK,
@@ -525,14 +700,39 @@ impl PromLatencyTracerImp {
             return;
         }
 
-        // If we have a valid cache, we can safely convert the pointer to a Box.
-        let pad_cache: &mut PadCacheData = &mut *pad_cache;
-
-        // Set the ts
-        pad_cache.ts = ts;
-
-        // Zero out the span latency
-        SPAN_LATENCY.with(|v| v.set(0));
+        let pad_cache = &*pad_cache;
+        SPAN_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            let selected = pad_cache.metrics.is_some();
+            if !selected && stack.is_empty() {
+                return;
+            }
+            let sampled = if selected {
+                let sequence = pad_cache.sample_sequence.fetch_add(1, Ordering::Relaxed);
+                Self::sample_sequence(sequence, src_pad as usize as u64)
+            } else {
+                false
+            };
+            if sampled && *PTS_AGE_ENABLED && !buffer.is_null() {
+                if let (Some(metrics), Some(age)) = (
+                    &pad_cache.metrics,
+                    Self::buffer_pts_age(src_pad, buffer, &pad_cache.metrics),
+                ) {
+                    metrics.pts_age_histogram.observe(age);
+                }
+            }
+            // A sampled parent needs child CPU spans even when that child is not
+            // itself selected, otherwise child work gets charged to the parent.
+            let measure_cpu = sampled || stack.iter().any(|frame| frame.start_cpu_ns.is_some());
+            stack.push(SpanFrame {
+                pad: src_pad,
+                start_wall_ns: ts,
+                start_cpu_ns: measure_cpu.then(Self::thread_cpu_time_ns).flatten(),
+                child_wall_ns: 0,
+                child_cpu_ns: 0,
+                sampled,
+            });
+        });
     }
 
     unsafe fn do_receive_and_record_latency_ts(ts: u64, src_pad: *mut gst::ffi::GstPad) {
@@ -544,46 +744,245 @@ impl PromLatencyTracerImp {
             return;
         }
 
-        // If we have a valid cache, we can safely convert the pointer to a Box.
-        let pad_cache: &mut PadCacheData = &mut *pad_cache;
-
-        // If the ts is 0, we skip, as we have not had a valid push yet.
-        if pad_cache.ts == 0 {
+        let pad_cache = &*pad_cache;
+        let frame_exists = SPAN_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .is_some_and(|frame| frame.pad == src_pad)
+        });
+        if !frame_exists {
             return;
         }
-
-        // Calculate the difference
-        let span_diff = ts.saturating_sub(pad_cache.ts);
-
-        // Get cached latency if needed
-        let ts_latency = SPAN_LATENCY.with(|v| v.get());
-        // gst::info!(CAT, "Current span latency: {}", ts_latency);
-
-        // Calculate the per element difference
-        let el_diff = Self::compute_element_latency(span_diff, ts_latency);
+        let measure_cpu = SPAN_STACK.with(|stack| {
+            stack
+                .borrow()
+                .last()
+                .is_some_and(|frame| frame.start_cpu_ns.is_some())
+        });
+        let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
+        let completed = SPAN_STACK
+            .with(|stack| Self::complete_span(&mut stack.borrow_mut(), src_pad, ts, cpu_end_ns));
+        let Some(completed) = completed else {
+            return;
+        };
+        let Some(metrics) = &pad_cache.metrics else {
+            return;
+        };
+        let blocked_ns = completed
+            .exclusive_wall_ns
+            .saturating_sub(completed.exclusive_cpu_ns);
 
         // Log the latency
-        pad_cache
+        metrics
             .last_gauge
-            .set(el_diff.try_into().unwrap_or(i64::MAX));
-        pad_cache.sum_counter.inc_by(el_diff);
-        pad_cache.count_counter.inc();
-        pad_cache.histogram_observe_counter = pad_cache.histogram_observe_counter.wrapping_add(1);
-        if pad_cache
-            .histogram_observe_counter
-            .is_multiple_of(*HISTOGRAM_SAMPLE_RATE)
-        {
-            pad_cache
-                .histogram
-                .observe(el_diff as f64 / 1_000_000_000f64);
+            .set(completed.exclusive_wall_ns.try_into().unwrap_or(i64::MAX));
+        metrics.sum_counter.inc_by(completed.exclusive_wall_ns);
+        metrics.count_counter.inc();
+        if completed.sampled {
+            metrics
+                .wall_histogram
+                .observe(completed.exclusive_wall_ns as f64 / 1_000_000_000f64);
+            metrics
+                .cpu_histogram
+                .observe(completed.exclusive_cpu_ns as f64 / 1_000_000_000f64);
+            metrics
+                .blocked_histogram
+                .observe(blocked_ns as f64 / 1_000_000_000f64);
+        }
+    }
+
+    fn complete_span(
+        stack: &mut Vec<SpanFrame>,
+        pad: *mut gst::ffi::GstPad,
+        wall_end_ns: u64,
+        cpu_end_ns: Option<u64>,
+    ) -> Option<CompletedSpan> {
+        let frame = stack.pop()?;
+        if frame.pad != pad {
+            gst::warning!(
+                CAT,
+                "unbalanced push hooks: expected {:?}, received {:?}",
+                frame.pad,
+                pad
+            );
+            stack.clear();
+            return None;
         }
 
-        // Reset the timestamp for the next push
-        pad_cache.ts = 0;
+        let raw_wall_ns = wall_end_ns.saturating_sub(frame.start_wall_ns);
+        let raw_cpu_ns = frame
+            .start_cpu_ns
+            .and_then(|start| cpu_end_ns.map(|end| end.saturating_sub(start)))
+            .unwrap_or(0);
+        if let Some(parent) = stack.last_mut() {
+            parent.child_wall_ns = parent.child_wall_ns.saturating_add(raw_wall_ns);
+            parent.child_cpu_ns = parent.child_cpu_ns.saturating_add(raw_cpu_ns);
+        }
 
-        // Set the SPAN_LATENCY to span_diff so upstream elements know how much
-        // latency to subtract from their own latency.
-        SPAN_LATENCY.with(|v| v.set(span_diff));
+        Some(CompletedSpan {
+            exclusive_wall_ns: Self::compute_element_latency(raw_wall_ns, frame.child_wall_ns),
+            exclusive_cpu_ns: Self::compute_element_latency(raw_cpu_ns, frame.child_cpu_ns),
+            sampled: frame.sampled,
+        })
+    }
+
+    fn sample_sequence(sequence: u64, pad: u64) -> bool {
+        if *HISTOGRAM_SAMPLE_RATE == 1 {
+            return true;
+        }
+        // SplitMix64 prevents fixed batch/stream periods aliasing with sampling.
+        let mut value = sequence ^ pad;
+        value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        (value ^ (value >> 31)).is_multiple_of(*HISTOGRAM_SAMPLE_RATE)
+    }
+
+    fn element_selected(element: &str) -> bool {
+        ELEMENT_INCLUDE_PATTERNS
+            .iter()
+            .any(|pattern| Self::glob_matches(pattern, element))
+    }
+
+    fn glob_matches(pattern: &str, value: &str) -> bool {
+        if pattern == "*" {
+            return true;
+        }
+        let starts_with_wildcard = pattern.starts_with('*');
+        let ends_with_wildcard = pattern.ends_with('*');
+        let needle = pattern.trim_matches('*');
+        match (starts_with_wildcard, ends_with_wildcard) {
+            (true, true) => value.contains(needle),
+            (true, false) => value.ends_with(needle),
+            (false, true) => value.starts_with(needle),
+            (false, false) => value == needle,
+        }
+    }
+
+    fn thread_cpu_time_ns() -> Option<u64> {
+        let mut value = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+        (result == 0).then(|| {
+            (value.tv_sec as u64)
+                .saturating_mul(1_000_000_000)
+                .saturating_add(value.tv_nsec as u64)
+        })
+    }
+
+    unsafe fn buffer_pts_age(
+        src_pad: *mut gst::ffi::GstPad,
+        buffer: *mut gst::ffi::GstBuffer,
+        metrics: &Option<PadMetrics>,
+    ) -> Option<f64> {
+        let metrics = metrics.as_ref()?;
+        let buffer = gst::Buffer::from_glib_none(buffer);
+        let pts = buffer.pts()?;
+        let pad = gst::Pad::from_glib_none(src_pad);
+        let segment_event = pad.sticky_event::<gst::event::Segment>(0)?;
+        let segment = segment_event.segment().downcast_ref::<gst::ClockTime>()?;
+        let buffer_running_time = segment.to_running_time(pts)?;
+        let now = metrics.sink_element.upgrade()?.current_running_time()?;
+        Some(now.saturating_sub(buffer_running_time).nseconds() as f64 / 1_000_000_000f64)
+    }
+
+    fn is_queue(element: &gst::Element) -> bool {
+        element
+            .factory()
+            .map(|factory| matches!(factory.name().as_str(), "queue" | "queue2"))
+            .unwrap_or(false)
+            && element.find_property("current-level-buffers").is_some()
+            && element.find_property("current-level-bytes").is_some()
+            && element.find_property("current-level-time").is_some()
+    }
+
+    fn register_queue(element: &gst::Element) {
+        let overrun_element = glib::WeakRef::new();
+        overrun_element.set(Some(element));
+        element.connect("overrun", false, move |_| {
+            if let Some(element) = overrun_element.upgrade() {
+                let (element_name, path) = Self::queue_labels(&element);
+                QUEUE_OVERRUNS
+                    .with_label_values(&[&element_name, &path])
+                    .inc();
+            }
+            None
+        });
+
+        let underrun_element = glib::WeakRef::new();
+        underrun_element.set(Some(element));
+        element.connect("underrun", false, move |_| {
+            if let Some(element) = underrun_element.upgrade() {
+                let (element_name, path) = Self::queue_labels(&element);
+                QUEUE_UNDERRUNS
+                    .with_label_values(&[&element_name, &path])
+                    .inc();
+            }
+            None
+        });
+
+        let element_ref = glib::WeakRef::new();
+        element_ref.set(Some(element));
+        QUEUE_REGISTRATIONS.lock().unwrap().push(QueueRegistration {
+            element: element_ref,
+            metrics: None,
+        });
+    }
+
+    fn queue_labels(element: &gst::Element) -> (String, String) {
+        (
+            element.name().to_string(),
+            element.path_string().to_string(),
+        )
+    }
+
+    fn start_queue_sampler() {
+        thread::spawn(|| loop {
+            thread::sleep(Duration::from_millis(*QUEUE_SAMPLE_INTERVAL_MS));
+            QUEUE_REGISTRATIONS
+                .lock()
+                .unwrap()
+                .retain_mut(|registration| {
+                    let Some(element) = registration.element.upgrade() else {
+                        if let Some(metrics) = &registration.metrics {
+                            metrics.level_buffers.set(0);
+                            metrics.level_bytes.set(0);
+                            metrics.level_time.set(0.0);
+                        }
+                        return false;
+                    };
+
+                    let metrics = registration.metrics.get_or_insert_with(|| {
+                        let (element_name, path) = Self::queue_labels(&element);
+                        let labels = [&element_name, &path];
+                        QueueMetrics {
+                            level_buffers: QUEUE_LEVEL_BUFFERS.with_label_values(&labels),
+                            level_bytes: QUEUE_LEVEL_BYTES.with_label_values(&labels),
+                            level_time: QUEUE_LEVEL_TIME.with_label_values(&labels),
+                        }
+                    });
+
+                    let buffers = element
+                        .property_value("current-level-buffers")
+                        .get::<u32>()
+                        .unwrap_or_default();
+                    let bytes = element
+                        .property_value("current-level-bytes")
+                        .get::<u32>()
+                        .unwrap_or_default();
+                    let time_ns = element
+                        .property_value("current-level-time")
+                        .get::<u64>()
+                        .unwrap_or_default();
+                    metrics.level_buffers.set(i64::from(buffers));
+                    metrics.level_bytes.set(i64::from(bytes));
+                    metrics.level_time.set(time_ns as f64 / 1_000_000_000f64);
+                    true
+                });
+        });
     }
 
     /// Spawn the HTTP server in a new thread on the provided port.
@@ -628,11 +1027,118 @@ impl PromLatencyTracerImp {
 
 #[cfg(test)]
 mod tests {
-    use super::PromLatencyTracerImp;
+    use super::{latency_buckets, CompletedSpan, PromLatencyTracerImp, SpanFrame};
+    use gstreamer as gst;
 
     #[test]
-    fn compute_element_latency_subtracts_and_saturates() {
+    fn given_child_time_when_computing_exclusive_latency_then_it_subtracts_and_saturates() {
         assert_eq!(PromLatencyTracerImp::compute_element_latency(100, 30), 70);
         assert_eq!(PromLatencyTracerImp::compute_element_latency(30, 50), 0);
+    }
+
+    #[test]
+    fn given_latency_buckets_when_inspecting_short_stages_then_microseconds_are_represented() {
+        let buckets = latency_buckets();
+        assert!(buckets.contains(&0.000_001));
+        assert!(buckets.contains(&0.000_1));
+        assert!(buckets.contains(&0.001));
+        assert!(buckets.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn given_sampling_when_hashing_sequences_then_samples_are_spread() {
+        if *super::HISTOGRAM_SAMPLE_RATE != 16 {
+            return;
+        }
+        let samples = (0..1024)
+            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234))
+            .count();
+        assert!((40..90).contains(&samples), "sample count was {samples}");
+    }
+
+    #[test]
+    fn given_element_patterns_when_matching_then_exact_prefix_suffix_and_contains_work() {
+        assert!(PromLatencyTracerImp::glob_matches(
+            "rdinfer*",
+            "rdinfer-async"
+        ));
+        assert!(PromLatencyTracerImp::glob_matches("*queue", "infer-queue"));
+        assert!(PromLatencyTracerImp::glob_matches(
+            "*infer*",
+            "bench-rdinfer"
+        ));
+        assert!(PromLatencyTracerImp::glob_matches("tracker", "tracker"));
+        assert!(!PromLatencyTracerImp::glob_matches(
+            "tracker",
+            "tracker-copy"
+        ));
+    }
+
+    #[test]
+    fn given_two_sequential_children_when_parent_finishes_then_both_are_subtracted() {
+        let mut parent_storage = 0u8;
+        let mut first_child_storage = 0u8;
+        let mut second_child_storage = 0u8;
+        let parent_pad = (&mut parent_storage as *mut u8).cast::<gst::ffi::GstPad>();
+        let first_child_pad = (&mut first_child_storage as *mut u8).cast::<gst::ffi::GstPad>();
+        let second_child_pad = (&mut second_child_storage as *mut u8).cast::<gst::ffi::GstPad>();
+        let mut stack = vec![SpanFrame {
+            pad: parent_pad,
+            start_wall_ns: 0,
+            start_cpu_ns: Some(0),
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            sampled: true,
+        }];
+
+        stack.push(SpanFrame {
+            pad: first_child_pad,
+            start_wall_ns: 10,
+            start_cpu_ns: Some(5),
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            sampled: true,
+        });
+        PromLatencyTracerImp::complete_span(&mut stack, first_child_pad, 30, Some(15));
+        stack.push(SpanFrame {
+            pad: second_child_pad,
+            start_wall_ns: 35,
+            start_cpu_ns: Some(20),
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            sampled: true,
+        });
+        PromLatencyTracerImp::complete_span(&mut stack, second_child_pad, 65, Some(35));
+
+        assert_eq!(
+            PromLatencyTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50)),
+            Some(CompletedSpan {
+                exclusive_wall_ns: 50,
+                exclusive_cpu_ns: 25,
+                sampled: true,
+            })
+        );
+    }
+
+    #[test]
+    fn given_mismatched_post_hook_when_finishing_then_stack_is_cleared() {
+        let mut expected_storage = 0u8;
+        let mut received_storage = 0u8;
+        let expected_pad = (&mut expected_storage as *mut u8).cast::<gst::ffi::GstPad>();
+        let received_pad = (&mut received_storage as *mut u8).cast::<gst::ffi::GstPad>();
+        let mut stack = vec![SpanFrame {
+            pad: expected_pad,
+            start_wall_ns: 0,
+            start_cpu_ns: None,
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            sampled: false,
+        }];
+
+        assert_eq!(
+            PromLatencyTracerImp::complete_span(&mut stack, received_pad, 10, None),
+            None
+        );
+        assert!(stack.is_empty());
     }
 }
