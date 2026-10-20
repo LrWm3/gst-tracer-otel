@@ -200,3 +200,70 @@ TensorRT FP16 engine (`model_b16_gpu0_fp16.engine`) SHA-256:
 `6069c4c4afdfa95424e4c8cd5e45d9b6afb6373364fe19823830542535fd972b`.
 Repeated input (`test_live_stream.mp4`) SHA-256:
 `e3dee02187aa661e9b171a38dfe4c5b66299bb846730310a693e36d8a2b46246`.
+
+## Local follow-up: topology labels and buffer-path cost — 2026-10-20
+
+This follow-up compares the rebased baseline `e2b5fed` with the working-tree
+fixes. It preserves the queued ownership/diagnostic changes and the merged
+histogram buckets. Both variants export the same metrics with the same settings.
+The candidate resolves labels lazily, invalidates them on topology changes,
+uses a bounded 64-slot thread cache, and moves cache ownership out of completed
+spans without the extra reference-count operation or repeated stack scans.
+
+Host: Intel Core i5-1345U, x86_64, GStreamer 1.24.2, Rust 1.89.0, release builds.
+Each child process is pinned to logical CPU 2 (a performance core). Each variant
+has its own prepopulated plugin registry; plugin inspection checks the loaded
+path, and the raw results record binary SHA-256 hashes. One warm-up per variant
+is discarded, followed by seven measured rounds with rotating off/before/after
+ordering. All elements are selected, PTS age is disabled, and traced runs are
+scraped once per second. No compilation ran during these measurements.
+
+The linear workload processes 1,000,000 buffers through one identity; the deeper
+workload processes 250,000 buffers through eight identities. Both use `fakesrc`
+and `fakesink sync=false`. Values below are median child-process CPU microseconds
+per source buffer, including GStreamer and startup/teardown, not tracer-only CPU.
+
+| Workload | Histogram sample rate | Before CPU µs/buffer | After CPU µs/buffer | Change |
+| --- | ---: | ---: | ---: | ---: |
+| One identity (2 pushes/buffer) | 16 | 1.429 | 1.393 | -2.49% |
+| One identity (2 pushes/buffer) | 1 | 2.163 | 2.146 | -0.76% |
+| Eight identities (9 pushes/buffer) | 16 | 5.930 | 5.820 | -1.86% |
+
+The sampled workloads use about 1.9–2.5% less CPU per buffer. Observing every
+buffer is approximately unchanged (0.8% lower median CPU). These are local
+synthetic measurements on a shared desktop; they do not establish an integrated memory nvidia device or
+production-video speedup. Wall times are also recorded but include process-wait
+polling overhead, so CPU is the primary comparison.
+
+Raw observations, commands, build identities and workload metadata are in
+[`benchmarks/2026-10-20-local.json`](benchmarks/2026-10-20-local.json).
+Reproduce with two plugin directories named `plugins-before` and `plugins-after`:
+
+```sh
+python3 tracer/prometheus/bench_matched.py --root /path/to/plugins \
+  --variants off,plugins-before,plugins-after --rounds 7 --sample-rate 16 \
+  --name linear16 -- taskset -c 2 gst-launch-1.0 -q \
+  fakesrc num-buffers=1000000 ! identity name=work0 ! fakesink sync=false
+```
+
+Repeat with `--sample-rate 1 --name linear1`; the raw commands include the deeper
+workload. Choose an available performance core on the machine being measured.
+
+### Follow-up validation
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
+- `cargo test`: passed, 13 unit tests and 11 integration tests.
+- AddressSanitizer: all 13 unit tests passed, including concurrent cache
+  replacement, stale unlink protection, thread-cache invalidation and ownership.
+  Command: `RUSTFLAGS='-Zsanitizer=address' cargo +nightly test
+  -p gst-prometheus-tracer --lib --target x86_64-unknown-linux-gnu`.
+- `cargo audit`: reports 22 existing advisories. Auditing the baseline lockfile
+  produces the identical set of advisory IDs, package names and versions. No
+  dependency versions were changed by this work.
+- The required workspace `cargo +nightly udeps ... --all-targets` fails compiling
+  the existing `rustix 0.37.28` on current nightly (reserved `rustc` attributes).
+  Repeating with `RUSTC_BOOTSTRAP=1 cargo +1.89.0 udeps
+  -p gst-otel-tracer -p gst-prometheus-tracer -p gst-pyroscope-tracer --all-targets`
+  completes analysis: Prometheus is clean; Pyroscope has existing unused
+  `console` and `pyroscope_pyspy` dependencies.

@@ -23,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--sample-rate", type=int, default=16)
     parser.add_argument("--name", default="synthetic")
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--variants", default="off,baseline,previous,reviewed")
@@ -31,6 +32,8 @@ def main():
     parser.add_argument("--preflight-element", default="fakesink")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.sample_rate < 1:
+        parser.error("--sample-rate must be positive")
     variants = args.variants.split(",")
     command = args.command or [
         "gst-launch-1.0", "-q", "fakesrc", "num-buffers=1000000", "!",
@@ -53,7 +56,7 @@ def main():
                 GST_PLUGIN_PATH=f"{args.root / variant}:" + env.get("BENCH_PLUGIN_PATH", ""),
                 GST_REGISTRY=str(args.root / f"registry-{args.name}-{variant}.bin"),
                 GST_PROM_LATENCY_INCLUDE="*",
-                GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE="16",
+                GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE=str(args.sample_rate),
                 GST_PROM_LATENCY_PTS_AGE="false",
                 GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS="100",
                 GST_DEBUG="0",
@@ -98,6 +101,7 @@ def main():
                     thread.join()
             record = dict(
                 variant=variant, round=round_id, warmup=round_id == 0,
+                histogram_sample_rate=args.sample_rate,
                 wall_s=elapsed, cpu_s=after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime,
                 returncode=result.returncode, scrapes=len(scrapes),
                 max_scrape_bytes=max(scrapes, default=0), command=child_command,

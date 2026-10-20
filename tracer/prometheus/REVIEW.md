@@ -57,24 +57,20 @@ This is not a review of the processor's Rust/CUDA implementation.
    element creation; use its typed push/link hooks too. This removes manual
    `transmute` registrations and makes callback-signature mistakes compiler
    errors. Benchmark the conversion before assuming its overhead is identical.
-3. **Make ownership and accounting explicit in types.** Replace the raw cache
-   builder's sentinel with `Option<Arc<PadCacheData>>`. Rename
-   `get_real_pad_parent_ffi` to `resolve_pad_parent`. Let a `SpanStack::finish`
-   operation return metrics ownership and timing together, avoiding repeated TLS
-   borrows and the additional `Arc` clone in post-push. Keep any unsafe qdata
-   conversions inside that module with stated lifetime invariants.
+3. **Keep ownership boundaries explicit.** The follow-up now returns owned
+   optional caches from the builder and moves metrics ownership and timing out
+   of span completion together. Qdata replacement documents its ownership
+   contract, and a bounded thread cache avoids steady-state qdata locking.
+   Preserve those invariants if these responsibilities move into separate modules.
 4. **Centralize configuration and units.** Parse one `TracerConfig` with named
    defaults and validation rather than scattered environment-backed globals.
    Accept it explicitly in sampling helpers so tests do not silently skip when
    an environment variable changes. Use a named nanoseconds-to-seconds helper
    and `PadMetrics::observe` to separate accounting from export details.
-5. **Make tests describe contracts.** Use a shared bounded-EOS pipeline harness
-   that fails on bus errors and always returns to NULL. Older tests can currently
-   break out on an error and still pass metric checks. Match complete label sets,
-   not any matching count from a previous pipeline. Replace loose timing
-   tolerances and the hard one-second microbenchmark threshold with deterministic
-   clock/accounting tests plus separately reported performance benchmarks.
-   Run configuration variants in subprocesses because GStreamer and environment
+5. **Keep tests focused on contracts.** The follow-up adds a bounded-EOS harness,
+   NULL-state cleanup, complete label/count assertions, useful latency bounds,
+   ownership checks and separately reported performance measurements. Keep
+   configuration variants in subprocesses because GStreamer and environment
    settings are initialized once per process.
 
 These are deliberately follow-up suggestions, not a large module rewrite mixed
@@ -86,10 +82,11 @@ into the correctness fixes.
   per-frame end-to-end latency. `wall - thread CPU` includes scheduler delay and
   backpressure; it cannot identify their individual causes. Sequential clock
   reads and nested tracer work still distort very short spans.
-- Pad metrics retain the existing link-time naming behavior. Complex ghost-pad
-  assembly, late bin insertion, and reparenting can produce incomplete or stale
-  paths. The ordinary ghost-pad tests pass; arbitrary dynamic topology is not
-  qualified. A state-aware cache refresh needs its own topology tests.
+- Follow-up fixes resolve pad labels on first push and refresh them after link,
+  bin-parenting and activation changes. Tests cover late bin insertion,
+  reparenting and real-pad labels through ghost forwarding. In-flight spans keep
+  their original cache snapshot across changes. Arbitrary concurrent topology
+  mutation and renaming a running root pipeline are not fully qualified.
 - Prometheus label series live for the process lifetime. Repeated creation of
   uniquely named graphs increases cardinality even after GObjects are released.
   That is distinct from the fixed GObject-reference leak. Define a retirement

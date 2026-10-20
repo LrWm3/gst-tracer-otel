@@ -1,723 +1,388 @@
-#[cfg(test)]
-mod tests {
-    use gst::prelude::*;
-    use gstreamer::{self as gst};
-    use std::{
-        env::{self, consts::ARCH},
-        path::Path,
-        thread,
-        time::{Duration, Instant},
-        vec,
-    };
+use gst::prelude::*;
+use gstreamer as gst;
+use std::{
+    env,
+    net::TcpListener,
+    sync::OnceLock,
+    thread,
+    time::{Duration, Instant},
+};
 
-    const PROM_PORT: u16 = 9999;
+// Initialize once, before GStreamer starts threads. Load the cdylib produced by
+// this cargo test invocation, never an older release build or installed plugin.
+fn setup() -> u16 {
+    static PORT: OnceLock<u16> = OnceLock::new();
+    *PORT.get_or_init(|| {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let executable = env::current_exe().unwrap();
+        env::set_var("GST_PLUGIN_PATH", executable.parent().unwrap());
+        env::set_var(
+            "GST_REGISTRY",
+            env::temp_dir().join(format!("gst-prom-tests-{}.bin", std::process::id())),
+        );
+        env::set_var("GST_TRACERS", format!("prom-latency(port={port})"));
+        env::set_var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE", "1");
+        env::set_var("GST_PROM_LATENCY_INCLUDE", "*");
+        env::set_var("GST_PROM_LATENCY_PTS_AGE", "false");
+        env::set_var("GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS", "10");
+        drop(listener);
+        gst::init().unwrap();
+        assert!(gst::TracerFactory::factories()
+            .iter()
+            .any(|factory| factory.name() == "prom-latency"));
+        port
+    })
+}
 
-    #[test]
-    fn given_basic_pipeline_when_run_then_metrics_captured() {
-        // Setup test + gstreamer
-        setup_test();
+fn pipeline(name: &str, description: &str) -> gst::Pipeline {
+    setup();
+    let pipeline = gst::parse::launch(description)
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+    pipeline.set_property("name", name);
+    pipeline
+}
 
-        // Create the pipeline
-        // This is a kludge to get around a real issue where metrics are reused
-        // across multiple pipelines which use the same element and pad names.
-        //
-        // We could tie the pipeline name to the metrics, but that would require
-        // a change in the tracer implementation.
-        let pipeline = create_pipeline("basic");
+struct StopOnDrop<'a>(&'a gst::Pipeline);
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gst::State::Null);
+    }
+}
 
-        // Set the pipeline to the Playing state
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("Unable to set the pipeline to Playing");
+fn wait_for_eos(pipeline: &gst::Pipeline) {
+    let message = pipeline
+        .bus()
+        .unwrap()
+        .timed_pop_filtered(
+            gst::ClockTime::from_seconds(10),
+            &[gst::MessageType::Eos, gst::MessageType::Error],
+        )
+        .expect("pipeline did not finish within 10 seconds");
+    if let gst::MessageView::Error(error) = message.view() {
+        panic!("pipeline error: {} ({:?})", error.error(), error.debug());
+    }
+}
 
-        // Grab the bus to listen for EOS
-        let bus = pipeline.bus().unwrap();
+fn run(pipeline: &gst::Pipeline) {
+    let _stop = StopOnDrop(pipeline);
+    pipeline.set_state(gst::State::Playing).unwrap();
+    wait_for_eos(pipeline);
+}
 
-        // Wait for EOS message
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            use gst::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    println!(
-                        "Error from {:?}: {} ({:?})",
-                        err.src().map(|s| s.path_string()),
-                        err.error(),
-                        err.debug()
-                    );
-                    break;
-                }
-                _ => (),
-            }
-        }
-        // Get the active tracer and then emit to get the metrics.
-
-        #[cfg(feature = "v1_18")]
+fn metrics() -> String {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match client
+            .get(format!("http://127.0.0.1:{}/metrics", setup()))
+            .send()
         {
-            let binding = gst::active_tracers();
-            println!("Active tracers: {}", binding.len());
-            let tracer = binding
-                .iter()
-                .inspect(|t| {
-                    println!("Active tracer: {}", t.name());
-                })
-                .find(|t| t.name() == "promlatencytracer0")
-                .expect("Expected to find the `prom-latency` tracer");
-            let _metrics_from_signal = tracer
-                .emit_by_name::<Option<String>>("metrics", &[])
-                .expect("Expected to get metrics from signal");
+            Ok(response) => return response.error_for_status().unwrap().text().unwrap(),
+            Err(error) if Instant::now() >= deadline => panic!("metrics server: {error}"),
+            Err(_) => thread::sleep(Duration::from_millis(10)),
         }
+    }
+}
 
-        // Stop the pipeline
-        pipeline.set_state(gst::State::Null).unwrap();
-        thread::sleep(Duration::from_millis(100));
+fn value(text: &str, metric: &str, labels: &[(&str, &str)]) -> f64 {
+    let mut labels = labels.to_vec();
+    labels.sort_unstable();
+    let labels = labels
+        .iter()
+        .map(|(key, value)| format!("{key}=\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let prefix = format!("{metric}{{{labels}}} ");
+    let matches = text
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one series: {prefix}\n{text}"
+    );
+    matches[0].parse().unwrap()
+}
 
-        // Get the metrics by performing an http request to the Prometheus endpoint
-        // in >1.18, could use a signal.
-        let prometheus_url = format!("http://localhost:{PROM_PORT}");
-        let response = reqwest::blocking::get(&prometheus_url)
-            .expect("Failed to fetch metrics from Prometheus endpoint");
-        let metrics = response.text().expect("Failed to read response text");
+fn pad_value(text: &str, metric: &str, element: &gst::Element, src_pad: &str) -> f64 {
+    value(
+        text,
+        metric,
+        &[
+            ("element", element.name().as_str()),
+            ("path", element.parent().unwrap().path_string().as_str()),
+            ("sink_pad", "sink"),
+            ("src_pad", src_pad),
+        ],
+    )
+}
 
-        // Print the metrics for debugging
-        println!("Metrics:\n{metrics}");
+fn count(text: &str, element: &gst::Element, expected: u32) {
+    assert_eq!(
+        pad_value(text, "gst_element_latency_count_count", element, "src"),
+        f64::from(expected)
+    );
+}
 
-        // These will only be the same if we're running this as a single test
-        // and not as part of a suite, because the metrics are not tied to a pipeline
-        // TODO - fix this somehow
-        // assert!(
-        //     _metrics_from_signal == metrics.clone(),
-        //     "Expected metrics from signal to match the metrics from the HTTP request, but they did not match.\nSignal metrics: {:?}\nHTTP metrics: {:?}",
-        //     _metrics_from_signal, metrics
-        // );
+#[test]
+fn exact_counts_and_signal_match_http_for_a_completed_pipeline() {
+    let pipeline = pipeline(
+        "basic",
+        "fakesrc num-buffers=10000 ! identity name=work ! fakesink name=sink",
+    );
+    run(&pipeline);
+    let text = metrics();
+    for name in ["work", "sink"] {
+        let element = pipeline.by_name(name).unwrap();
+        count(&text, &element, 10000);
+        assert_eq!(
+            pad_value(
+                &text,
+                "gst_element_sync_wall_seconds_count",
+                &element,
+                "src"
+            ),
+            10000.0
+        );
+    }
+    #[cfg(feature = "v1_18")]
+    {
+        let signal = gst::active_tracers()
+            .iter()
+            .find(|tracer| tracer.type_().name() == "promlatencytracer")
+            .unwrap()
+            .emit_by_name::<Option<String>>("metrics", &[])
+            .unwrap();
+        // Other tests may still be streaming; compare this pipeline's series.
+        for name in ["work", "sink"] {
+            count(&signal, &pipeline.by_name(name).unwrap(), 10000);
+        }
+    }
+}
 
-        // Validate that the metrics contain expected values
-        let metric_asserts = vec![
-            "gst_element_latency_last_gauge",
-            "gst_element_latency_sum_count",
+#[test]
+fn sleeping_element_latency_is_positive_and_excludes_downstream_work() {
+    let pipeline = pipeline(
+        "known_latency",
+        "fakesrc num-buffers=30 ! identity name=fast ! identity name=slow sleep-time=10000 ! fakesink",
+    );
+    run(&pipeline);
+    let text = metrics();
+    let fast = pipeline.by_name("fast").unwrap();
+    let slow = pipeline.by_name("slow").unwrap();
+    count(&text, &fast, 30);
+    count(&text, &slow, 30);
+    let slow_sum = pad_value(&text, "gst_element_latency_sum_count", &slow, "src");
+    let fast_sum = pad_value(&text, "gst_element_latency_sum_count", &fast, "src");
+    assert!(slow_sum >= 30.0 * 8_000_000.0, "slow sum: {slow_sum}");
+    assert!(
+        fast_sum < slow_sum / 2.0,
+        "fast={fast_sum}, slow={slow_sum}"
+    );
+    assert!(pad_value(&text, "gst_element_latency_last_gauge", &slow, "src") >= 8_000_000.0);
+}
+
+#[test]
+fn sequential_tee_branches_are_both_subtracted() {
+    let pipeline = pipeline(
+        "branches",
+        "fakesrc num-buffers=20 ! tee name=tee \
+         tee. ! identity name=first sleep-time=10000 ! fakesink async=false sync=false \
+         tee. ! identity name=second sleep-time=20000 ! fakesink async=false sync=false",
+    );
+    run(&pipeline);
+    let text = metrics();
+    let tee = pipeline.by_name("tee").unwrap();
+    count(&text, &tee, 20);
+    let tee_sum = pad_value(&text, "gst_element_latency_sum_count", &tee, "src");
+    let first_sum = pad_value(
+        &text,
+        "gst_element_latency_sum_count",
+        &pipeline.by_name("first").unwrap(),
+        "src_0",
+    );
+    assert!(first_sum >= 20.0 * 8_000_000.0);
+    assert!(
+        tee_sum < first_sum / 2.0,
+        "tee={tee_sum}, first branch={first_sum}"
+    );
+}
+
+#[test]
+fn ghost_forwarding_exports_each_real_sink_once_with_real_pad_names() {
+    let pipeline = pipeline(
+        "ghosts",
+        "fakesrc num-buffers=10 ! ( identity name=inner1 ! identity name=inner2 ) ! fakesink name=sink",
+    );
+    run(&pipeline);
+    let text = metrics();
+    for name in ["inner1", "inner2", "sink"] {
+        let element = pipeline.by_name(name).unwrap();
+        count(&text, &element, 10);
+        let rows = text.lines().filter(|line| {
+            line.starts_with(&format!(
+                "gst_element_latency_count_count{{element=\"{name}\","
+            )) && line.contains("/GstPipeline:ghosts")
+        });
+        assert_eq!(rows.count(), 1, "duplicate forwarding series for {name}");
+    }
+}
+
+fn detached_bin() -> gst::Bin {
+    let bin = gst::Bin::with_name("inner");
+    let source = gst::ElementFactory::make("fakesrc")
+        .name("source")
+        .property("num-buffers", 3i32)
+        .build()
+        .unwrap();
+    let identity = gst::ElementFactory::make("identity")
+        .name("id")
+        .build()
+        .unwrap();
+    let sink = gst::ElementFactory::make("fakesink")
+        .name("sink")
+        .build()
+        .unwrap();
+    bin.add_many([&source, &identity, &sink]).unwrap();
+    gst::Element::link_many([&source, &identity, &sink]).unwrap();
+    bin
+}
+
+#[test]
+fn bins_linked_before_parenting_have_distinct_pipeline_paths() {
+    setup();
+    let first = gst::Pipeline::with_name("late_first");
+    let second = gst::Pipeline::with_name("late_second");
+    first.add(&detached_bin()).unwrap();
+    second.add(&detached_bin()).unwrap();
+    run(&first);
+    run(&second);
+    let text = metrics();
+    for pipeline in [&first, &second] {
+        for name in ["id", "sink"] {
+            count(&text, &pipeline.by_name(name).unwrap(), 3);
+        }
+    }
+    assert!(
+        !text.contains("path=\"/GstBin:inner\""),
+        "premature labels: {text}"
+    );
+}
+
+#[test]
+fn reparenting_refreshes_existing_pad_labels() {
+    setup();
+    let first = gst::Pipeline::with_name("parent_before");
+    let second = gst::Pipeline::with_name("parent_after");
+    let bin = detached_bin();
+    first.add(&bin).unwrap();
+    run(&first);
+    let before = metrics();
+    count(&before, &bin.by_name("id").unwrap(), 3);
+    first.remove(&bin).unwrap();
+    second.add(&bin).unwrap();
+    run(&second);
+    let after = metrics();
+    count(&after, &bin.by_name("id").unwrap(), 3);
+    assert_eq!(
+        value(
+            &after,
             "gst_element_latency_count_count",
-            "gst_element_sync_wall_seconds",
-            "gst_element_sync_cpu_seconds",
-            "gst_element_sync_blocked_seconds",
-        ];
-        for metric in metric_asserts {
-            assert!(
-                metrics.contains(metric),
-                "Expected to find '{metric}' in metrics"
+            &[
+                ("element", "id"),
+                ("path", "/GstPipeline:parent_before/GstBin:inner"),
+                ("sink_pad", "sink"),
+                ("src_pad", "src"),
+            ]
+        ),
+        3.0
+    );
+}
+
+#[test]
+fn traced_elements_are_released_after_pipeline_teardown() {
+    let pipeline = pipeline(
+        "teardown",
+        "fakesrc num-buffers=5 ! identity name=work ! fakesink name=sink",
+    );
+    let weak_elements = ["work", "sink"].map(|name| pipeline.by_name(name).unwrap().downgrade());
+    run(&pipeline);
+    drop(pipeline);
+    for weak in weak_elements {
+        assert!(
+            weak.upgrade().is_none(),
+            "tracer retained a destroyed element"
+        );
+    }
+}
+
+#[test]
+fn sleeping_element_reports_blocked_time() {
+    let pipeline = pipeline(
+        "blocked",
+        "fakesrc num-buffers=20 ! identity name=sleep sleep-time=10000 ! fakesink",
+    );
+    run(&pipeline);
+    let text = metrics();
+    let sleep = pipeline.by_name("sleep").unwrap();
+    let wall = pad_value(&text, "gst_element_sync_wall_seconds_sum", &sleep, "src");
+    let cpu = pad_value(&text, "gst_element_sync_cpu_seconds_sum", &sleep, "src");
+    let blocked = pad_value(&text, "gst_element_sync_blocked_seconds_sum", &sleep, "src");
+    assert!(wall >= 0.16, "sampled wall time was {wall}");
+    assert!(blocked > cpu * 4.0, "blocked={blocked}, cpu={cpu}");
+    assert!(blocked <= wall);
+}
+
+#[test]
+fn queue2_completes_without_unsupported_signal_registration() {
+    run(&pipeline(
+        "queue2",
+        "fakesrc num-buffers=10 ! queue2 ! fakesink",
+    ));
+}
+
+#[test]
+fn queue_depth_is_exported_with_pipeline_path() {
+    let pipeline = pipeline("queue_levels", "fakesrc num-buffers=500 ! queue name=observable_queue max-size-buffers=500 max-size-bytes=0 max-size-time=0 ! identity sleep-time=10000 ! fakesink");
+    let _stop = StopOnDrop(&pipeline);
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let text = metrics();
+        if text.contains("gst_queue_current_level_buffers{element=\"observable_queue\"") {
+            let depth = value(
+                &text,
+                "gst_queue_current_level_buffers",
+                &[
+                    ("element", "observable_queue"),
+                    (
+                        "path",
+                        "/GstPipeline:queue_levels/GstQueue:observable_queue",
+                    ),
+                ],
             );
-        }
-
-        // count_count should be exactly 10000
-        // ie: gst_element_latency_count_count{.*} 10000
-        //
-        // Test currently fails on count_value check because metrics are not tied to a pipeline, so they all sum up together
-        //   as the test-suite runs multiple times.
-        //
-        let count_count_metric = format!("{}{{", "gst_element_latency_count_count");
-        let count_count_value = metrics
-            .lines()
-            .filter(|line| line.contains(&count_count_metric))
-            .flat_map(|line| line.split_whitespace().nth(1))
-            .collect::<Vec<_>>();
-
-        let mut check_failed = true;
-        for value in count_count_value.clone() {
-            // Check if the value is exactly 10000
-            if value == "10000" {
-                check_failed = false;
+            if depth > 0.0 {
                 break;
             }
         }
-        if check_failed {
-            panic!(
-                "Expected to find '{count_count_metric}' with value 10000 in metrics, but it was not found.\n, found: {count_count_value:?}"
-            );
-        }
+        assert!(Instant::now() < deadline, "queue depth was never exported");
+        thread::sleep(Duration::from_millis(10));
     }
-
-    #[test]
-    fn given_pipeline_with_known_latency_when_run_then_latency_metrics_match() {
-        setup_test();
-
-        // Sleep time 100 us
-        // Identity itself adds about 9
-        // We add a sleep-time of 1 nano as the sleep operation itself takes time per buffer
-        let pipeline_el = gst::parse::launch(
-            "fakesrc sync=false num-buffers=100 ! identity name=lm0 sleep-time=1 ! identity name=lm1 sleep-time=10000 ! fakesink",
-        )
-        .expect("Failed to create pipeline from launch string");
-        pipeline_el.set_property("name", "latency_metrics_match");
-        let pipeline = pipeline_el
-            .downcast::<gst::Pipeline>()
-            .expect("Failed to downcast to gst::Pipeline");
-
-        let bus = pipeline.bus().unwrap();
-
-        // Set the pipeline to the Playing state
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("Unable to set the pipeline to Playing");
-
-        // Wait for EOS message
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            use gst::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    println!(
-                        "Error from {:?}: {} ({:?})",
-                        err.src().map(|s| s.path_string()),
-                        err.error(),
-                        err.debug()
-                    );
-                    break;
-                }
-                _ => (),
-            }
-        }
-        // Stop the pipeline
-        pipeline.set_state(gst::State::Null).unwrap();
-        thread::sleep(Duration::from_millis(100));
-
-        // Get the metrics by performing an http request to the Prometheus endpoint
-        let prometheus_url = format!("http://localhost:{PROM_PORT}");
-        let response = reqwest::blocking::get(&prometheus_url)
-            .expect("Failed to fetch metrics from Prometheus endpoint");
-        let metrics = response.text().expect("Failed to read response text");
-
-        // Print the metrics for debugging
-        println!("Metrics:\n{metrics}");
-
-        // Validate that the metrics contain expected values
-        let metric_asserts = vec![
-            "gst_element_latency_last_gauge",
-            "gst_element_latency_sum_count",
-            "gst_element_latency_count_count",
-            "gst_element_sync_wall_seconds",
-            "gst_element_sync_cpu_seconds",
-            "gst_element_sync_blocked_seconds",
-        ];
-        for metric in metric_asserts {
-            assert!(
-                metrics.contains(metric),
-                "Expected to find '{metric}' in metrics"
-            );
-        }
-
-        fn get_metric_value(metrics: &str, metric_name: &str) -> Option<f64> {
-            metrics
-                .lines()
-                .find(|line| line.contains(metric_name))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|value| value.parse::<f64>().ok())
-        }
-
-        // Check that the latency is around 100 us
-        let latency_value =
-            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm1\"")
-                .expect("Expected to find latency metric for lm1");
-        let latency_value_no_sleep =
-            get_metric_value(&metrics, "gst_element_latency_last_gauge{element=\"lm0\"")
-                .expect("Expected to find latency metric for lm0");
-
-        // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let last_check_failed = ((latency_value - latency_value_no_sleep) - 1e7).abs() >= 5e8;
-
-        assert!(
-            !last_check_failed,
-            "Latency is not within expected range, found: {latency_value:?}"
-        );
-
-        // Check that the sum is around 1000 us
-        let sum_value = get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm1\"")
-            .expect("Expected to find sum metric for lm1");
-        let sum_value_no_sleep =
-            get_metric_value(&metrics, "gst_element_latency_sum_count{element=\"lm0\"")
-                .expect("Expected to find sum metric for lm0");
-
-        // TODO - lower this thresholds once we have fixed how we are measuring latency
-        let sum_check_failed = ((sum_value - sum_value_no_sleep) - 1e9).abs() >= 5e11;
-
-        assert!(
-            !sum_check_failed,
-            "Sum is not within expected range, found: {sum_value:?}"
-        );
-    }
-
-    #[test]
-    fn given_pipeline_with_bin_with_ghost_pads_when_run_then_sink_src_pads_are_real_not_ghost() {
-        setup_test();
-
-        // Create a pipeline with a bin and elements
-        let pipeline = gst::Pipeline::with_name("test-pipeline");
-        let bin = gst::Bin::with_name("test-bin");
-        let src = gst::ElementFactory::make("fakesrc")
-            .name("fakesrc")
-            .property("num-buffers", 100)
-            .build()
-            .unwrap();
-        let sink = gst::ElementFactory::make("fakesink")
-            .name("fakesink")
-            .build()
-            .unwrap();
-        pipeline.add(&bin).unwrap();
-        pipeline.add(&src).unwrap();
-        pipeline.add(&sink).unwrap();
-        let id1 = gst::ElementFactory::make("identity")
-            .name("id1")
-            .build()
-            .unwrap();
-        let id2 = gst::ElementFactory::make("identity")
-            .name("id2")
-            .property_from_str("sleep-time", "100")
-            .build()
-            .unwrap();
-        let id3 = gst::ElementFactory::make("identity")
-            .name("id3")
-            .build()
-            .unwrap();
-
-        // Add elements to the bin
-        bin.add(&id1).unwrap();
-        bin.add(&id2).unwrap();
-        bin.add(&id3).unwrap();
-
-        // Link the elements together
-        id1.link(&id2).unwrap();
-        id2.link(&id3).unwrap();
-
-        let g_src = gst::GhostPad::builder(gstreamer::PadDirection::Src)
-            .with_target(&id3.static_pad("src").unwrap())
-            .expect("Failed to create GhostPad for src")
-            .build();
-        g_src.set_active(true).unwrap();
-        let g_sink = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
-            .with_target(&id1.static_pad("sink").unwrap())
-            .expect("Failed to create GhostPad for sink")
-            .build();
-        g_sink.set_active(true).unwrap();
-        bin.add_pad(&g_src).unwrap();
-        bin.add_pad(&g_sink).unwrap();
-
-        // Add the bin to the pipeline
-
-        // Link the bin to the src and sink
-        src.link(&bin).unwrap();
-        bin.link(&sink).unwrap();
-
-        // Set the pipeline to the Playing state
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("Unable to set the pipeline to Playing");
-
-        // Grab the bus to listen for EOS
-        let bus = pipeline.bus().unwrap();
-        // Wait for EOS message
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            use gst::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    println!(
-                        "Error from {:?}: {} ({:?})",
-                        err.src().map(|s| s.path_string()),
-                        err.error(),
-                        err.debug()
-                    );
-                    break;
-                }
-                _ => (),
-            }
-        }
-        // Stop the pipeline
-        pipeline.set_state(gst::State::Null).unwrap();
-        thread::sleep(Duration::from_millis(100));
-
-        // Get the metrics by performing an http request to the Prometheus endpoint
-        let prometheus_url = format!("http://localhost:{PROM_PORT}");
-        let response = reqwest::blocking::get(&prometheus_url)
-            .expect("Failed to fetch metrics from Prometheus endpoint");
-        let metrics = response.text().expect("Failed to read response text");
-
-        // Print the metrics for debugging
-        println!("Metrics:\n{metrics}");
-    }
-
-    #[test]
-    fn given_pipeline_with_two_bins_with_same_named_elements_when_run_then_metrics_are_correct() {
-        setup_test();
-
-        // Create the base pipeline
-        let pipeline = gst::Pipeline::with_name("test-pipeline");
-
-        // Source and sink setup
-        let src = gst::ElementFactory::make("fakesrc")
-            .name("fakesrc")
-            .property("num-buffers", 100)
-            .build()
-            .unwrap();
-
-        let tee = gst::ElementFactory::make("tee")
-            .name("tee")
-            .build()
-            .unwrap();
-
-        let sink1 = gst::ElementFactory::make("fakesink")
-            .name("fakesink1")
-            .build()
-            .unwrap();
-        let sink2 = gst::ElementFactory::make("fakesink")
-            .name("fakesink2")
-            .build()
-            .unwrap();
-
-        pipeline.add_many([&src, &tee, &sink1, &sink2]).unwrap();
-        gst::Element::link_many([&src, &tee]).unwrap();
-
-        // --- Bin 1 ---
-        let bin1 = gst::Bin::with_name("bin1");
-        let id1 = gst::ElementFactory::make("identity")
-            .name("id1")
-            .build()
-            .unwrap();
-        let id2 = gst::ElementFactory::make("identity")
-            .name("id2")
-            .property_from_str("sleep-time", "100")
-            .build()
-            .unwrap();
-        let id3 = gst::ElementFactory::make("identity")
-            .name("id3")
-            .build()
-            .unwrap();
-
-        bin1.add_many([&id1, &id2, &id3]).unwrap();
-        gst::Element::link_many([&id1, &id2, &id3]).unwrap();
-
-        let g_src1 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
-            .with_target(&id3.static_pad("src").unwrap())
-            .expect("Failed to create GhostPad for src")
-            .build();
-        let g_sink1 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
-            .with_target(&id1.static_pad("sink").unwrap())
-            .expect("Failed to create GhostPad for sink")
-            .build();
-        g_src1.set_active(true).unwrap();
-        g_sink1.set_active(true).unwrap();
-        bin1.add_pad(&g_src1).unwrap();
-        bin1.add_pad(&g_sink1).unwrap();
-
-        // --- Bin 2 ---
-        let bin2 = gst::Bin::with_name("bin2");
-        let id1_b = gst::ElementFactory::make("identity")
-            .name("id1")
-            .build()
-            .unwrap();
-        let id2_b = gst::ElementFactory::make("identity")
-            .name("id2")
-            .property_from_str("sleep-time", "100")
-            .build()
-            .unwrap();
-        let id3_b = gst::ElementFactory::make("identity")
-            .name("id3")
-            .build()
-            .unwrap();
-
-        bin2.add_many([&id1_b, &id2_b, &id3_b]).unwrap();
-        gst::Element::link_many([&id1_b, &id2_b, &id3_b]).unwrap();
-
-        let g_src2 = gst::GhostPad::builder(gstreamer::PadDirection::Src)
-            .with_target(&id3_b.static_pad("src").unwrap())
-            .expect("Failed to create GhostPad for src")
-            .build();
-        let g_sink2 = gst::GhostPad::builder(gstreamer::PadDirection::Sink)
-            .with_target(&id1_b.static_pad("sink").unwrap())
-            .expect("Failed to create GhostPad for sink")
-            .build();
-        g_src2.set_active(true).unwrap();
-        g_sink2.set_active(true).unwrap();
-        bin2.add_pad(&g_src2).unwrap();
-        bin2.add_pad(&g_sink2).unwrap();
-
-        // Add both bins to the pipeline
-        pipeline.add_many([&bin1, &bin2]).unwrap();
-
-        // --- Tee branches ---
-        let q1 = gst::ElementFactory::make("queue")
-            .name("queue1")
-            .build()
-            .unwrap();
-        let q2 = gst::ElementFactory::make("queue")
-            .name("queue2")
-            .build()
-            .unwrap();
-        pipeline.add_many([&q1, &q2]).unwrap();
-
-        // Connect tee → queue → bin → sink
-        // link one at a time
-        tee.link(&q1).unwrap();
-        q1.link(&bin1).unwrap();
-        bin1.link(&sink1).unwrap();
-        tee.link(&q2).unwrap();
-        q2.link(&bin2).unwrap();
-        bin2.link(&sink2).unwrap();
-
-        // --- Run the pipeline ---
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("Unable to set the pipeline to Playing");
-
-        // Wait for EOS or error
-        let bus = pipeline.bus().unwrap();
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            use gst::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    println!(
-                        "Error from {:?}: {} ({:?})",
-                        err.src().map(|s| s.path_string()),
-                        err.error(),
-                        err.debug()
-                    );
-                    break;
-                }
-                _ => (),
-            }
-        }
-
-        pipeline.set_state(gst::State::Null).unwrap();
-        thread::sleep(Duration::from_millis(100));
-
-        // --- Metrics validation ---
-        let prometheus_url = format!("http://localhost:{PROM_PORT}");
-        let response = reqwest::blocking::get(&prometheus_url)
-            .expect("Failed to fetch metrics from Prometheus endpoint");
-        let metrics = response.text().expect("Failed to read response text");
-
-        println!("Metrics:\n{metrics}");
-        // Optionally, assert on the presence of id1/id2/id3 metrics from both bins
-        assert!(metrics.contains("id1"));
-        assert!(metrics.contains("id2"));
-        assert!(metrics.contains("id3"));
-    }
-
-    #[test]
-    fn given_sleeping_element_when_sampled_then_blocked_time_dominates_cpu_time() {
-        setup_test();
-        let pipeline = gst::parse::launch(
-            "fakesrc num-buffers=200 ! identity name=blocking_sleep sleep-time=10000 ! fakesink",
-        )
-        .unwrap()
-        .downcast::<gst::Pipeline>()
-        .unwrap();
-        pipeline.set_state(gst::State::Playing).unwrap();
-        wait_for_eos(&pipeline);
-        pipeline.set_state(gst::State::Null).unwrap();
-
-        let metrics = reqwest::blocking::get(format!("http://localhost:{PROM_PORT}"))
-            .unwrap()
-            .text()
-            .unwrap();
-        let wall = metric_value(
-            &metrics,
-            "gst_element_sync_wall_seconds_sum{element=\"blocking_sleep\"",
-        )
-        .unwrap();
-        let cpu = metric_value(
-            &metrics,
-            "gst_element_sync_cpu_seconds_sum{element=\"blocking_sleep\"",
-        )
-        .unwrap();
-        let blocked = metric_value(
-            &metrics,
-            "gst_element_sync_blocked_seconds_sum{element=\"blocking_sleep\"",
-        )
-        .unwrap();
-
-        assert!(wall > 0.01, "sampled wall time was {wall}");
-        assert!(blocked > cpu * 4.0, "blocked={blocked}, cpu={cpu}");
-        assert!(blocked <= wall);
-    }
-
-    #[test]
-    fn given_queue2_when_traced_then_pipeline_completes_without_signal_panic() {
-        setup_test();
-        let pipeline = gst::parse::launch("fakesrc num-buffers=10 ! queue2 ! fakesink")
-            .unwrap()
-            .downcast::<gst::Pipeline>()
-            .unwrap();
-        pipeline.set_state(gst::State::Playing).unwrap();
-        wait_for_eos(&pipeline);
-        pipeline.set_state(gst::State::Null).unwrap();
-    }
-
-    #[test]
-    fn given_buffered_queue_when_sampled_then_current_depth_is_exported() {
-        setup_test();
-        let pipeline = gst::parse::launch(
-            "fakesrc num-buffers=200 ! queue name=observable_queue max-size-buffers=200 max-size-bytes=0 max-size-time=0 ! identity sleep-time=10000 ! fakesink",
-        )
-        .unwrap()
-        .downcast::<gst::Pipeline>()
-        .unwrap();
-        pipeline.set_state(gst::State::Playing).unwrap();
-        thread::sleep(Duration::from_millis(300));
-
-        let metrics = reqwest::blocking::get(format!("http://localhost:{PROM_PORT}"))
-            .unwrap()
-            .text()
-            .unwrap();
-        let depth = metric_value(
-            &metrics,
-            "gst_queue_current_level_buffers{element=\"observable_queue\"",
-        )
-        .unwrap();
-        assert!(depth > 0.0, "sampled queue depth was {depth}");
-        let queue_metric = metrics
-            .lines()
-            .find(|line| {
-                line.starts_with("gst_queue_current_level_buffers{element=\"observable_queue\"")
-            })
-            .unwrap();
-        assert!(queue_metric.contains("path=\"/GstPipeline:"));
-        assert!(queue_metric.contains("/GstQueue:observable_queue\""));
-
-        wait_for_eos(&pipeline);
-        pipeline.set_state(gst::State::Null).unwrap();
-    }
-
-    #[test]
-    fn bench_prom_latency_through_pipeline() {
-        setup_test();
-        let elapsed = run_bench("prom-latency");
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "Pipeline benchmark took too long: {:?}",
-            elapsed
-        );
-    }
-
-    fn run_bench(tracer_name: &str) -> std::time::Duration {
-        // Initialize GStreamer (loads your plugin & tracer)
-        gst::init().expect("Failed to initialize GStreamer");
-
-        // Verify that our element is registered:
-        assert!(
-            gst::TracerFactory::factories()
-                .iter()
-                .any(|f| f.name() == tracer_name),
-            "Expected to find the `prom-latency` element after registration"
-        );
-        // Link the elements together
-        let pipeline = create_pipeline("bench");
-
-        // Start playing and benchmark from PLAYING -> EOS
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("Unable to set the pipeline to Playing");
-
-        // Grab the bus to listen for EOS
-        let bus = pipeline.bus().unwrap();
-
-        // Start wall-clock timer
-        let start = Instant::now();
-
-        // Block until we see an EOS message
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            use gst::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => break,
-                MessageView::Error(err) => {
-                    panic!(
-                        "Error from {:?}: {} ({:?})",
-                        err.src().map(|s| s.path_string()),
-                        err.error(),
-                        err.debug()
-                    );
-                }
-                _ => (),
-            }
-        }
-
-        // Stop the pipeline
-        pipeline.set_state(gst::State::Null).unwrap();
-
-        // Report elapsed time
-
-        // (Optionally assert it’s under some threshold:)
-        // assert!(elapsed.as_secs_f64() < 1.0, "Pipeline too slow!");
-        start.elapsed()
-    }
-
-    fn create_pipeline(name: &str) -> gst::Pipeline {
-        let pipeline_el = gst::parse::launch("fakesrc num-buffers=10000 ! identity ! fakesink")
-            .expect("Failed to create pipeline from launch string");
-        pipeline_el.set_property("name", name);
-
-        pipeline_el
-            .downcast::<gst::Pipeline>()
-            .expect("Failed to downcast to gst::Pipeline")
-    }
-
-    fn metric_value(metrics: &str, prefix: &str) -> Option<f64> {
-        metrics
-            .lines()
-            .find(|line| line.starts_with(prefix))
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|value| value.parse::<f64>().ok())
-    }
-
-    fn wait_for_eos(pipeline: &gst::Pipeline) {
-        let bus = pipeline.bus().unwrap();
-        for msg in bus.iter_timed(gst::ClockTime::NONE) {
-            match msg.view() {
-                gst::MessageView::Eos(..) => break,
-                gst::MessageView::Error(err) => panic!(
-                    "Error from {:?}: {} ({:?})",
-                    err.src().map(|s| s.path_string()),
-                    err.error(),
-                    err.debug()
-                ),
-                _ => (),
-            }
-        }
-    }
-
-    fn setup_test() {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        env::set_var("GST_TRACERS", "prom-latency(port=9999)");
-        env::set_var("GST_DEBUG", "GST_TRACER:5,prom-latency:7");
-        let root_manifest_dir = manifest_dir.parent().unwrap().parent().unwrap();
-        let plugin_profiles = ["debug", "profiling", "release", "test"];
-        let mut plugin_paths = Vec::new();
-        for profile in plugin_profiles {
-            let base = root_manifest_dir.join(format!("target/{}", profile));
-            plugin_paths.push(base.to_str().unwrap().to_owned());
-            plugin_paths.push(
-                base.join(format!("{ARCH}-unknown-linux-gnu"))
-                    .to_str()
-                    .unwrap()
-                    .to_owned(),
-            );
-        }
-        let gst_plugin_path = plugin_paths.join(":");
-        env::set_var("GST_PLUGIN_PATH", gst_plugin_path);
-
-        // Initialize GStreamer
-        gst::init().expect("Failed to initialize GStreamer");
-
-        // Verify that our element is registered:
-        assert!(
-            gst::TracerFactory::factories()
-                .iter()
-                .any(|f| f.name() == "prom-latency"),
-            "Expected to find the `prom-latency` element after registration"
-        );
-
-        let binding = gst::active_tracers();
-        let _tracer = binding
-            .iter()
-            .find(|t| t.name() == "promlatencytracer0")
-            .expect("Expected to find the `promlatencytracer0` tracer");
-    }
+}
+
+// Keep the entry point used by the just/perf recipes, without a machine-speed
+// assertion in the correctness suite. Matched release runs use bench_matched.py.
+#[test]
+fn bench_prom_latency_through_pipeline() {
+    let pipeline = pipeline("bench", "fakesrc num-buffers=10000 ! identity ! fakesink");
+    let start = Instant::now();
+    run(&pipeline);
+    println!("10,000 buffers: {:?}", start.elapsed());
 }

@@ -112,6 +112,11 @@ thread_local! {
     /// Active synchronous push calls on this streaming thread. Child time gets
     /// accumulated into the parent, including multiple sequential tee branches.
     static SPAN_STACK: RefCell<Vec<SpanFrame>> = const { RefCell::new(Vec::new()) };
+    // Bounded direct-mapped cache: avoid GLib's qdata lock on steady pushes.
+    // Entries own only metric snapshots and weak element references, never pads.
+    static PAD_SNAPSHOTS: RefCell<[PadSnapshot; 64]> = const {
+        RefCell::new([const { PadSnapshot { pad: 0, cache: None } }; 64])
+    };
 }
 
 static QUEUE_LEVEL_BUFFERS: LazyLock<IntGaugeVec> = LazyLock::new(|| {
@@ -243,19 +248,23 @@ pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-/// This is used to cache the decision for a pad, so we don't have to
-/// repeatedly check the pad's state.
-/// If the value is null, it means we should skip measuring latency for this pad.
-/// If the value is a valid pointer, we fetch the PadCacheData from it.
-const PAD_SKIP_SENTINEL: *mut c_void = std::ptr::null_mut();
+// Changes to links, parenting or activation invalidate labels. Streaming only
+// reads this atomic; graph traversal and metric lookup happen on cache misses.
+static TOPOLOGY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Data structure to hold cached pad information used for latency measurement.
 struct PadCacheData {
     /// Pointer to the peer pad, used during unlink to verify the pad pair.
     peer: usize,
+    generation: u64,
 
     metrics: Option<PadMetrics>,
     sample_sequence: AtomicU64,
+}
+
+struct PadSnapshot {
+    pad: usize,
+    cache: Option<Arc<PadCacheData>>,
 }
 
 struct PadMetrics {
@@ -341,28 +350,17 @@ impl PromLatencyTracerImp {
             _tracer: *mut gst::Tracer,
             _ts: u64,
             src_pad: *mut gst::ffi::GstPad,
-            sink_pad: *mut gst::ffi::GstPad,
+            _sink_pad: *mut gst::ffi::GstPad,
             res: gst::ffi::GstPadLinkReturn,
         ) {
             if res == ffi::GST_PAD_LINK_OK {
-                let pad_latency_cache =
-                    PromLatencyTracerImp::do_create_latency_cache_for_pad_pair(src_pad, sink_pad);
-                if pad_latency_cache == PAD_SKIP_SENTINEL as *mut PadCacheData {
-                    gst::trace!(
-                        CAT,
-                        "do_pad_link_post called for src_pad: {:?}, sink_pad: {:?}, but no cache found.",
-                        src_pad,
-                        sink_pad
-                    );
-                    return;
-                }
-
-                // If we have a valid cache, we store it in the src_pad's quark data.
+                PromLatencyTracerImp::invalidate_topology();
+                // Defer label creation until data flows, after graph assembly.
                 glib::gobject_ffi::g_object_set_qdata_full(
-                    src_pad as *mut gobject_sys::GObject,
+                    src_pad.cast(),
                     *PAD_CACHE_QUARK,
-                    pad_latency_cache as *mut c_void,
-                    Some(PromLatencyTracerImp::drop_pad_cache),
+                    std::ptr::null_mut(),
+                    None,
                 );
             }
         }
@@ -374,31 +372,14 @@ impl PromLatencyTracerImp {
             sink_pad: *mut gst::ffi::GstPad,
             res: gboolean,
         ) {
-            // For reasons unknown to me, this callback appears to be called a lot. Perhaps it is accidentally
-            // registering for all events instead of just the pad unlink events.
-            //
-            // Anyways, we can tell by the sink_pad appearing as a small value, such as 0x11, 0x21, etc.
-            if res == GTRUE && sink_pad as usize > 4096usize {
-                // See if we have a cache for this pad pair. Sometimes unlink is called for the
-                // src_pad, but the sink_pad is not a pad, its something else. I am not sure what.
-                // Anyways, as a result, we confirm the sink_pad matches what we expect before
-                // unlinking.
-                let pad_cache = PromLatencyTracerImp::pad_cache(src_pad);
-
-                // If the peer matches the provided sink, we remove the cache.
-                if pad_cache.is_some_and(|cache| sink_pad as usize == cache.peer) {
-                    gst::trace!(
-                        CAT,
-                        "removing cache for src_pad: {:?}, sink_pad: {:?}",
-                        src_pad,
-                        sink_pad
-                    );
-                    glib::gobject_ffi::g_object_set_qdata_full(
-                        src_pad as *mut gobject_sys::GObject,
-                        *PAD_CACHE_QUARK,
-                        std::ptr::null_mut(),
-                        None,
-                    );
+            if res == GTRUE {
+                PromLatencyTracerImp::invalidate_topology();
+                if let Some(cache) = PromLatencyTracerImp::pad_cache(src_pad) {
+                    if cache.peer == sink_pad as usize {
+                        // A concurrent relink may already have installed a new
+                        // cache. Only remove the exact snapshot we inspected.
+                        PromLatencyTracerImp::replace_pad_cache(src_pad, Some(&cache), None);
+                    }
                 }
             }
         }
@@ -491,7 +472,7 @@ impl PromLatencyTracerImp {
     }
 
     /// Resolve proxy pads using owned wrappers; each temporary reference drops.
-    fn get_real_pad_parent_ffi(pad: *mut ffi::GstPad) -> Option<gst::Element> {
+    fn resolve_pad(pad: *mut ffi::GstPad) -> Option<gst::Pad> {
         // from_glib_none sinks floating GObjects. Dynamic RTSP pads can still
         // be floating here: consuming that reference would free the caller's
         // pad when our wrapper drops. Borrow, then clone with g_object_ref.
@@ -504,18 +485,10 @@ impl PromLatencyTracerImp {
             } else if pad.is::<gst::ProxyPad>() {
                 pad = pad.parent()?.downcast::<gst::Pad>().ok()?.peer()?;
             } else {
-                return pad.parent_element();
+                return Some(pad);
             }
         }
         None
-    }
-
-    unsafe fn is_pad(pad: *mut ffi::GstPad) -> bool {
-        let pad_type = ffi::gst_pad_get_type();
-        glib::gobject_ffi::g_type_check_instance_is_a(
-            pad as *mut glib::gobject_ffi::GTypeInstance,
-            pad_type,
-        ) == glib::ffi::GTRUE
     }
 
     /// Release qdata's ownership. In-flight spans retain their own reference.
@@ -541,70 +514,129 @@ impl PromLatencyTracerImp {
         (!ptr.is_null()).then(|| Arc::from_raw(ptr.cast::<PadCacheData>()))
     }
 
-    /// Given a source and sink pad, returns the PadCacheData for the pad pair.
-    /// If the pads are not valid for any reason, returns a sentinel value indicating to skip this pair.
+    pub(crate) fn invalidate_topology() {
+        TOPOLOGY_GENERATION.fetch_add(1, Ordering::Release);
+    }
+
+    /// Atomically replace qdata while retaining in-flight snapshots. On success
+    /// GLib transfers the old qdata reference to us; on failure we reclaim the
+    /// new reference that GLib did not take. No borrowed pointer escapes.
+    unsafe fn replace_pad_cache(
+        pad: *mut ffi::GstPad,
+        previous: Option<&Arc<PadCacheData>>,
+        next: Option<&Arc<PadCacheData>>,
+    ) -> bool {
+        let old = previous.map_or(std::ptr::null_mut(), |cache| {
+            Arc::as_ptr(cache).cast_mut().cast()
+        });
+        let new = next.map_or(std::ptr::null_mut(), |cache| {
+            Arc::into_raw(cache.clone()).cast_mut().cast()
+        });
+        let destroy = next.map(|_| Self::drop_pad_cache as unsafe extern "C" fn(*mut c_void));
+        let mut old_destroy = None;
+        let replaced = glib::gobject_ffi::g_object_replace_qdata(
+            pad.cast(),
+            *PAD_CACHE_QUARK,
+            old,
+            new,
+            destroy,
+            &mut old_destroy,
+        ) == GTRUE;
+        if replaced {
+            if let Some(destroy) = old_destroy {
+                destroy(old);
+            }
+        } else if !new.is_null() {
+            Self::drop_pad_cache(new);
+        }
+        replaced
+    }
+
+    #[inline]
+    unsafe fn current_pad_cache(pad: *mut ffi::GstPad) -> Arc<PadCacheData> {
+        let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
+        let key = pad as usize;
+        let index = ((key >> 4) ^ (key >> 12)) & 63;
+        let cached = PAD_SNAPSHOTS.with(|slots| {
+            let slots = slots.borrow();
+            let slot = &slots[index];
+            slot.cache
+                .as_ref()
+                .filter(|cache| slot.pad == key && cache.generation == generation)
+                .cloned()
+        });
+        if let Some(cache) = cached {
+            return cache;
+        }
+        // Drop the TLS borrow before GObject calls, which can reenter tracing.
+        let cache = Self::refresh_pad_cache(pad);
+        PAD_SNAPSHOTS.with(|slots| {
+            slots.borrow_mut()[index] = PadSnapshot {
+                pad: key,
+                cache: Some(cache.clone()),
+            };
+        });
+        cache
+    }
+
+    #[cold]
+    unsafe fn refresh_pad_cache(pad: *mut ffi::GstPad) -> Arc<PadCacheData> {
+        loop {
+            let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
+            let previous = Self::pad_cache(pad);
+            if let Some(cache) = &previous {
+                if cache.generation == generation {
+                    return previous.unwrap();
+                }
+            }
+            let borrowed = gst::Pad::from_glib_borrow(pad);
+            let peer = borrowed.peer();
+            let cache = peer
+                .as_ref()
+                .and_then(|peer| {
+                    Self::do_create_latency_cache_for_pad_pair(pad, peer.as_ptr(), generation)
+                })
+                .unwrap_or_else(|| {
+                    Arc::new(PadCacheData {
+                        peer: peer.as_ref().map_or(0, |peer| peer.as_ptr() as usize),
+                        generation,
+                        metrics: None,
+                        sample_sequence: AtomicU64::new(0),
+                    })
+                });
+            if Self::replace_pad_cache(pad, previous.as_ref(), Some(&cache)) {
+                return cache;
+            }
+            // Another streaming thread or a topology hook won the race. Reuse
+            // its snapshot instead of overwriting a newer link's cache.
+        }
+    }
+
+    /// Resolve labels only when first used or after a topology change. Owned
+    /// traversal references are released before returning the metric handles.
     fn do_create_latency_cache_for_pad_pair(
         src_pad: *mut gst::ffi::GstPad,
         sink_pad: *mut gst::ffi::GstPad,
-    ) -> *mut PadCacheData {
-        // FIXME - There is currently an issue with this approach.
-        //         What can happen is, if we have a complicated bin element, such as rtspsrc2, what can happen is
-        //         we link things in an order which results in not having the ability to go from 'real src pad' to
-        //         'real sink pad'. The reason being our intermediary proxy / ghost pads haven't actually been linked yet.
-        //         So we don't actually know what the real sink or src pad will be at this time.
-        //
-        //         When they are finally linked, we're linking two proxy pads. But really, we would want to revisit
-        //         the real pads and link those together instead, and remove any existing caches that contain the
-        //         proxy pads. This functionality is missing at this time, meaning some latencies will be measured
-        //         against proxy pads instead of real pads for complicated elements, which is not ideal.
-        // ---
-        // Ensure pads are not null.
+        generation: u64,
+    ) -> Option<Arc<PadCacheData>> {
         if src_pad.is_null() || sink_pad.is_null() {
-            gst::trace!(
-                CAT,
-                "do_get_latency_cache_for_pad_pair called with null pads: src: {:?}, sink: {:?}",
-                src_pad,
-                sink_pad
-            );
-            return PAD_SKIP_SENTINEL as *mut PadCacheData;
+            return None;
         }
-
-        // Ensure what we were passed are actually pads
-        if !unsafe { Self::is_pad(src_pad) } || !unsafe { Self::is_pad(sink_pad) } {
-            gst::trace!(
-                CAT,
-                "do_get_latency_cache_for_pad_pair called with non-pad objects: src: {:?}, sink: {:?}",
-                src_pad,
-                sink_pad
-            );
-            return PAD_SKIP_SENTINEL as *mut PadCacheData;
+        // Ghost/proxy forwarding adds nested push hooks. Record the edge into
+        // the real sink only, keeping forwarding frames for child accounting.
+        let sink = unsafe { gst::Pad::from_glib_borrow(sink_pad) };
+        if sink.is::<gst::ProxyPad>() {
+            return None;
         }
-
-        // Ensure that the pads have a parent
-        let src_parent_element = Self::get_real_pad_parent_ffi(src_pad);
-        let sink_parent_element = Self::get_real_pad_parent_ffi(sink_pad);
-        if src_parent_element.is_none() || sink_parent_element.is_none() {
-            gst::trace!(
-                CAT,
-                "do_get_latency_cache_for_pad_pair called with pads without parents: src: {:?}, sink: {:?}",
-                src_pad,
-                sink_pad
-            );
-            return PAD_SKIP_SENTINEL as *mut PadCacheData;
-        }
+        let source = Self::resolve_pad(src_pad)?;
+        let _source_parent = source.parent_element()?;
+        let sink_parent = sink.parent_element()?;
 
         // Prepare metrics
-        let sink_parent = sink_parent_element.unwrap();
         let el_name = sink_parent.name().to_string();
-        let src_pad_name = Self::pad_name(src_pad);
+        let src_pad_name = Self::pad_name(source.as_ptr());
         let sink_pad_name = Self::pad_name(sink_pad);
 
-        // FIXME - technically would only want to compute these when we switch to PLAYING state for the pipeline
-        //         otherwise the 'path' may not include the full path if the elements the bins have been added to
-        //         so far have not yet been added to the pipeline overall.
-        //
-        //         To fix this, it would be wise to move away from qdata, so we can more easily lock and iteratively
-        //         update our caches when the pipeline goes to PLAYING state, or in any other situation.
         let ancestor_path = sink_parent
             .parent()
             .map(|p| p.path_string().to_string())
@@ -627,11 +659,12 @@ impl PromLatencyTracerImp {
         });
 
         // Create cache
-        Arc::into_raw(Arc::new(PadCacheData {
+        Some(Arc::new(PadCacheData {
             peer: sink_pad as usize,
+            generation,
             metrics,
             sample_sequence: AtomicU64::new(0),
-        })) as *mut PadCacheData
+        }))
     }
 
     fn pad_name(pad: *mut gst::ffi::GstPad) -> String {
@@ -657,7 +690,7 @@ impl PromLatencyTracerImp {
         src_pad: *mut gst::ffi::GstPad,
         buffer: *mut gst::ffi::GstBuffer,
     ) {
-        let cache = Self::pad_cache(src_pad);
+        let cache = Some(Self::current_pad_cache(src_pad));
         let sampled = cache.as_ref().is_some_and(|cache| {
             cache.metrics.is_some()
                 && Self::sample_sequence(
@@ -702,24 +735,13 @@ impl PromLatencyTracerImp {
         // Use the same clock at both boundaries, excluding this span's metric
         // export work. Nested tracer bookkeeping still adds measurement noise.
         let wall_end_ns = gst::get_timestamp().nseconds();
-        let frame_exists =
-            SPAN_STACK.with(|stack| stack.borrow().iter().any(|frame| frame.pad == src_pad));
-        if !frame_exists {
-            return;
-        }
-        let measure_cpu = SPAN_STACK.with(|stack| {
-            stack
-                .borrow()
-                .last()
-                .is_some_and(|frame| frame.start_cpu_ns.is_some())
-        });
-        let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
-        let cache =
-            SPAN_STACK.with(|stack| stack.borrow().last().and_then(|frame| frame.cache.clone()));
         let completed = SPAN_STACK.with(|stack| {
-            Self::complete_span(&mut stack.borrow_mut(), src_pad, wall_end_ns, cpu_end_ns)
+            let mut stack = stack.borrow_mut();
+            let measure_cpu = stack.last()?.start_cpu_ns.is_some();
+            let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
+            Self::complete_span(&mut stack, src_pad, wall_end_ns, cpu_end_ns)
         });
-        let Some(completed) = completed else {
+        let Some((completed, cache)) = completed else {
             return;
         };
         let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) else {
@@ -751,7 +773,7 @@ impl PromLatencyTracerImp {
         pad: *mut gst::ffi::GstPad,
         wall_end_ns: u64,
         cpu_end_ns: Option<u64>,
-    ) -> Option<CompletedSpan> {
+    ) -> Option<(CompletedSpan, Option<Arc<PadCacheData>>)> {
         let frame = stack.pop()?;
         if frame.pad != pad {
             gst::warning!(
@@ -778,12 +800,15 @@ impl PromLatencyTracerImp {
             }
         }
 
-        Some(CompletedSpan {
-            exclusive_wall_ns: Self::compute_element_latency(raw_wall_ns, frame.child_wall_ns),
-            exclusive_cpu_ns: raw_cpu_ns
-                .map(|cpu| Self::compute_element_latency(cpu, frame.child_cpu_ns)),
-            sampled: frame.sampled,
-        })
+        Some((
+            CompletedSpan {
+                exclusive_wall_ns: Self::compute_element_latency(raw_wall_ns, frame.child_wall_ns),
+                exclusive_cpu_ns: raw_cpu_ns
+                    .map(|cpu| Self::compute_element_latency(cpu, frame.child_cpu_ns)),
+                sampled: frame.sampled,
+            },
+            frame.cache,
+        ))
     }
 
     fn sample_sequence(sequence: u64, pad: u64) -> bool {
@@ -1000,6 +1025,128 @@ mod tests {
     use gstreamer as gst;
     use std::sync::Arc;
 
+    fn empty_cache(generation: u64) -> Arc<super::PadCacheData> {
+        Arc::new(super::PadCacheData {
+            peer: 0,
+            generation,
+            metrics: None,
+            sample_sequence: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+
+    #[test]
+    fn thread_cache_reuses_snapshots_until_topology_changes_without_retaining_elements() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("identity")
+            .name("snapshot_source")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("identity")
+            .name("snapshot_sink")
+            .build()
+            .unwrap();
+        source.link(&sink).unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let weak_source = source.downgrade();
+        let weak_sink = sink.downgrade();
+        unsafe {
+            let first = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
+            let hit = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
+            assert!(Arc::ptr_eq(&first, &hit));
+            PromLatencyTracerImp::invalidate_topology();
+            let refreshed = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
+            assert!(!Arc::ptr_eq(&first, &refreshed));
+        }
+        drop(pad);
+        drop(source);
+        drop(sink);
+        assert!(weak_source.upgrade().is_none());
+        assert!(weak_sink.upgrade().is_none());
+    }
+
+    #[test]
+    fn stale_unlink_cannot_remove_a_replacement_cache() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        let first = empty_cache(1);
+        let second = empty_cache(2);
+        unsafe {
+            assert!(PromLatencyTracerImp::replace_pad_cache(
+                pad.as_ptr(),
+                None,
+                Some(&first)
+            ));
+            assert!(PromLatencyTracerImp::replace_pad_cache(
+                pad.as_ptr(),
+                Some(&first),
+                Some(&second)
+            ));
+            assert!(!PromLatencyTracerImp::replace_pad_cache(
+                pad.as_ptr(),
+                Some(&first),
+                None
+            ));
+            // A failed install must also release the new qdata reference.
+            assert!(!PromLatencyTracerImp::replace_pad_cache(
+                pad.as_ptr(),
+                None,
+                Some(&first)
+            ));
+            assert!(Arc::ptr_eq(
+                &PromLatencyTracerImp::pad_cache(pad.as_ptr()).unwrap(),
+                &second
+            ));
+        }
+        drop(pad);
+        assert_eq!(Arc::strong_count(&first), 1);
+        assert_eq!(Arc::strong_count(&second), 1);
+    }
+
+    #[test]
+    fn concurrent_cache_readers_survive_replacement_and_release_all_references() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        let mut weak_caches = Vec::new();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                start.wait();
+                for _ in 0..10_000 {
+                    if let Some(snapshot) = unsafe { PromLatencyTracerImp::pad_cache(pad.as_ptr()) }
+                    {
+                        assert_eq!(snapshot.generation, 1);
+                        std::hint::black_box(&snapshot);
+                    }
+                }
+            });
+            start.wait();
+            for iteration in 0..10_000 {
+                let cache = empty_cache(1);
+                // Most allocations must actually be freed during the race so
+                // ASan can detect stale accesses; retain weak probes for a
+                // subset to check that ownership is released after joining.
+                if iteration % 128 == 0 {
+                    weak_caches.push(Arc::downgrade(&cache));
+                }
+                unsafe {
+                    glib::gobject_ffi::g_object_set_qdata_full(
+                        pad.as_ptr().cast(),
+                        *super::PAD_CACHE_QUARK,
+                        Arc::into_raw(cache).cast_mut().cast(),
+                        Some(PromLatencyTracerImp::drop_pad_cache),
+                    );
+                    glib::gobject_ffi::g_object_set_qdata_full(
+                        pad.as_ptr().cast(),
+                        *super::PAD_CACHE_QUARK,
+                        std::ptr::null_mut(),
+                        None,
+                    );
+                }
+            }
+        });
+        assert!(weak_caches.iter().all(|cache| cache.upgrade().is_none()));
+    }
+
     #[test]
     fn given_floating_pad_when_inspected_then_callers_reference_is_untouched() {
         gst::init().unwrap();
@@ -1013,7 +1160,10 @@ mod tests {
         let refs = pad.ref_count();
         let floating = || unsafe { glib::gobject_ffi::g_object_is_floating(pad.as_ptr().cast()) };
         assert_eq!(floating(), glib::ffi::GTRUE);
-        assert!(PromLatencyTracerImp::get_real_pad_parent_ffi(pad.to_glib_none().0).is_none());
+        assert!(PromLatencyTracerImp::resolve_pad(pad.to_glib_none().0)
+            .unwrap()
+            .parent_element()
+            .is_none());
         assert_eq!(
             PromLatencyTracerImp::pad_name(pad.to_glib_none().0),
             "floating"
@@ -1058,16 +1208,17 @@ mod tests {
             let cache = PromLatencyTracerImp::do_create_latency_cache_for_pad_pair(
                 src_pad.to_glib_none().0,
                 sink_pad.to_glib_none().0,
-            );
-            assert_ne!(cache.cast(), super::PAD_SKIP_SENTINEL);
+                1,
+            )
+            .unwrap();
             assert_eq!(source.ref_count(), source_refs);
             assert_eq!(sink.ref_count(), sink_refs);
-            glib::gobject_ffi::g_object_set_qdata_full(
-                src_pad.as_ptr().cast(),
-                *super::PAD_CACHE_QUARK,
-                cache.cast(),
-                Some(PromLatencyTracerImp::drop_pad_cache),
-            );
+            assert!(PromLatencyTracerImp::replace_pad_cache(
+                src_pad.as_ptr(),
+                None,
+                Some(&cache),
+            ));
+            drop(cache);
             let snapshot = PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).unwrap();
             let weak = Arc::downgrade(&snapshot);
             // Parent forces accounting even when a test environment filters this element.
@@ -1108,7 +1259,7 @@ mod tests {
             child_cpu_ns: 0,
             sampled: true,
         }];
-        let span = PromLatencyTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
+        let (span, _) = PromLatencyTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
         assert_eq!(span.exclusive_wall_ns, 10);
         assert_eq!(span.exclusive_cpu_ns, None);
     }
@@ -1197,7 +1348,8 @@ mod tests {
         PromLatencyTracerImp::complete_span(&mut stack, second_child_pad, 65, Some(35));
 
         assert_eq!(
-            PromLatencyTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50)),
+            PromLatencyTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50))
+                .map(|(span, _)| span),
             Some(CompletedSpan {
                 exclusive_wall_ns: 50,
                 exclusive_cpu_ns: Some(25),
@@ -1223,7 +1375,8 @@ mod tests {
         }];
 
         assert_eq!(
-            PromLatencyTracerImp::complete_span(&mut stack, received_pad, 10, None),
+            PromLatencyTracerImp::complete_span(&mut stack, received_pad, 10, None)
+                .map(|(span, _)| span),
             None
         );
         assert!(stack.is_empty());

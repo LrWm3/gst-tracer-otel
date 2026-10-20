@@ -71,6 +71,9 @@ mod imp {
 
             // Register callback to start metrics server if needed.
             self.register_hook(TracerHook::ElementNew);
+            self.register_hook(TracerHook::BinAddPost);
+            self.register_hook(TracerHook::BinRemovePost);
+            self.register_hook(TracerHook::ElementChangeStatePre);
         }
 
         fn signals() -> &'static [glib::subclass::Signal] {
@@ -100,6 +103,30 @@ mod imp {
     impl GstObjectImpl for PromLatencyTracer {}
 
     impl TracerImpl for PromLatencyTracer {
+        fn bin_add_post(&self, _ts: u64, _bin: &gst::Bin, _element: &gst::Element, success: bool) {
+            if success {
+                PromLatencyTracerImp::invalidate_topology();
+            }
+        }
+
+        fn bin_remove_post(&self, _ts: u64, _bin: &gst::Bin, success: bool) {
+            if success {
+                PromLatencyTracerImp::invalidate_topology();
+            }
+        }
+
+        fn element_change_state_pre(
+            &self,
+            _ts: u64,
+            _element: &gst::Element,
+            change: gst::StateChange,
+        ) {
+            if change == gst::StateChange::ReadyToPaused {
+                // Also pick up names changed while the pipeline was stopped.
+                PromLatencyTracerImp::invalidate_topology();
+            }
+        }
+
         fn element_new(&self, ts: u64, element: &gst::Element) {
             let port = self.settings.read().unwrap().server_port;
             self.core.element_new(ts, element, port);

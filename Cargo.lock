@@ -1037,9 +1037,7 @@ name = "gst-prometheus-tracer"
 version = "0.1.0"
 dependencies = [
  "glib",
- "gobject-sys",
  "gstreamer",
- "gstreamer-sys",
  "libc",
  "prometheus",
  "reqwest",
