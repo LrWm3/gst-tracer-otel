@@ -202,6 +202,10 @@ Controlled pipelines confirmed these boundaries:
 - Multiple sequential tee branches are accumulated and subtracted from their
   parent instead of retaining only the final child span.
 
+Pad labels are resolved on first use and refreshed after relinking, reparenting,
+or a READY-to-PAUSED transition. Ghost-pad forwarding records each real sink
+once. Old label series remain in the Prometheus registry.
+
 An earlier exploratory microbenchmark on an integrated memory nvidia device measured 2.857 s versus 3.043 s,
 but used different element-selection configurations. It does not establish
 matched per-edge overhead or a CPU-percentage estimate. Subsequent
@@ -211,6 +215,10 @@ actual scraping. Short processor runs showed no material throughput penalty;
 the buffer-only loop did reveal additional instrumentation cost. The report
 separates build versions, startup fixes and an off-run shutdown failure.
 Long-soak and rare-tail qualification remain outstanding.
+
+Local synthetic benchmarks with identical settings measured 1.9–2.5% less CPU
+per buffer with sampling, and little change when observing every buffer. See the
+[benchmark report](BENCHMARK.md) for results and reproduction commands.
 
 See [Rust review and cleanup plan](REVIEW.md) for fixes and remaining limitations.
 

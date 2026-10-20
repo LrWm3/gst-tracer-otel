@@ -111,7 +111,7 @@ cargo test
 - [x] Implement a working version of `prom-latency`, for measuring latency across elements.
 - [x] Implement a working version of `otel-tracer`, for spans & traces as buffers flow through the pipeline & log traceid correlation.
 - [x] Implement a working version of `pyroscope`, for collecting profiles from gstreamer pipelines.
-- [x] Have `prom-latency` cache relationship information on `pad_link_post` and `pad_unlink_post` to minimize the `pad_push_pre` and `pad_push_post` look-up time.
+- [x] Have `prom-latency` cache pad relationships and metric labels, refreshing them on topology changes to keep per-buffer lookups cheap.
 - [x] Have `prom-latency` latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
 - [ ] Have `prom-latency` support latency measurements across bin elements.
 - [ ] In `prom-latency` split count metric into `buf_in_count` and `buf_out_count` to capture behavior of muxer & demuxer elements.
