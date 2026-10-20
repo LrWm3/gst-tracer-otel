@@ -5,6 +5,7 @@ use std::sync::{LazyLock, OnceLock};
 use crate::{
     capture,
     export::{self, Config, FlushError, Runtime},
+    metadata,
 };
 
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
@@ -85,7 +86,6 @@ mod imp {
                 TracerHook::PadPushPost,
                 TracerHook::PadLinkPost,
                 TracerHook::PadUnlinkPost,
-                TracerHook::ElementNew,
                 TracerHook::ElementAddPad,
                 TracerHook::ElementRemovePad,
                 TracerHook::BinAddPost,
@@ -120,30 +120,31 @@ mod imp {
         fn pad_link_post(
             &self,
             _: u64,
-            _: &gst::Pad,
-            _: &gst::Pad,
+            src: &gst::Pad,
+            sink: &gst::Pad,
             _: Result<gst::PadLinkSuccess, gst::PadLinkError>,
         ) {
-            capture::invalidate();
+            metadata::invalidate(src);
+            metadata::invalidate(sink);
         }
-        fn pad_unlink_post(&self, _: u64, _: &gst::Pad, _: &gst::Pad, _: bool) {
-            capture::invalidate();
+        fn pad_unlink_post(&self, _: u64, src: &gst::Pad, sink: &gst::Pad, _: bool) {
+            metadata::invalidate(src);
+            metadata::invalidate(sink);
         }
-        fn element_new(&self, _: u64, element: &gst::Element) {
-            element.connect_notify(Some("name"), |_, _| capture::invalidate());
-            capture::invalidate();
+        fn element_add_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+            metadata::invalidate(element);
+            metadata::invalidate(pad);
         }
-        fn element_add_pad(&self, _: u64, _: &gst::Element, _: &gst::Pad) {
-            capture::invalidate();
+        fn element_remove_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+            metadata::invalidate(element);
+            metadata::invalidate(pad);
         }
-        fn element_remove_pad(&self, _: u64, _: &gst::Element, _: &gst::Pad) {
-            capture::invalidate();
+        fn bin_add_post(&self, _: u64, _: &gst::Bin, element: &gst::Element, _: bool) {
+            metadata::invalidate(element);
         }
-        fn bin_add_post(&self, _: u64, _: &gst::Bin, _: &gst::Element, _: bool) {
-            capture::invalidate();
-        }
-        fn bin_remove_post(&self, _: u64, _: &gst::Bin, _: bool) {
-            capture::invalidate();
+        fn bin_remove_post(&self, _: u64, bin: &gst::Bin, _: bool) {
+            // Old weak subscriptions also cover the subtree just removed.
+            metadata::invalidate(bin);
         }
         fn element_change_state_post(
             &self,

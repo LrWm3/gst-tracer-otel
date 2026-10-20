@@ -91,3 +91,27 @@ required check. [Tracer documentation](tracer/otel/README.md) records configurat
 resource and limit handling, flush/shutdown, counters, and propagation boundaries.
 The existing workspace audit and Pyroscope dependency-check findings are recorded
 there; Prometheus and independent Pyroscope changes remain outside this queue.
+
+
+## 3. Follow-up efficiency improvements
+
+Authorized by the user: "ok work through these".
+Baseline for this pass: `ab5b76f` (compact capture v1).
+
+- [x] Reject unsampled descendants before loading descriptive metadata.
+- [x] Shard producer counters and submission bookkeeping; evaluate queue contention.
+- [x] Drain worker records in chunks and preallocate replacement batches.
+- [x] Consume SpanData during exporter conversion instead of cloning it.
+- [x] Target metadata invalidation and use per-buffer fallback synchronization.
+
+Preserve sampling/context, bounded memory, flush/shutdown, and exact quiescent
+loss accounting. Compare healthy delivery at 1, 4, and 16 streaming threads;
+exercise metadata churn, shared buffers, slow/failed receivers, and retirement.
+
+Completed with 64 fixed bookkeeping shards, chunked worker draining, a narrow
+version-pinned protobuf conversion patch, weak object-local cache subscriptions,
+and stable per-buffer sidecars. The bounded shared queue remains; per-producer
+queues require a separate design and are not justified by an isolated queue-cost
+measurement in this pass. See [follow-up results](tracer/otel/bench/FOLLOWUP_RESULTS.md)
+for all 213 measured runs, including timing variability, full-delivery checks,
+failure accounting, correctness tests, and the existing workspace check failures.

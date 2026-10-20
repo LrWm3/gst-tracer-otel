@@ -1,21 +1,15 @@
 //! Streaming-thread capture: cached descriptors, owned tokens, and a reusable stack.
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, LazyLock};
 
-use arc_swap::ArcSwapOption;
-use glib::translate::IntoGlib;
 use gstreamer::{self as gst, prelude::*};
 use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
-use opentelemetry::KeyValue;
 use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator};
 
 use crate::export::{text_value, Runtime};
 
 const MAX_DEPTH: usize = 256;
-static EPOCH: AtomicU64 = AtomicU64::new(1);
-static SITE_QUARK: LazyLock<glib::Quark> =
-    LazyLock::new(|| glib::Quark::from_str("gst.otel.site.v2"));
 static IDS: LazyLock<RandomIdGenerator> = LazyLock::new(RandomIdGenerator::default);
 
 #[derive(Clone, Debug)]
@@ -57,14 +51,7 @@ impl Token {
     }
 }
 
-pub(crate) struct Site {
-    pub attributes: Vec<KeyValue>,
-    pub source: bool,
-    pub(crate) epoch: u64,
-}
-struct PadState {
-    site: ArcSwapOption<Site>,
-}
+pub(crate) use crate::metadata::Site;
 
 pub(crate) struct ThreadInfo {
     pub id: Arc<str>,
@@ -93,92 +80,6 @@ struct ThreadState {
     info: Option<Arc<ThreadInfo>>,
 }
 thread_local! { static LOCAL: RefCell<ThreadState> = RefCell::new(ThreadState::default()); }
-
-pub(crate) fn invalidate() {
-    EPOCH.fetch_add(1, Relaxed);
-}
-
-unsafe extern "C" fn drop_pad_state(ptr: glib::ffi::gpointer) {
-    drop(Box::from_raw(ptr as *mut PadState));
-}
-
-fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
-    // The qdata slot is installed once and never replaced. The hook's borrowed
-    // pad keeps it alive while we load the separately reference-counted site.
-    // compare-and-replace handles concurrent first use; ArcSwap protects readers
-    // while topology invalidation replaces descriptors.
-    let state = unsafe {
-        let object = pad.as_ptr() as *mut glib::gobject_ffi::GObject;
-        let quark = SITE_QUARK.into_glib();
-        let mut ptr = glib::gobject_ffi::g_object_get_qdata(object, quark) as *mut PadState;
-        if ptr.is_null() {
-            let candidate = Box::into_raw(Box::new(PadState {
-                site: ArcSwapOption::empty(),
-            }));
-            let installed = glib::gobject_ffi::g_object_replace_qdata(
-                object,
-                quark,
-                std::ptr::null_mut(),
-                candidate.cast(),
-                Some(drop_pad_state),
-                std::ptr::null_mut(),
-            );
-            if installed != glib::ffi::GFALSE {
-                ptr = candidate;
-                pad.connect_notify(Some("name"), |_, _| invalidate());
-            } else {
-                drop(Box::from_raw(candidate));
-                ptr = glib::gobject_ffi::g_object_get_qdata(object, quark).cast();
-            }
-        }
-        &*ptr
-    };
-    let epoch = EPOCH.load(Relaxed);
-    if let Some(site) = state.site.load_full().filter(|s| s.epoch == epoch) {
-        return site;
-    }
-    let parent = pad.parent_element();
-    let peer = pad.peer();
-    let peer_parent = peer.as_ref().and_then(|p| p.parent_element());
-    let values = [
-        (
-            "src_pad.element",
-            parent
-                .as_ref()
-                .map(|p| p.name().to_string())
-                .unwrap_or_default(),
-        ),
-        ("src_pad.name", pad.name().to_string()),
-        ("src_pad.path", pad.path_string().to_string()),
-        (
-            "sink_pad.element",
-            peer_parent
-                .map(|p| p.name().to_string())
-                .unwrap_or_default(),
-        ),
-        (
-            "sink_pad.name",
-            peer.as_ref()
-                .map(|p| p.name().to_string())
-                .unwrap_or_default(),
-        ),
-        (
-            "sink_pad.path",
-            peer.map(|p| p.path_string().to_string())
-                .unwrap_or_default(),
-        ),
-    ];
-    let descriptor = Arc::new(Site {
-        attributes: values
-            .into_iter()
-            .map(|(key, value)| KeyValue::new(key, text_value(&value, limit)))
-            .collect(),
-        source: parent.is_some_and(|p| p.element_flags().contains(gst::ElementFlags::SOURCE)),
-        epoch,
-    });
-    state.site.store(Some(descriptor.clone()));
-    descriptor
-}
 
 fn root(ratio: f64) -> Token {
     // External unsampled contexts must remain unsampled, including at sources.
@@ -215,29 +116,31 @@ pub(crate) fn current_context() -> Option<SpanContext> {
 }
 
 pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-    let overflow = LOCAL.with(|local| {
+    let (overflow, inherited) = LOCAL.with(|local| {
         let mut state = local.borrow_mut();
         if state.overflow > 0 || state.frames.len() == MAX_DEPTH {
             state.overflow += 1;
-            true
+            (true, None)
         } else {
-            false
+            (false, state.frames.last().map(|frame| frame.token.clone()))
         }
     });
     if overflow {
-        runtime.stats.dropped_depth.fetch_add(1, Relaxed);
+        runtime.stats.local().dropped_depth.fetch_add(1, Relaxed);
         return;
     }
-    let site = site(pad, runtime.config.value_length_limit);
-    let inherited = LOCAL.with(|local| local.borrow().frames.last().map(|f| f.token.clone()));
     // A real source starts a new buffer journey, even when a buffer was recycled.
-    let is_root = inherited.is_none() && site.source;
+    let is_root = inherited.is_none() && crate::metadata::is_source(pad);
     let parent_token = inherited.unwrap_or_else(|| {
         if is_root {
             root(runtime.config.ratio)
         } else {
             crate::propagation::read(buffer).unwrap_or_else(|| {
-                runtime.stats.propagation_misses.fetch_add(1, Relaxed);
+                runtime
+                    .stats
+                    .local()
+                    .propagation_misses
+                    .fetch_add(1, Relaxed);
                 Token::rejected()
             })
         }
@@ -245,9 +148,10 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
     let parent = parent_token.span_id;
     let mut token = parent_token;
     let record = if token.sampled() && runtime.accepting() {
+        let site = crate::metadata::site(pad, runtime.config.value_length_limit);
         token.span_id = IDS.new_span_id();
         runtime.anchor(ts);
-        runtime.stats.started_spans.fetch_add(1, Relaxed);
+        runtime.stats.local().started_spans.fetch_add(1, Relaxed);
         let thread = LOCAL.with(|local| {
             let mut state = local.borrow_mut();
             state
@@ -280,9 +184,9 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
         })
     } else {
         if token.sampled() {
-            runtime.stats.skipped_closed.fetch_add(1, Relaxed);
+            runtime.stats.local().skipped_closed.fetch_add(1, Relaxed);
         } else {
-            runtime.stats.unsampled_pushes.fetch_add(1, Relaxed);
+            runtime.stats.local().unsampled_pushes.fetch_add(1, Relaxed);
         }
         None
     };
@@ -308,7 +212,7 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
             .last()
             .is_none_or(|f| f.pad != pad.as_ptr() as usize)
         {
-            runtime.stats.mismatched_hooks.fetch_add(1, Relaxed);
+            runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
             return None;
         }
         state.frames.pop()
@@ -406,8 +310,42 @@ mod tests {
             end(&runtime, 200, &pad, 0);
         }
         assert!(current_context().is_none());
+        assert!(!crate::metadata::has_description(&pad));
         assert_eq!(runtime.stats.snapshot().dropped_depth, 10);
         assert_eq!(runtime.stats.snapshot().mismatched_hooks, 0);
         runtime.shutdown(Duration::from_secs(2)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod sampling_metadata_tests {
+    use super::*;
+    use crate::export::{
+        tests::{runtime, Collector},
+        Config,
+    };
+    #[test]
+    fn rejected_nested_pushes_never_materialize_descriptions() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let identity = gst::ElementFactory::make("identity").build().unwrap();
+        let source_pad = source.static_pad("src").unwrap();
+        let pad = identity.static_pad("src").unwrap();
+        let buffer = gst::Buffer::new();
+        let runtime = runtime(
+            Config {
+                ratio: 0.0,
+                ..Config::default()
+            },
+            Collector::default(),
+        );
+        begin(&runtime, 1, &source_pad, &buffer);
+        begin(&runtime, 2, &pad, &buffer);
+        assert!(!crate::metadata::has_description(&source_pad));
+        assert!(!crate::metadata::has_description(&pad));
+        end(&runtime, 3, &pad, 0);
+        end(&runtime, 4, &source_pad, 0);
+        assert!(!crate::propagation::read(&buffer).unwrap().sampled());
+        runtime.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }
 }

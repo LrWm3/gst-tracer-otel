@@ -30,22 +30,30 @@ across queues and clones ownership when buffers are copied or transformed. A
 recycled source buffer starts a fresh journey. An external valid OTel context at
 the source supplies the parent, sampling decision, and trace state.
 
-Pad/element names, paths, and peer descriptions are cached per pad. Topology and
-name notifications invalidate these descriptions; pending records keep the
-snapshot valid at capture time. Cached descriptors own strings, not pad
-references. First use and invalidation rebuild metadata on the streaming thread;
-the steady path does no descriptive formatting. Thread descriptions are cached
-on first sampled use of each thread.
+Pad/element names, paths, and peer descriptions are cached per pad. Weak
+subscriptions to the pad, its peer, and their ancestors invalidate descriptions
+when those objects change. Unrelated pipelines do not invalidate the cache.
+Pending records retain their captured description. Cached descriptors own
+strings, not pad references. First sampled use and invalidation rebuild metadata
+on the streaming thread; the steady path does no descriptive formatting. Thread
+descriptions are cached on first sampled use of each thread.
 
-Rejected traces propagate a rejection token without allocating live spans,
-reading buffer sizes, creating attributes, or enqueuing records. Roots with a
-zero sampling ratio need no random IDs. Partial sampling generates a trace ID
-once per root using the SDK 0.30 ratio algorithm; descendants inherit the result.
+Rejected traces propagate a rejection token without loading descriptions,
+reading buffer sizes, creating attributes, or enqueuing records. Source
+classification is cached separately; rejected synchronous descendants do not
+consult the pad cache at all. Roots with a zero sampling ratio need no random
+IDs. Partial sampling generates a trace ID once per root using the SDK 0.30 ratio
+algorithm; descendants inherit the result.
 
 Sampled pushes capture IDs, monotonic timestamps, buffer identity/size, thread
 identity, a descriptor reference, and the flow result. Post hooks use a bounded
 nonblocking queue. One worker enriches records into public `SpanData` batches,
 sets the resource on the OTLP exporter, and serializes/exports them directly.
+The worker drains up to 64 records between clock checks, preserves FIFO flush
+markers, and preallocates each replacement batch. A version-pinned
+[OpenTelemetry protobuf patch](../../vendor/opentelemetry-proto/PATCH.md)
+consumes `SpanData` during conversion instead of cloning every span; the normal
+OTLP exporter and HTTP transport remain in use.
 The first sampled hook anchors GStreamer's monotonic clock to wall time; later
 wall-clock adjustments do not change recorded durations.
 
@@ -76,7 +84,10 @@ are currently produced. SDK span processors and custom global tracer providers
 do not intercept this export path.
 
 The memory bound is a queue plus one export batch, up to 256 nested frames per
-streaming thread, and metadata for live pads/buffers. OTLP encoding temporarily
+streaming thread, and metadata for live pads/buffers. Counters and in-progress
+submission counts use 64 fixed, cache-aligned shards selected per thread;
+additional threads share shards safely, and retired threads leave their totals
+available without an accumulating registry. OTLP encoding temporarily
 allocates proportional to the bounded batch. Thread and pipeline counts remain
 application-controlled. Overflow drops the new record; it never waits for the
 receiver. A failed export counts the entire attempted batch as failed, with no
@@ -115,7 +126,10 @@ The same cumulative fields are available through the Rust API:
 
 At quiescence, completed = exported + failed-export + queue-full + closed +
 pending. Started − completed identifies open pushes. Counters are a concurrent
-snapshot, not an atomic transaction. Record loss can produce incomplete traces
+snapshot, not an atomic transaction. `pending_spans` is derived from enqueued
+minus exported/failed spans and clamps transient inconsistent reads to zero;
+it is exact after producers stop and a successful drain completes.
+Record loss can produce incomplete traces
 and missing parents; sampling decisions do not change when telemetry is dropped.
 `flush` reports export failures since the previous flush; cumulative counters
 retain all failures, including ones already reported during pipeline stop.
@@ -125,7 +139,9 @@ retain all failures, including ones already reported during pipeline stop.
 - Shared buffers cannot safely accept mutable metadata. Branches retain the
   last common ancestor; exact immediate parentage across every branch is not
   promised. An initially shared buffer without our metadata uses a synchronized
-  sidecar. Copying that buffer cannot copy the sidecar. A later asynchronous
+  sidecar. Its slot is installed once under a global installation lock; later
+  access synchronizes only on that buffer. Copying that buffer cannot copy the
+  sidecar. A later asynchronous
   push with missing context is counted and suppressed, never resampled as a root.
 - Elements that strip metadata or create unrelated buffers asynchronously need
   element-specific propagation. Generic fan-in retains the first copied input
@@ -146,12 +162,20 @@ cargo build --release -p gst-otel-tracer
 python3 tracer/otel/bench/run.py
 # Compare against a separately built old plugin with Pyroscope removed:
 python3 tracer/otel/bench/run.py --baseline /path/to/old/plugin/directory
+# Compare compact-capture versions, including parallel streams and sampling:
+python3 tracer/otel/bench/run.py --baseline /path/to/compact-v1 \
+  --baseline-sampling --streams 1 4 16 --repeats 5 --drain-ms 0
 ```
 
 The Linux benchmark needs a C compiler, GStreamer development files, and Python.
-It measures a 10000-buffer, five-push-per-buffer pipeline against a local receiver.
-It records pipeline wall time, source-thread CPU, process CPU including export
+It measures 10000 buffers total, divided between `--streams` independent sources,
+with five pushes per buffer, against a local receiver. It records pipeline wall
+time, summed source-thread CPU, process CPU including export
 drain, exporter CPU at Linux scheduler-tick resolution, actual received spans,
 and the tracer's counters. Logging is disabled. Healthy cases use a 65536-record
 queue to compare full delivery; slow/absent cases deliberately use a queue of
-128 and batches of 64. Results and logs go under `target/otel-bench`.
+128 and batches of 64. `--churn-every 10` renames an unrelated element every ten
+source buffers; `--tee-queues` substitutes tee/queue stages to exercise shared
+buffers and asynchronous propagation (source CPU then excludes queue threads).
+Results and logs go under `target/otel-bench`. See the
+[follow-up measurements](bench/FOLLOWUP_RESULTS.md) for results and limitations.

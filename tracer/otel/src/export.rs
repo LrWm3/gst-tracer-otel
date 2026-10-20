@@ -1,8 +1,8 @@
 //! Bounded capture handoff and direct OTLP export. Only the worker owns SpanData.
 use std::fmt;
 use std::sync::atomic::{
-    AtomicU64, AtomicUsize,
-    Ordering::{AcqRel, Acquire, Relaxed, Release},
+    AtomicBool, AtomicU64, AtomicUsize,
+    Ordering::{Relaxed, Release, SeqCst},
 };
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -16,25 +16,49 @@ use opentelemetry_sdk::Resource;
 
 use crate::capture::{Record, Token};
 
+// Fixed storage bounds memory even when applications create many short-lived
+// threads. Threads share a shard only after the index wraps; no registry grows.
+const SHARDS: usize = 64;
+static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
+thread_local! { static SHARD: usize = NEXT_SHARD.fetch_add(1, Relaxed) % SHARDS; }
+fn shard_index() -> usize {
+    SHARD.with(|index| *index)
+}
+
+#[repr(align(128))]
+#[derive(Default)]
+struct SubmissionCount(AtomicUsize);
+
 macro_rules! counters {
     ($($name:ident),* $(,)?) => {
-        /// Cumulative counts. `exported_spans` means successful exporter calls,
-        /// not a guarantee of durable storage at the collector.
+        /// Cumulative counts. Export success means a successful exporter call,
+        /// not a guarantee of durable collector storage. Snapshots are concurrent.
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-        pub struct ExportStats { $(pub $name: u64,)* }
+        pub struct ExportStats { $(pub $name: u64,)* pub pending_spans: u64 }
         impl ExportStats {
-            /// Snapshot suitable for GStreamer applications, including C callers.
             pub fn to_structure(&self) -> gstreamer::Structure {
                 gstreamer::Structure::builder("otel-tracer-stats")
                     $(.field(stringify!($name), self.$name))*
-                    .build()
+                    .field("pending_spans", self.pending_spans).build()
             }
         }
+        #[repr(align(128))]
         #[derive(Default)]
-        pub(crate) struct Counters { $(pub $name: AtomicU64,)* }
+        pub(crate) struct LocalCounters { $(pub $name: AtomicU64,)* }
+        pub(crate) struct Counters { shards: [LocalCounters; SHARDS] }
+        impl Default for Counters {
+            fn default() -> Self { Self { shards: std::array::from_fn(|_| LocalCounters::default()) } }
+        }
         impl Counters {
+            pub fn local(&self) -> &LocalCounters { &self.shards[shard_index()] }
             pub fn snapshot(&self) -> ExportStats {
-                ExportStats { $($name: self.$name.load(Relaxed),)* }
+                let mut result = ExportStats::default();
+                for shard in &self.shards { $(result.$name = result.$name.wrapping_add(shard.$name.load(Relaxed));)* }
+                // Producer and worker snapshots are not atomic. A fast export
+                // may be observed before its enqueue count; never underflow.
+                result.pending_spans = result.enqueued_spans.saturating_sub(
+                    result.exported_spans.saturating_add(result.failed_export_spans));
+                result
             }
         }
     }
@@ -42,7 +66,7 @@ macro_rules! counters {
 counters! {
     started_spans, completed_spans, enqueued_spans, exported_spans,
     dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
-    pending_spans, unsampled_pushes, skipped_closed, propagation_misses, propagation_fallbacks,
+    unsampled_pushes, skipped_closed, propagation_misses, propagation_fallbacks,
     dropped_depth, mismatched_hooks,
 }
 
@@ -193,14 +217,12 @@ enum Message {
     Shutdown(Sender<Result<(), FlushError>>),
 }
 
-const CLOSED: usize = 1 << (usize::BITS - 1);
-
 pub(crate) struct Runtime {
     pub config: Config,
     pub stats: Arc<Counters>,
     sender: Sender<Message>,
-    // High bit closes submissions; low bits count producers already submitting.
-    submissions: AtomicUsize,
+    accepting: AtomicBool,
+    submissions: [SubmissionCount; SHARDS],
     worker: Mutex<Option<JoinHandle<()>>>,
     anchor: Arc<OnceLock<Anchor>>,
     stopped: Arc<OnceLock<Result<(), FlushError>>>,
@@ -236,7 +258,8 @@ impl Runtime {
             config,
             stats,
             sender,
-            submissions: AtomicUsize::new(0),
+            accepting: AtomicBool::new(true),
+            submissions: std::array::from_fn(|_| SubmissionCount::default()),
             worker: Mutex::new(Some(worker)),
             anchor,
             stopped,
@@ -244,7 +267,7 @@ impl Runtime {
     }
 
     pub fn accepting(&self) -> bool {
-        self.submissions.load(Relaxed) & CLOSED == 0
+        self.accepting.load(Relaxed)
     }
 
     pub fn anchor(&self, ts: u64) {
@@ -255,27 +278,32 @@ impl Runtime {
     }
 
     pub fn submit(&self, record: Record) {
-        self.stats.completed_spans.fetch_add(1, Relaxed);
-        if self.submissions.fetch_add(1, Acquire) & CLOSED != 0 {
-            self.submissions.fetch_sub(1, Release);
-            self.stats.dropped_closed.fetch_add(1, Relaxed);
+        let index = shard_index();
+        let stats = &self.stats.shards[index];
+        let active = &self.submissions[index].0;
+        stats.completed_spans.fetch_add(1, Relaxed);
+        // SeqCst orders registration, the closed check, and shutdown's scan.
+        // Any producer that sees open is registered before closure; any producer
+        // registering after the shutdown scan must see closed and cannot enqueue.
+        active.fetch_add(1, SeqCst);
+        if !self.accepting.load(SeqCst) {
+            active.fetch_sub(1, Release);
+            stats.dropped_closed.fetch_add(1, Relaxed);
             return;
         }
-        self.stats.pending_spans.fetch_add(1, Relaxed);
         match self.sender.try_send(Message::Span(record)) {
             Ok(()) => {
-                self.stats.enqueued_spans.fetch_add(1, Relaxed);
+                stats.enqueued_spans.fetch_add(1, Relaxed);
             }
             Err(error) => {
-                self.stats.pending_spans.fetch_sub(1, Relaxed);
                 let counter = match error {
-                    TrySendError::Full(_) => &self.stats.dropped_queue_full,
-                    TrySendError::Disconnected(_) => &self.stats.dropped_closed,
+                    TrySendError::Full(_) => &stats.dropped_queue_full,
+                    TrySendError::Disconnected(_) => &stats.dropped_closed,
                 };
                 counter.fetch_add(1, Relaxed);
             }
         }
-        self.submissions.fetch_sub(1, Release);
+        active.fetch_sub(1, Release);
     }
 
     fn finish(&self, timeout: Duration, shutdown: bool) -> Result<ExportStats, FlushError> {
@@ -310,8 +338,12 @@ impl Runtime {
 
     pub fn shutdown(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
         let start = Instant::now();
-        self.submissions.fetch_or(CLOSED, AcqRel);
-        while self.submissions.load(Acquire) & !CLOSED != 0 {
+        self.accepting.store(false, SeqCst);
+        while self
+            .submissions
+            .iter()
+            .any(|active| active.0.load(SeqCst) != 0)
+        {
             if start.elapsed() >= timeout {
                 return Err(FlushError::Timeout);
             }
@@ -400,11 +432,16 @@ fn worker_loop<E: SpanExporter>(
     let scope = InstrumentationScope::builder("gst-otel-tracer")
         .with_version(env!("CARGO_PKG_VERSION"))
         .build();
+    let stats = stats.local();
     let mut batch = Vec::with_capacity(config.batch_size);
     let mut failed_since_flush = false;
     let mut deadline = Instant::now() + config.interval;
+    let mut ready = None;
+    let mut drained = 0usize;
     loop {
-        let message = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        let message = ready.take().map(Ok).unwrap_or_else(|| {
+            receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        });
         match message {
             Ok(Message::Span(record)) => {
                 batch.push(span_data(
@@ -413,8 +450,18 @@ fn worker_loop<E: SpanExporter>(
                     config,
                     &scope,
                 ));
-                if batch.len() < config.batch_size && Instant::now() < deadline {
-                    continue;
+                drained += 1;
+                if batch.len() < config.batch_size {
+                    if drained < 64 {
+                        if let Ok(next) = receiver.try_recv() {
+                            ready = Some(next);
+                            continue;
+                        }
+                    }
+                    drained = 0;
+                    if Instant::now() < deadline {
+                        continue;
+                    }
                 }
             }
             Ok(Message::Flush(reply)) => {
@@ -452,26 +499,29 @@ fn worker_loop<E: SpanExporter>(
         }
         failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
         deadline = Instant::now() + config.interval;
+        drained = 0;
     }
 }
 
 fn export_batch<E: SpanExporter>(
     exporter: &mut E,
     batch: &mut Vec<SpanData>,
-    stats: &Counters,
+    stats: &LocalCounters,
 ) -> Result<(), FlushError> {
     if batch.is_empty() {
         return Ok(());
     }
     let count = batch.len() as u64;
-    let result = futures_executor::block_on(exporter.export(std::mem::take(batch)));
+    let result = futures_executor::block_on(exporter.export(std::mem::replace(
+        batch,
+        Vec::with_capacity(batch.capacity()),
+    )));
     if result.is_ok() {
         stats.exported_spans.fetch_add(count, Relaxed);
     } else {
         stats.failed_exports.fetch_add(1, Relaxed);
         stats.failed_export_spans.fetch_add(count, Relaxed);
     }
-    stats.pending_spans.fetch_sub(count, Relaxed);
     result.map_err(|_| FlushError::ExportFailed)
 }
 
@@ -494,7 +544,6 @@ pub(crate) mod tests {
         Record {
             site: Arc::new(Site {
                 attributes: vec![KeyValue::new("src_pad.name", "src")],
-                source: true,
                 epoch: 0,
             }),
             token: Token {
@@ -615,6 +664,35 @@ pub(crate) mod tests {
         assert_eq!(stats.pending_spans, 0);
         runtime.submit(record(50));
         assert_eq!(runtime.stats.snapshot().dropped_closed, 1);
+    }
+
+    #[test]
+    fn counters_survive_producer_retirement_and_shard_reuse() {
+        let runtime = Arc::new(runtime(
+            Config {
+                queue_capacity: 256,
+                batch_size: 32,
+                ..Config::default()
+            },
+            Collector::default(),
+        ));
+        for _ in 0..SHARDS * 2 + 1 {
+            let producer = runtime.clone();
+            thread::spawn(move || {
+                for i in 0..20 {
+                    producer.submit(record(i));
+                }
+            })
+            .join()
+            .unwrap();
+        }
+        let stats = runtime.shutdown(Duration::from_secs(5)).unwrap();
+        assert_eq!(stats.completed_spans, (SHARDS as u64 * 2 + 1) * 20);
+        assert_eq!(
+            stats.completed_spans,
+            stats.exported_spans + stats.dropped_queue_full
+        );
+        assert_eq!(stats.pending_spans, 0);
     }
 
     #[test]

@@ -18,6 +18,7 @@
 use gstreamer as gst;
 mod capture;
 mod export;
+mod metadata;
 mod otellogbridge;
 mod oteltracer;
 mod propagation;

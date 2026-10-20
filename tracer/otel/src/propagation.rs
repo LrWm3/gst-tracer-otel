@@ -1,6 +1,6 @@
 //! Owned trace tokens in buffer metadata. Metadata transformations clone ownership.
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
 
 use glib::translate::IntoGlib;
 use gstreamer::{self as gst};
@@ -72,26 +72,43 @@ unsafe extern "C" fn transform(
         .into_glib()
 }
 
-// Shared buffers cannot be modified through GstMeta. The fallback is immutable
-// per journey: branches keep the last common ancestor, never overwrite each
-// other's branch-specific context. A mutex serializes sidecar installation and
-// reads. The buffer reference keeps the sidecar alive. No media data is copied.
+// Shared buffers retain a common ancestor. Sidecar pointers are installed once
+// and remain stable until buffer destruction, so existing buffers synchronize
+// only with their own readers/writers. The global lock covers first installation.
 static FALLBACK_QUARK: LazyLock<glib::Quark> =
-    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v2"));
-static FALLBACK_LOCK: Mutex<()> = Mutex::new(());
+    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v3"));
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+struct Fallback {
+    token: RwLock<Option<Token>>,
+}
 unsafe extern "C" fn free_fallback(ptr: glib::ffi::gpointer) {
-    drop(Box::from_raw(ptr as *mut Token));
+    drop(Box::from_raw(ptr as *mut Fallback));
+}
+
+unsafe fn fallback(buffer: &gst::Buffer, create: bool) -> Option<&Fallback> {
+    let mini = buffer.as_ptr().cast_mut().cast();
+    let quark = FALLBACK_QUARK.into_glib();
+    let mut ptr = gst::ffi::gst_mini_object_get_qdata(mini, quark) as *mut Fallback;
+    if ptr.is_null() && create {
+        let _install = INSTALL_LOCK.lock().unwrap();
+        ptr = gst::ffi::gst_mini_object_get_qdata(mini, quark).cast();
+        if ptr.is_null() {
+            ptr = Box::into_raw(Box::new(Fallback {
+                token: RwLock::new(None),
+            }));
+            gst::ffi::gst_mini_object_set_qdata(mini, quark, ptr.cast(), Some(free_fallback));
+        }
+    }
+    ptr.as_ref()
 }
 
 unsafe fn read_raw(buffer: *mut gst::ffi::GstBuffer) -> Option<Token> {
-    // A shared source may need to override metadata left by a previous journey.
-    // Only dereference sidecars under the lock, because roots can replace them.
-    if !gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib()).is_null() {
-        let _guard = FALLBACK_LOCK.lock().unwrap();
-        let ptr = gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib())
-            as *const Token;
-        if !ptr.is_null() {
-            return Some((*ptr).clone());
+    // The caller's buffer reference keeps this permanently installed slot alive.
+    let sidecar = gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib())
+        as *const Fallback;
+    if let Some(sidecar) = sidecar.as_ref() {
+        if let Some(token) = &*sidecar.token.read().unwrap() {
+            return Some(token.clone());
         }
     }
     let meta = gst::ffi::gst_buffer_get_meta(buffer, api()) as *const ContextMeta;
@@ -107,21 +124,15 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
         let ptr = buffer.as_ptr() as *mut gst::ffi::GstBuffer;
         let mini = ptr.cast();
         if gst::ffi::gst_mini_object_is_writable(mini) != glib::ffi::GFALSE {
-            if !gst::ffi::gst_mini_object_get_qdata(mini, FALLBACK_QUARK.into_glib()).is_null() {
-                let _guard = FALLBACK_LOCK.lock().unwrap();
-                gst::ffi::gst_mini_object_set_qdata(
-                    mini,
-                    FALLBACK_QUARK.into_glib(),
-                    std::ptr::null_mut(),
-                    None,
-                );
+            if let Some(sidecar) = fallback(buffer, false) {
+                *sidecar.token.write().unwrap() = None;
             }
             let meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
             if meta.is_null() {
                 if gst::ffi::gst_buffer_add_meta(ptr, info(), token as *const Token as *mut _)
                     .is_null()
                 {
-                    counters.propagation_misses.fetch_add(1, Relaxed);
+                    counters.local().propagation_misses.fetch_add(1, Relaxed);
                 }
             } else {
                 // No outstanding borrowed token escapes read(); buffer writability
@@ -129,19 +140,14 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
                 *(*meta).token = token.clone();
             }
         } else {
-            counters.propagation_fallbacks.fetch_add(1, Relaxed);
+            counters.local().propagation_fallbacks.fetch_add(1, Relaxed);
             if !is_root && !gst::ffi::gst_buffer_get_meta(ptr, api()).is_null() {
                 return;
             }
-            let _guard = FALLBACK_LOCK.lock().unwrap();
-            let quark = FALLBACK_QUARK.into_glib();
-            if gst::ffi::gst_mini_object_get_qdata(mini, quark).is_null() || is_root {
-                gst::ffi::gst_mini_object_set_qdata(
-                    mini,
-                    quark,
-                    Box::into_raw(Box::new(token.clone())).cast(),
-                    Some(free_fallback),
-                );
+            let sidecar = fallback(buffer, true).unwrap();
+            let mut value = sidecar.token.write().unwrap();
+            if value.is_none() || is_root {
+                *value = Some(token.clone());
             }
         }
     }
@@ -214,5 +220,39 @@ mod tests {
         // Sidecars cannot survive a copy of a buffer that had no writable meta.
         assert!(read(&buffer.copy()).is_none());
         assert_eq!(stats.snapshot().propagation_fallbacks, 2);
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    #[test]
+    fn concurrent_sidecar_installation_and_reuse_preserve_owned_tokens() {
+        gst::init().unwrap();
+        let buffer = gst::Buffer::new();
+        let stats = Arc::new(Counters::default());
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let buffer = buffer.clone();
+                let stats = stats.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        write(&buffer, &Token::rejected(), false, &stats);
+                        assert!(!read(&buffer).unwrap().sampled());
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let slot = unsafe { fallback(&buffer, false).unwrap() as *const _ };
+        write(&buffer, &Token::rejected(), true, &stats);
+        assert_eq!(
+            unsafe { fallback(&buffer, false).unwrap() as *const _ },
+            slot
+        );
+        assert!(!read(&buffer).unwrap().sampled());
     }
 }
