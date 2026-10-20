@@ -16,9 +16,38 @@
  * Boston, MA 02110-1301, USA.
  */
 use gstreamer as gst;
+mod capture;
+mod export;
 mod otellogbridge;
 mod oteltracer;
-mod pyroscopespanprocessor;
+mod propagation;
+
+pub use export::{ExportStats, FlushError};
+pub use oteltracer::TelemetryTracer;
+
+/// Drain captured records and finish export attempts, bounded by `timeout`.
+pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
+    oteltracer::runtime()?.flush(timeout)
+}
+
+/// Stop accepting records, drain the worker, and shut down the exporter.
+pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
+    let start = std::time::Instant::now();
+    let result = oteltracer::runtime()?.shutdown(timeout);
+    otellogbridge::shutdown(timeout.saturating_sub(start.elapsed()));
+    result
+}
+
+/// Context of the current push, for explicit application instrumentation bridges.
+/// Capture does not attach a live span to the OpenTelemetry thread-local context.
+pub fn current_span_context() -> Option<opentelemetry::trace::SpanContext> {
+    capture::current_context().filter(|context| context.is_valid())
+}
+
+/// Cumulative counters; a concurrent snapshot can span multiple updates.
+pub fn stats() -> Result<ExportStats, FlushError> {
+    Ok(oteltracer::runtime()?.stats.snapshot())
+}
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {

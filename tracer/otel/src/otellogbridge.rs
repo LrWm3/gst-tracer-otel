@@ -1,200 +1,71 @@
-use std::thread;
-
-use glib::GStr;
-use gst::DebugCategory;
-use gst::DebugLevel;
+//! Optional debug logging is deliberately separate from compact span capture.
 use gstreamer as gst;
-use gstreamer::DebugMessage;
-use gstreamer::LoggedObject;
-use opentelemetry::logs::Severity;
+use opentelemetry::logs::{LogRecord, Logger, LoggerProvider, Severity};
+use opentelemetry_sdk::{logs::SdkLoggerProvider, Resource};
+use std::cell::Cell;
+use std::sync::OnceLock;
+use std::time::Duration;
 
-pub trait LogBridge: Send + Sync + 'static {
-    /// Called for every GstDebugMessage
-    ///
-    /// Arguments are similar to GstDebugMessage, but with some additional fields:
-    /// - `trace_id`: The trace ID of the current trace context.
-    /// - `span_id`: The span ID of the current span context.
-    ///
-    /// This allows structured logging of debug messages with trace/span context.
-    #[allow(clippy::too_many_arguments)]
-    fn log_message(
-        &self,
-        category: &DebugCategory,
-        level: DebugLevel,
-        file: &GStr,
-        function: &GStr,
-        line: u32,
-        message: &DebugMessage,
-        obj: Option<&LoggedObject>,
-        trace_id: &str,
-        span_id: &str,
-    );
-}
-use opentelemetry::logs::LogRecord;
-use opentelemetry::logs::{AnyValue, Logger};
-use opentelemetry::Key;
-use opentelemetry::KeyValue;
-use opentelemetry_otlp::LogExporter;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use opentelemetry_sdk::Resource;
+static PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
+thread_local! { static IN_LOG: Cell<bool> = const { Cell::new(false) }; }
 
-pub struct StructuredBridge<L: Logger> {
-    logger: L,
-}
-
-impl<L: Logger> StructuredBridge<L> {
-    pub fn new(logger: L) -> Self {
-        StructuredBridge { logger }
-    }
-}
-fn severity_of_debug_level(level: DebugLevel) -> Severity {
-    match level {
-        DebugLevel::None => Severity::Error,
-        DebugLevel::Error => Severity::Error,
-        DebugLevel::Warning => Severity::Warn,
-        DebugLevel::Fixme => Severity::Error,
-        DebugLevel::Info => Severity::Info,
-        DebugLevel::Log => Severity::Debug,
-        DebugLevel::Debug => Severity::Debug,
-        DebugLevel::Trace => Severity::Trace,
-        DebugLevel::Memdump => Severity::Trace,
-        _ => todo!(),
-    }
-}
-
-impl<L: Logger + 'static + Send + Sync> LogBridge for StructuredBridge<L> {
-    fn log_message(
-        &self,
-        category: &DebugCategory,
-        level: DebugLevel,
-        file: &GStr,
-        function: &GStr,
-        line: u32,
-        message: &DebugMessage,
-        _obj: Option<&LoggedObject>,
-        trace_id: &str,
-        span_id: &str,
-    ) {
-        let mut record = self.logger.create_log_record();
-        let debug_level = severity_of_debug_level(level);
-        record.set_severity_number(debug_level);
-        record.set_timestamp(std::time::SystemTime::now());
-
-        // TODO - not sure how to comply with 'static lifetime
-        // record.set_severity_text(&level.to_owned().to_string());
-        record.set_body(
-            // Convert GStr to String, or use empty string if None
-            // This is a workaround for the fact that GStr does not implement Debug
-            // and we need to convert it to a String for structured logging.
-            // If message is None, we use an empty string.
-            // This is similar to how GStreamer handles debug messages.
-            message
-                .get()
-                .map(|s| s.to_string())
-                .unwrap_or_default()
-                .to_string()
-                .into(),
-        );
-
-        // OTel attributes
-        record.add_attribute(
-            Key::new("gst.category"),
-            AnyValue::String(category.name().into()),
-        );
-        record.add_attribute(
-            Key::new("thread.name"),
-            thread::current().name().unwrap_or("unknown").to_string(),
-        );
-        record.add_attribute(
-            Key::new("thread.id"),
-            format!("{:?}", thread::current().id()),
-        );
-        record.add_attribute(Key::new("trace.id"), trace_id.to_string());
-        record.add_attribute(Key::new("span.id"), span_id.to_string());
-        record.add_attribute(Key::new("code.file"), file.to_string());
-        record.add_attribute(Key::new("code.function"), function.to_string());
-        record.add_attribute(Key::new("code.line"), AnyValue::Int(line as i64));
-
-        self.logger.emit(record);
-    }
-}
-pub struct PlaintextBridge;
-
-#[allow(dead_code)]
-impl PlaintextBridge {
-    pub fn new() -> Self {
-        PlaintextBridge
-    }
-}
-
-impl LogBridge for PlaintextBridge {
-    fn log_message(
-        &self,
-        category: &DebugCategory,
-        level: DebugLevel,
-        file: &GStr,
-        function: &GStr,
-        line: u32,
-        message: &DebugMessage,
-        obj: Option<&LoggedObject>,
-        trace_id: &str,
-        span_id: &str,
-    ) {
-        let usecs = glib::monotonic_time(); // microseconds since boot
-        let secs = usecs / 1_000_000;
-        let micros = usecs % 1_000_000;
-        let hours = secs / 3600;
-        let mins = (secs / 60) % 60;
-        let secs_rem = secs % 60;
-        let nanos = micros * 1_000;
-        let timestamp = format!("{hours}:{mins:02}:{secs_rem:02}.{nanos:09}");
-
-        // pointer to current Thread handle
-        let current_thread = thread::current();
-        let thread_ptr = format!("{:p}", &current_thread);
-
-        // level and category
-        let level_str = format!("{level:?}").to_uppercase();
-        let level_padded = format!("{level_str:<16}"); // pad to 16 chars
-        let category_str = category.name();
-
-        // the actual message text
-        let msg = message.get().map(|s| s.to_string()).unwrap_or_default();
-
-        // final formatted line
-        eprintln!(
-            "{} {:?} {} {} {} {}{} {}:{}:{}: {}",
-            timestamp,
-            obj.map(|o| o.as_ptr()).unwrap_or(core::ptr::null_mut()),
-            trace_id,
-            span_id,
-            thread_ptr,
-            level_padded,
-            category_str,
-            file,
-            line,
-            function,
-            msg,
-        );
-    }
-}
-
-pub fn init_logs_otlp() -> SdkLoggerProvider {
-    // 1. Build an OTLP LogExporter over gRPC
-    let exporter = LogExporter::builder()
+pub(crate) fn initialize(resource: Resource) -> Result<(), String> {
+    let exporter = opentelemetry_otlp::LogExporter::builder()
         .with_http()
-        .build() // use HTTP
-        .expect("failed to build OTLP exporter");
-
-    // 3. Provider
-
-    SdkLoggerProvider::builder()
-        .with_resource(
-            Resource::builder_empty()
-                .with_attribute(KeyValue::new("service.name", "gst.pyroscope"))
-                .build(),
-        )
-        .with_batch_exporter(exporter)
-        // .with_log_processor(BatchLogProcessor::builder(exporter).build())
         .build()
+        .map_err(|e| e.to_string())?;
+    let provider = SdkLoggerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+    let logger = provider.logger("gst-otel-tracer");
+    let _ = PROVIDER.set(provider);
+    gst::log::add_log_function(
+        move |category, level, file, function, line, _object, message| {
+            if IN_LOG.with(|v| v.replace(true)) {
+                return;
+            }
+            let mut record = logger.create_log_record();
+            record.set_severity_number(match level {
+                gst::DebugLevel::Error | gst::DebugLevel::Fixme => Severity::Error,
+                gst::DebugLevel::Warning => Severity::Warn,
+                gst::DebugLevel::Info => Severity::Info,
+                gst::DebugLevel::Debug | gst::DebugLevel::Log => Severity::Debug,
+                _ => Severity::Trace,
+            });
+            record.set_timestamp(std::time::SystemTime::now());
+            record.set_body(
+                message
+                    .get()
+                    .map(|m| m.to_string())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            record.add_attribute("gst.category", category.name().to_string());
+            record.add_attribute("code.file", file.to_string());
+            record.add_attribute("code.function", function.to_string());
+            record.add_attribute("code.line", line as i64);
+            if let Some(context) = crate::capture::current_context().filter(|c| c.is_valid()) {
+                record.set_trace_context(
+                    context.trace_id(),
+                    context.span_id(),
+                    Some(context.trace_flags()),
+                );
+            }
+            logger.emit(record);
+            IN_LOG.with(|v| v.set(false));
+        },
+    );
+    Ok(())
+}
+
+pub(crate) fn flush() {
+    if let Some(provider) = PROVIDER.get() {
+        let _ = provider.force_flush();
+    }
+}
+pub(crate) fn shutdown(timeout: Duration) {
+    if let Some(provider) = PROVIDER.get() {
+        let _ = provider.shutdown_with_timeout(timeout);
+    }
 }

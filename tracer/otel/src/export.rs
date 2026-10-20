@@ -1,0 +1,653 @@
+//! Bounded capture handoff and direct OTLP export. Only the worker owns SpanData.
+use std::fmt;
+use std::sync::atomic::{
+    AtomicU64, AtomicUsize,
+    Ordering::{AcqRel, Acquire, Relaxed, Release},
+};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant, SystemTime};
+
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use opentelemetry::trace::{SpanContext, SpanKind, Status};
+use opentelemetry::{InstrumentationScope, KeyValue};
+use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+use opentelemetry_sdk::Resource;
+
+use crate::capture::{Record, Token};
+
+macro_rules! counters {
+    ($($name:ident),* $(,)?) => {
+        /// Cumulative counts. `exported_spans` means successful exporter calls,
+        /// not a guarantee of durable storage at the collector.
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+        pub struct ExportStats { $(pub $name: u64,)* }
+        impl ExportStats {
+            /// Snapshot suitable for GStreamer applications, including C callers.
+            pub fn to_structure(&self) -> gstreamer::Structure {
+                gstreamer::Structure::builder("otel-tracer-stats")
+                    $(.field(stringify!($name), self.$name))*
+                    .build()
+            }
+        }
+        #[derive(Default)]
+        pub(crate) struct Counters { $(pub $name: AtomicU64,)* }
+        impl Counters {
+            pub fn snapshot(&self) -> ExportStats {
+                ExportStats { $($name: self.$name.load(Relaxed),)* }
+            }
+        }
+    }
+}
+counters! {
+    started_spans, completed_spans, enqueued_spans, exported_spans,
+    dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
+    pending_spans, unsampled_pushes, skipped_closed, propagation_misses, propagation_fallbacks,
+    dropped_depth, mismatched_hooks,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlushError {
+    NotInitialized,
+    Timeout,
+    Closed,
+    ExportFailed,
+}
+impl fmt::Display for FlushError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for FlushError {}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Config {
+    pub ratio: f64,
+    pub queue_capacity: usize,
+    pub batch_size: usize,
+    pub interval: Duration,
+    pub flush_timeout: Duration,
+    pub attribute_limit: usize,
+    pub value_length_limit: usize,
+    pub logs: bool,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ratio: 1.0,
+            queue_capacity: 8192,
+            batch_size: 512,
+            interval: Duration::from_millis(200),
+            flush_timeout: Duration::from_secs(10),
+            attribute_limit: 128,
+            value_length_limit: 4096,
+            logs: false,
+        }
+    }
+}
+impl Config {
+    pub fn from_env() -> Result<Self, String> {
+        fn number(
+            name: &str,
+            default: usize,
+            max: usize,
+            allow_zero: bool,
+        ) -> Result<usize, String> {
+            let value = match std::env::var(name) {
+                Ok(s) => s.parse::<usize>().map_err(|_| format!("invalid {name}"))?,
+                Err(_) => default,
+            };
+            if value > max || (!allow_zero && value == 0) {
+                return Err(format!("{name} outside supported range"));
+            }
+            Ok(value)
+        }
+        let mut c = Self::default();
+        c.ratio = match std::env::var("OTEL_TRACES_SAMPLER").as_deref() {
+            Err(_) | Ok("parentbased_always_on") => 1.0,
+            Ok("parentbased_always_off") => 0.0,
+            Ok("parentbased_traceidratio") => {
+                let value = std::env::var("OTEL_TRACES_SAMPLER_ARG")
+                    .map_err(|_| "OTEL_TRACES_SAMPLER_ARG is required")?
+                    .parse::<f64>()
+                    .map_err(|_| "invalid OTEL_TRACES_SAMPLER_ARG")?;
+                if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                    return Err("OTEL_TRACES_SAMPLER_ARG must be between 0 and 1".into());
+                }
+                value
+            }
+            Ok(value) => {
+                return Err(format!(
+                    "unsupported OTEL_TRACES_SAMPLER: {value}; use a parentbased sampler"
+                ))
+            }
+        };
+        c.queue_capacity = number(
+            "GST_OTEL_QUEUE_CAPACITY",
+            c.queue_capacity,
+            1_048_576,
+            false,
+        )?;
+        c.batch_size = number(
+            "GST_OTEL_BATCH_SIZE",
+            c.batch_size.min(c.queue_capacity),
+            c.queue_capacity,
+            false,
+        )?;
+        c.interval = Duration::from_millis(number(
+            "GST_OTEL_EXPORT_INTERVAL_MS",
+            200,
+            60_000,
+            false,
+        )? as u64);
+        c.flush_timeout =
+            Duration::from_millis(
+                number("GST_OTEL_FLUSH_TIMEOUT_MS", 10_000, 60_000, false)? as u64
+            );
+        c.attribute_limit = number("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", 128, 4096, true)?;
+        c.value_length_limit = number(
+            "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
+            4096,
+            1_048_576,
+            false,
+        )?;
+        c.logs = std::env::var("GST_OTEL_LOGS").is_ok_and(|v| v == "1" || v == "true");
+        Ok(c)
+    }
+}
+
+pub(crate) fn resource() -> Resource {
+    Resource::builder().build()
+}
+
+pub(crate) fn text_value(value: &str, limit: usize) -> Arc<str> {
+    // The OTel string limit counts Unicode characters, not UTF-8 bytes.
+    let end = value
+        .char_indices()
+        .nth(limit)
+        .map_or(value.len(), |(i, _)| i);
+    Arc::from(&value[..end])
+}
+
+struct Anchor {
+    hook_ts: u64,
+    wall: SystemTime,
+}
+impl Anchor {
+    fn at(&self, ts: u64) -> SystemTime {
+        if ts >= self.hook_ts {
+            self.wall
+                .checked_add(Duration::from_nanos(ts - self.hook_ts))
+                .unwrap_or(self.wall)
+        } else {
+            self.wall
+                .checked_sub(Duration::from_nanos(self.hook_ts - ts))
+                .unwrap_or(self.wall)
+        }
+    }
+}
+
+enum Message {
+    Span(Record),
+    Flush(Sender<Result<(), FlushError>>),
+    Shutdown(Sender<Result<(), FlushError>>),
+}
+
+const CLOSED: usize = 1 << (usize::BITS - 1);
+
+pub(crate) struct Runtime {
+    pub config: Config,
+    pub stats: Arc<Counters>,
+    sender: Sender<Message>,
+    // High bit closes submissions; low bits count producers already submitting.
+    submissions: AtomicUsize,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    anchor: Arc<OnceLock<Anchor>>,
+    stopped: Arc<OnceLock<Result<(), FlushError>>>,
+}
+impl Runtime {
+    pub fn new<E: SpanExporter + 'static>(
+        config: Config,
+        mut exporter: E,
+        resource: Resource,
+    ) -> std::io::Result<Self> {
+        exporter.set_resource(&resource);
+        let (sender, receiver) = bounded(config.queue_capacity);
+        let stats = Arc::new(Counters::default());
+        let anchor = Arc::new(OnceLock::new());
+        let stopped = Arc::new(OnceLock::new());
+        let worker_stopped = stopped.clone();
+        let worker_config = config.clone();
+        let worker_stats = stats.clone();
+        let worker_anchor = anchor.clone();
+        let worker = thread::Builder::new()
+            .name("gst-otel-export".into())
+            .spawn(move || {
+                worker_loop(
+                    exporter,
+                    receiver,
+                    &worker_config,
+                    &worker_stats,
+                    &worker_anchor,
+                    &worker_stopped,
+                );
+            })?;
+        Ok(Self {
+            config,
+            stats,
+            sender,
+            submissions: AtomicUsize::new(0),
+            worker: Mutex::new(Some(worker)),
+            anchor,
+            stopped,
+        })
+    }
+
+    pub fn accepting(&self) -> bool {
+        self.submissions.load(Relaxed) & CLOSED == 0
+    }
+
+    pub fn anchor(&self, ts: u64) {
+        self.anchor.get_or_init(|| Anchor {
+            hook_ts: ts,
+            wall: SystemTime::now(),
+        });
+    }
+
+    pub fn submit(&self, record: Record) {
+        self.stats.completed_spans.fetch_add(1, Relaxed);
+        if self.submissions.fetch_add(1, Acquire) & CLOSED != 0 {
+            self.submissions.fetch_sub(1, Release);
+            self.stats.dropped_closed.fetch_add(1, Relaxed);
+            return;
+        }
+        self.stats.pending_spans.fetch_add(1, Relaxed);
+        match self.sender.try_send(Message::Span(record)) {
+            Ok(()) => {
+                self.stats.enqueued_spans.fetch_add(1, Relaxed);
+            }
+            Err(error) => {
+                self.stats.pending_spans.fetch_sub(1, Relaxed);
+                let counter = match error {
+                    TrySendError::Full(_) => &self.stats.dropped_queue_full,
+                    TrySendError::Disconnected(_) => &self.stats.dropped_closed,
+                };
+                counter.fetch_add(1, Relaxed);
+            }
+        }
+        self.submissions.fetch_sub(1, Release);
+    }
+
+    fn finish(&self, timeout: Duration, shutdown: bool) -> Result<ExportStats, FlushError> {
+        let start = Instant::now();
+        let (tx, rx) = bounded(1);
+        let message = if shutdown {
+            Message::Shutdown(tx)
+        } else {
+            Message::Flush(tx)
+        };
+        self.sender.send_timeout(message, timeout).map_err(|e| {
+            if e.is_timeout() {
+                FlushError::Timeout
+            } else {
+                FlushError::Closed
+            }
+        })?;
+        rx.recv_timeout(timeout.saturating_sub(start.elapsed()))
+            .map_err(|e| {
+                if e.is_timeout() {
+                    FlushError::Timeout
+                } else {
+                    FlushError::Closed
+                }
+            })??;
+        Ok(self.stats.snapshot())
+    }
+
+    pub fn flush(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
+        self.finish(timeout, false)
+    }
+
+    pub fn shutdown(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
+        let start = Instant::now();
+        self.submissions.fetch_or(CLOSED, AcqRel);
+        while self.submissions.load(Acquire) & !CLOSED != 0 {
+            if start.elapsed() >= timeout {
+                return Err(FlushError::Timeout);
+            }
+            thread::yield_now();
+        }
+        let result = match self.stopped.get() {
+            Some(result) => result.clone().map(|()| self.stats.snapshot()),
+            None => self.finish(timeout.saturating_sub(start.elapsed()), true),
+        };
+        let mut worker = self.worker.lock().unwrap();
+        if worker.as_ref().is_some_and(JoinHandle::is_finished) {
+            if let Some(handle) = worker.take() {
+                let _ = handle.join();
+            }
+        }
+        if result == Err(FlushError::Closed) {
+            if let Some(result) = self.stopped.get() {
+                return result.clone().map(|()| self.stats.snapshot());
+            }
+        }
+        result
+    }
+}
+
+fn span_data(
+    record: Record,
+    anchor: &Anchor,
+    config: &Config,
+    scope: &InstrumentationScope,
+) -> SpanData {
+    let Token {
+        trace_id,
+        span_id,
+        flags,
+        trace_state,
+    } = record.token;
+    let mut attributes = Vec::with_capacity(record.site.attributes.len() + 8);
+    attributes.extend(record.site.attributes.iter().cloned());
+    attributes.extend([
+        KeyValue::new("ts.start", record.start as i64),
+        KeyValue::new("ts.end", record.end as i64),
+        KeyValue::new("buffer.id", record.buffer_id as i64),
+        KeyValue::new("buffer.size", record.buffer_size as i64),
+        KeyValue::new("thread.id", record.thread.id.clone()),
+        KeyValue::new("thread.name", record.thread.name.clone()),
+        KeyValue::new("gst.flow_return", record.flow_return as i64),
+    ]);
+    let dropped = attributes.len().saturating_sub(config.attribute_limit);
+    attributes.truncate(config.attribute_limit);
+    SpanData {
+        span_context: SpanContext::new(
+            trace_id,
+            span_id,
+            flags,
+            false,
+            trace_state.as_deref().cloned().unwrap_or_default(),
+        ),
+        parent_span_id: record.parent,
+        span_kind: SpanKind::Internal,
+        name: "gst.pad.push".into(),
+        start_time: anchor.at(record.start),
+        end_time: anchor.at(record.end.max(record.start)),
+        attributes,
+        dropped_attributes_count: dropped as u32,
+        events: Default::default(),
+        links: Default::default(),
+        status: if record.flow_return < 0 {
+            Status::error("GStreamer push failed")
+        } else {
+            Status::Unset
+        },
+        instrumentation_scope: scope.clone(),
+    }
+}
+
+fn worker_loop<E: SpanExporter>(
+    mut exporter: E,
+    receiver: Receiver<Message>,
+    config: &Config,
+    stats: &Counters,
+    anchor: &OnceLock<Anchor>,
+    stopped: &OnceLock<Result<(), FlushError>>,
+) {
+    // Exporter instrumentation must not recursively trace exporter work.
+    let _suppression = opentelemetry::Context::enter_telemetry_suppressed_scope();
+    let scope = InstrumentationScope::builder("gst-otel-tracer")
+        .with_version(env!("CARGO_PKG_VERSION"))
+        .build();
+    let mut batch = Vec::with_capacity(config.batch_size);
+    let mut failed_since_flush = false;
+    let mut deadline = Instant::now() + config.interval;
+    loop {
+        let message = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        match message {
+            Ok(Message::Span(record)) => {
+                batch.push(span_data(
+                    record,
+                    anchor.get().expect("capture sets clock anchor"),
+                    config,
+                    &scope,
+                ));
+                if batch.len() < config.batch_size && Instant::now() < deadline {
+                    continue;
+                }
+            }
+            Ok(Message::Flush(reply)) => {
+                failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
+                let result = if failed_since_flush {
+                    Err(FlushError::ExportFailed)
+                } else {
+                    Ok(())
+                };
+                failed_since_flush = false;
+                let _ = reply.send(result);
+                deadline = Instant::now() + config.interval;
+                continue;
+            }
+            Ok(Message::Shutdown(reply)) => {
+                failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
+                failed_since_flush |= exporter
+                    .shutdown_with_timeout(config.flush_timeout)
+                    .is_err();
+                let result = if failed_since_flush {
+                    Err(FlushError::ExportFailed)
+                } else {
+                    Ok(())
+                };
+                let _ = stopped.set(result.clone());
+                let _ = reply.send(result);
+                break;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                let _ = export_batch(&mut exporter, &mut batch, stats);
+                let _ = exporter.shutdown_with_timeout(config.flush_timeout);
+                break;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+        }
+        failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
+        deadline = Instant::now() + config.interval;
+    }
+}
+
+fn export_batch<E: SpanExporter>(
+    exporter: &mut E,
+    batch: &mut Vec<SpanData>,
+    stats: &Counters,
+) -> Result<(), FlushError> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let count = batch.len() as u64;
+    let result = futures_executor::block_on(exporter.export(std::mem::take(batch)));
+    if result.is_ok() {
+        stats.exported_spans.fetch_add(count, Relaxed);
+    } else {
+        stats.failed_exports.fetch_add(1, Relaxed);
+        stats.failed_export_spans.fetch_add(count, Relaxed);
+    }
+    stats.pending_spans.fetch_sub(count, Relaxed);
+    result.map_err(|_| FlushError::ExportFailed)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::capture::{Site, ThreadInfo};
+    use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
+    use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
+
+    #[derive(Debug, Clone, Default)]
+    pub struct Collector(pub Arc<Mutex<Vec<SpanData>>>);
+    impl SpanExporter for Collector {
+        async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
+            self.0.lock().unwrap().extend(batch);
+            Ok(())
+        }
+    }
+    pub fn record(index: u64) -> Record {
+        Record {
+            site: Arc::new(Site {
+                attributes: vec![KeyValue::new("src_pad.name", "src")],
+                source: true,
+                epoch: 0,
+            }),
+            token: Token {
+                trace_id: TraceId::from(1),
+                span_id: SpanId::from(index + 1),
+                flags: TraceFlags::SAMPLED,
+                trace_state: Some(Arc::new(
+                    TraceState::from_key_value([("vendor", "value")]).unwrap(),
+                )),
+            },
+            parent: SpanId::from(7),
+            start: 100,
+            end: 150,
+            buffer_id: 123,
+            buffer_size: 256,
+            thread: Arc::new(ThreadInfo {
+                id: "thread1".into(),
+                name: "stream".into(),
+            }),
+            flow_return: 0,
+        }
+    }
+    pub fn runtime(config: Config, collector: Collector) -> Runtime {
+        let runtime = Runtime::new(config, collector, Resource::builder_empty().build()).unwrap();
+        runtime.anchor(100);
+        runtime
+    }
+
+    #[test]
+    fn enriches_records_and_preserves_context_and_limits() {
+        let collector = Collector::default();
+        let runtime = runtime(
+            Config {
+                attribute_limit: 2,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
+        runtime.submit(record(1));
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 1);
+        assert_eq!(stats.pending_spans, 0);
+        let spans = collector.0.lock().unwrap();
+        let span = &spans[0];
+        assert_eq!(span.parent_span_id, SpanId::from(7));
+        assert_eq!(span.span_context.trace_state().get("vendor"), Some("value"));
+        assert_eq!(span.attributes.len(), 2);
+        assert_eq!(span.dropped_attributes_count, 6);
+        assert_eq!(
+            span.end_time.duration_since(span.start_time).unwrap(),
+            Duration::from_nanos(50)
+        );
+        assert_eq!(&*text_value("aé🙂z", 3), "aé🙂");
+    }
+
+    #[derive(Debug)]
+    struct GatedExporter {
+        entered: Sender<()>,
+        release: Receiver<()>,
+        fail: bool,
+    }
+    impl SpanExporter for GatedExporter {
+        async fn export(&self, _: Vec<SpanData>) -> OTelSdkResult {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            if self.fail {
+                Err(OTelSdkError::InternalFailure("receiver unavailable".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn slow_receiver_bounds_queue_and_failed_exports_are_counted() {
+        let (entered_tx, entered_rx) = bounded(10);
+        let (release_tx, release_rx) = bounded(10);
+        let runtime = Runtime::new(
+            Config {
+                queue_capacity: 2,
+                batch_size: 1,
+                ..Config::default()
+            },
+            GatedExporter {
+                entered: entered_tx,
+                release: release_rx,
+                fail: true,
+            },
+            Resource::builder_empty().build(),
+        )
+        .unwrap();
+        runtime.anchor(100);
+        runtime.submit(record(0));
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        for n in 1..11 {
+            runtime.submit(record(n));
+        }
+        assert_eq!(runtime.stats.snapshot().dropped_queue_full, 8);
+        assert_eq!(runtime.stats.snapshot().pending_spans, 3);
+        assert_eq!(
+            runtime.flush(Duration::from_millis(5)),
+            Err(FlushError::Timeout)
+        );
+        for _ in 0..3 {
+            release_tx.send(()).unwrap();
+        }
+        assert_eq!(
+            runtime.flush(Duration::from_secs(2)),
+            Err(FlushError::ExportFailed)
+        );
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.failed_export_spans, 3);
+        assert_eq!(stats.failed_exports, 3);
+        assert_eq!(
+            stats.completed_spans,
+            stats.failed_export_spans + stats.dropped_queue_full
+        );
+        assert_eq!(stats.pending_spans, 0);
+        runtime.submit(record(50));
+        assert_eq!(runtime.stats.snapshot().dropped_closed, 1);
+    }
+
+    #[test]
+    fn concurrent_shutdown_accounts_for_every_completed_record() {
+        let runtime = Arc::new(runtime(
+            Config {
+                queue_capacity: 8,
+                batch_size: 4,
+                ..Config::default()
+            },
+            Collector::default(),
+        ));
+        let producers: Vec<_> = (0..4)
+            .map(|_| {
+                let runtime = runtime.clone();
+                thread::spawn(move || {
+                    for i in 0..2000 {
+                        runtime.submit(record(i));
+                    }
+                })
+            })
+            .collect();
+        runtime.shutdown(Duration::from_secs(5)).unwrap();
+        for producer in producers {
+            producer.join().unwrap();
+        }
+        let stats = runtime.stats.snapshot();
+        assert_eq!(stats.completed_spans, 8000);
+        assert_eq!(
+            stats.completed_spans,
+            stats.exported_spans + stats.dropped_queue_full + stats.dropped_closed
+        );
+        assert_eq!(stats.pending_spans, 0);
+        runtime.shutdown(Duration::from_secs(1)).unwrap();
+    }
+}

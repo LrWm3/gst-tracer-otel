@@ -152,6 +152,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1018,18 +1027,17 @@ dependencies = [
 name = "gst-otel-tracer"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "crossbeam-channel",
+ "futures-executor",
  "glib",
- "gobject-sys",
  "gstreamer",
- "gstreamer-sys",
  "opentelemetry",
  "opentelemetry-otlp",
- "opentelemetry-stdout",
+ "opentelemetry-proto",
  "opentelemetry_sdk",
- "pyroscope",
- "pyroscope_pprofrs",
- "reqwest",
- "thread-id",
+ "prost 0.13.5",
+ "tiny_http",
 ]
 
 [[package]]
@@ -1265,19 +1273,6 @@ dependencies = [
  "tokio-rustls",
  "tower-service",
  "webpki-roots",
-]
-
-[[package]]
-name = "hyper-timeout"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0"
-dependencies = [
- "hyper",
- "hyper-util",
- "pin-project-lite",
- "tokio",
- "tower-service",
 ]
 
 [[package]]
@@ -2055,9 +2050,6 @@ dependencies = [
  "prost 0.13.5",
  "reqwest",
  "thiserror 2.0.12",
- "tokio",
- "tonic",
- "tracing",
 ]
 
 [[package]]
@@ -2070,17 +2062,6 @@ dependencies = [
  "opentelemetry_sdk",
  "prost 0.13.5",
  "tonic",
-]
-
-[[package]]
-name = "opentelemetry-stdout"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "447191061af41c3943e082ea359ab8b64ff27d6d34d30d327df309ddef1eef6f"
-dependencies = [
- "chrono",
- "opentelemetry",
- "opentelemetry_sdk",
 ]
 
 [[package]]
@@ -3292,16 +3273,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "thread-id"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99043e46c5a15af379c06add30d9c93a6c0e8849de00d244c4a2c417da128d80"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "tiny_http"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3445,15 +3416,10 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "hyper",
- "hyper-timeout",
- "hyper-util",
  "percent-encoding",
  "pin-project",
  "prost 0.13.5",
- "tokio",
  "tokio-stream",
- "tower",
  "tower-layer",
  "tower-service",
  "tracing",
@@ -3467,15 +3433,11 @@ checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
 dependencies = [
  "futures-core",
  "futures-util",
- "indexmap 2.10.0",
  "pin-project-lite",
- "slab",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
