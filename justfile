@@ -51,9 +51,8 @@ test test="":
 # Run tests with address sanitizer enabled, or provide a specific test name to run it against that.
 [group('test')]
 [group('asan')]
-test-address-sanitizer test="given_basic_pipeline_when_run_then_metrics_captured" target="x86_64-unknown-linux-gnu":
-  cargo +nightly build --profile test --target "{{target}}"
-  RUST_BACKTRACE=1 LSAN_OPTIONS="suppressions=$(pwd)/.github/sanitizer/lsan.supp" RUSTFLAGS="-Z sanitizer=address" cargo +nightly test "{{test}}" --profile test --target "{{target}}" 2>&1
+test-address-sanitizer test="" target="x86_64-unknown-linux-gnu":
+  python3 tracer/prometheus/test_sanitizer.py --target "{{target}}" --test "{{test}}"
 
 # Test the .github CI workflow using `act`.
 [group('test')]

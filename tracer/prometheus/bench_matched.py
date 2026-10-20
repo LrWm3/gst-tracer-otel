@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--sample-rate", type=int, default=16)
+    parser.add_argument("--io-variants", default="", help="Comma-separated variants with I/O counts enabled")
     parser.add_argument("--name", default="synthetic")
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--variants", default="off,baseline,previous,reviewed")
@@ -35,6 +36,9 @@ def main():
     if args.sample_rate < 1:
         parser.error("--sample-rate must be positive")
     variants = args.variants.split(",")
+    io_variants = set(filter(None, args.io_variants.split(",")))
+    if not io_variants.issubset(variants):
+        parser.error("--io-variants must name entries in --variants")
     command = args.command or [
         "gst-launch-1.0", "-q", "fakesrc", "num-buffers=1000000", "!",
         "identity", "name=work", "!", "fakesink", "sync=false",
@@ -58,6 +62,7 @@ def main():
                 GST_PROM_LATENCY_INCLUDE="*",
                 GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE=str(args.sample_rate),
                 GST_PROM_LATENCY_PTS_AGE="false",
+                GST_PROM_LATENCY_IO_COUNTS=str(variant in io_variants).lower(),
                 GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS="100",
                 GST_DEBUG="0",
             )
@@ -102,6 +107,7 @@ def main():
             record = dict(
                 variant=variant, round=round_id, warmup=round_id == 0,
                 histogram_sample_rate=args.sample_rate,
+                io_counts=variant in io_variants,
                 wall_s=elapsed, cpu_s=after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime,
                 returncode=result.returncode, scrapes=len(scrapes),
                 max_scrape_bytes=max(scrapes, default=0), command=child_command,

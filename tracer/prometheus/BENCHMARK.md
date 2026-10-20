@@ -267,3 +267,87 @@ workload. Choose an available performance core on the machine being measured.
   -p gst-otel-tracer -p gst-prometheus-tracer -p gst-pyroscope-tracer --all-targets`
   completes analysis: Prometheus is clean; Pyroscope has existing unused
   `console` and `pyroscope_pyspy` dependencies.
+
+## Local follow-up: I/O, pull timing and metric retirement — 2026-10-20
+
+Compared with `9b7eeaf`, this build adds opt-in per-pad I/O counts, exact request-pad
+labels, exclusive pull timing, queue label refresh, and retirement of series for
+destroyed objects or old paths. Default push counters retain their semantics.
+I/O counts are disabled unless `GST_PROM_LATENCY_IO_COUNTS=true`.
+
+The streaming thread uses local reference counts and a local sampling sequence;
+shared qdata ownership remains atomic. A 64-slot direct map serves common hits,
+with a capped 256-entry pool reusing snapshots when slots collide. Cache hits
+allocate nothing and perform no GObject traversal or metric-registry lookup.
+Sampling continues across evictions. Queue property reads and periodic series
+cleanup run outside the buffer callbacks; cache misses still acquire metric handles.
+
+Same i5-1345U host, Rust 1.89.0, GStreamer 1.24.2, release builds, logical CPU 2.
+One warm-up and seven measured rounds per variant, rotating order, separate
+prepopulated registries, verified plugin paths, and a scrape every second.
+No compilation ran during measurements. All elements are selected and PTS age
+is disabled. The two candidate variants use the same binary.
+
+Values are median **child-process CPU microseconds per source buffer**, including
+GStreamer, startup, teardown, scrapes and maintenance. They are not tracer-only
+costs. Source buffer counts are 1,000,000 for one identity and churn, 250,000 for
+eight identities, and 16,384 for 96 identities. The larger graph exercises cache
+collisions; the churn workload adds 200 one-buffer graphs from another thread.
+
+| Workload | Before | Default | With I/O counts | Default change |
+| --- | ---: | ---: | ---: | ---: |
+| One identity, sample 16 | 1.409 | 1.450 | 1.454 | +2.9% |
+| Eight identities, sample 16 | 5.967 | 5.873 | 6.017 | -1.6% |
+| One identity, sample 1 | 2.379 | 2.239 | 2.417 | -5.9% |
+| 96 identities, sample 16 | 108.106 | 106.936 | 110.049 | -1.1% |
+| One identity + 200 graph changes, sample 16 | 1.546 | 1.513 | 1.545 | -2.1% |
+
+The short sampled pipeline used 2.9% more CPU. The other default medians were
+1.1–5.9% lower. The shared desktop had variable load and CPU frequency, with
+noticeable outliers, particularly in later workloads. Small differences should
+not be treated as established effects.
+The raw file retains every run, including tracer-off measurements and min/max
+CPU values. These tests do not qualify production video throughput or rare tails.
+
+After 200 graph creations/destructions, every baseline run still exported 39,600
+time series belonging to those graphs. Both candidate variants exported zero.
+Median peak RSS was 49,800 KiB before and 32,248 KiB for the default
+candidate. This is a bounded churn check, not a long-running memory soak.
+
+Raw observations, commands, hashes and churn output:
+[`benchmarks/2026-10-20-io-pull.json`](benchmarks/2026-10-20-io-pull.json).
+Candidate SHA-256: `b62b4c7cb5e7c4441bf8dc3f27a89a420cb17b8fe4b6b7a0741a4bf100f81b0d`.
+
+Reproduce with `plugins-before`, `plugins-after` and `plugins-after-io` directories
+containing their respective plugin binaries (the last two are identical):
+
+```sh
+python3 tracer/prometheus/bench_matched.py --root /path/to/plugins \
+  --variants off,plugins-before,plugins-after,plugins-after-io \
+  --io-variants plugins-after-io --rounds 7 --sample-rate 16 \
+  --name linear16 -- taskset -c 2 gst-launch-1.0 -q \
+  fakesrc num-buffers=1000000 ! identity ! fakesink sync=false
+```
+
+The raw commands specify the other chain lengths and sample rate. For churn,
+replace the child command after `taskset -c 2` with
+`/usr/bin/python3 tracer/prometheus/bench_churn.py` (requires PyGObject).
+
+### Validation of this follow-up
+
+- `cargo fmt --all` and workspace Clippy with all features/targets: passed.
+- `cargo test`: 15 unit tests, 16 integration tests, and six isolated
+  configuration runs passed. Coverage includes sampling under cache eviction,
+  filtering, PTS age, mux/demux pads, ghost forwarding, lists, failed pushes,
+  dropped output, request-pad removal, queue moves, graph retirement and pull
+  timing with EOS/errors and I/O counts enabled or disabled.
+- `python3 tracer/prometheus/test_sanitizer.py` (also invoked by
+  `just test-address-sanitizer`): the same suite passed. The recipe now loads
+  Cargo's exact sanitized cdylib and runs the full suite by default; its former
+  default filter matched no tests.
+- C and Rust README examples compiled and returned metrics.
+- `cargo audit`: no vulnerabilities; one unmaintained `paste 1.0.15` warning
+  remains. Patched dependencies and removal of unused Pyroscope dependencies
+  eliminate the earlier advisories and old `rustix` nightly build failure.
+- The required nightly `cargo udeps` command for all three tracer packages and
+  all targets passed with no unused dependencies.

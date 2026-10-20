@@ -74,6 +74,8 @@ mod imp {
             self.register_hook(TracerHook::BinAddPost);
             self.register_hook(TracerHook::BinRemovePost);
             self.register_hook(TracerHook::ElementChangeStatePre);
+            self.register_hook(TracerHook::ElementAddPad);
+            self.register_hook(TracerHook::ElementRemovePad);
         }
 
         fn signals() -> &'static [glib::subclass::Signal] {
@@ -103,6 +105,14 @@ mod imp {
     impl GstObjectImpl for PromLatencyTracer {}
 
     impl TracerImpl for PromLatencyTracer {
+        fn element_add_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
+            PromLatencyTracerImp::invalidate_topology();
+        }
+
+        fn element_remove_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
+            PromLatencyTracerImp::invalidate_topology();
+        }
+
         fn bin_add_post(&self, _ts: u64, _bin: &gst::Bin, _element: &gst::Element, success: bool) {
             if success {
                 PromLatencyTracerImp::invalidate_topology();

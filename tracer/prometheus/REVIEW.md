@@ -86,19 +86,18 @@ into the correctness fixes.
   bin-parenting and activation changes. Tests cover late bin insertion,
   reparenting and real-pad labels through ghost forwarding. In-flight spans keep
   their original cache snapshot across changes. Arbitrary concurrent topology
-  mutation and renaming a running root pipeline are not fully qualified.
-- Prometheus label series live for the process lifetime. Repeated creation of
-  uniquely named graphs increases cardinality even after GObjects are released.
-  That is distinct from the fixed GObject-reference leak. Define a retirement
-  policy before using this in a process that continually rebuilds graphs.
+  mutation is not fully qualified; live root renaming now has regression coverage.
+- Series now retire on scrape or periodic maintenance when their pads/elements
+  disappear or change path. Live graphs with many distinct pads still create
+  many histogram series; use element selection to limit instrumentation.
 - Queue gauges are samples, not peak/residence measurements. Queues created and
   destroyed between sampler ticks may never appear; pending signal counts at
-  teardown are not a reliable lifetime event total. The sampler holds its
-  registration lock while reading properties; snapshotting registrations outside
-  that lock would make future dynamic-graph behavior easier to reason about.
-- Pull latency is still unimplemented. Process-global sampler, registry and HTTP
-  server assume a single tracer configuration and lack an explicit shutdown
-  lifecycle. Do not treat multiple tracer instances as independent collectors.
+  teardown are not a reliable lifetime event total. The sampler now reads
+  properties outside the registration lock and refreshes labels after moves.
+- Pull timing now measures exclusive upstream synchronous work, with separate
+  histograms and call counts. Process-global sampler, registry and HTTP server
+  still assume one tracer configuration and lack an explicit shutdown lifecycle.
+  Do not treat multiple tracer instances as independent collectors.
 - The former histogram name was not retained by the original changes. Existing
   gauge/sum/count queries remain supported; migrate histogram queries as noted
   in the README.
@@ -108,7 +107,7 @@ into the correctness fixes.
   memory growth and rare-tail qualification remain outstanding; an off-run
   shutdown SIGSEGV is documented separately rather than counted as a clean pass.
 
-## Validation
+## Original validation
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-features --all-targets -- -D warnings`: passed.
@@ -119,6 +118,5 @@ into the correctness fixes.
 - `cargo audit` and `cargo +nightly udeps ...`: attempted but unavailable;
   the corresponding Cargo extensions are not installed.
 
-Tests used Rust 1.89.0 through the repository's mise executable. Changes remain
-local to this tracer branch. Follow-up benchmarks stage isolated release plugins
-on an integrated memory nvidia device; they do not replace its installed tracer.
+These results predate the later fixes. Current validation and matched performance
+results are recorded in [BENCHMARK.md](BENCHMARK.md).

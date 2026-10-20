@@ -1,7 +1,9 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    collections::HashMap,
     env,
     os::raw::c_void,
+    rc::Rc,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, LazyLock, Mutex, OnceLock,
@@ -23,6 +25,8 @@ use prometheus::{
     IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
 };
 use tiny_http::{Header, Response, Server};
+
+use crate::metric_lifecycle;
 
 // Legacy names remain for dashboard compatibility. Values are exclusive
 // synchronous gst_pad_push wall time in nanoseconds.
@@ -86,6 +90,79 @@ static BUFFER_PTS_AGE_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
+static IO_COUNTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    env::var("GST_PROM_LATENCY_IO_COUNTS")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+});
+static BUFFERS_IN: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_element_buffers_in_total",
+        "Buffers offered to real sink pads by pushes, or returned by successful pulls",
+        &["element", "pad", "path"]
+    )
+    .unwrap()
+});
+static BUFFERS_OUT: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_element_buffers_out_total",
+        "Buffers submitted by real source pads in pushes, or returned by successful pulls",
+        &["element", "pad", "path"]
+    )
+    .unwrap()
+});
+static PULL_LAST: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    register_int_gauge_vec!(
+        "gst_element_pull_last_nanoseconds",
+        "Last exclusive synchronous pull wall time in nanoseconds",
+        &["element", "src_pad", "sink_pad", "path"]
+    )
+    .unwrap()
+});
+static PULL_SUM: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_element_pull_wall_nanoseconds_total",
+        "Sum of exclusive synchronous pull wall time in nanoseconds",
+        &["element", "src_pad", "sink_pad", "path"]
+    )
+    .unwrap()
+});
+static PULL_COUNT: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!(
+        "gst_element_pull_calls_total",
+        "Completed synchronous pull calls, including EOS and errors",
+        &["element", "src_pad", "sink_pad", "path"]
+    )
+    .unwrap()
+});
+static PULL_WALL: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_pull_wall_seconds",
+        "Sampled exclusive synchronous pull wall time",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
+    )
+    .unwrap()
+});
+static PULL_CPU: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_pull_cpu_seconds",
+        "Sampled exclusive streaming-thread CPU time inside pull calls",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
+    )
+    .unwrap()
+});
+static PULL_BLOCKED: LazyLock<HistogramVec> = LazyLock::new(|| {
+    register_histogram_vec!(
+        "gst_element_pull_blocked_seconds",
+        "Sampled exclusive pull wall time not accounted for by thread CPU time",
+        &["element", "src_pad", "sink_pad", "path"],
+        latency_buckets()
+    )
+    .unwrap()
+});
+
 static HISTOGRAM_SAMPLE_RATE: LazyLock<u64> = LazyLock::new(|| {
     env::var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE")
         .ok()
@@ -108,14 +185,25 @@ static PTS_AGE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
         .unwrap_or(false)
 });
 
+struct ThreadState {
+    spans: RefCell<Vec<SpanFrame>>,
+    // Bounded direct-mapped cache. Entries own metric snapshots, never pads.
+    snapshots: RefCell<[PadSnapshot; 64]>,
+    // Reuse snapshots on direct-map collisions without repeated handle copies.
+    // Only consulted on misses, and cleared when it reaches 256 entries.
+    cache_pool: RefCell<HashMap<usize, Rc<PadCacheData>>>,
+    // Independent of cache eviction; hashing breaks fixed pipeline periods.
+    sample_sequence: Cell<u64>,
+    sample_rate: u64,
+}
+
 thread_local! {
-    /// Active synchronous push calls on this streaming thread. Child time gets
-    /// accumulated into the parent, including multiple sequential tee branches.
-    static SPAN_STACK: RefCell<Vec<SpanFrame>> = const { RefCell::new(Vec::new()) };
-    // Bounded direct-mapped cache: avoid GLib's qdata lock on steady pushes.
-    // Entries own only metric snapshots and weak element references, never pads.
-    static PAD_SNAPSHOTS: RefCell<[PadSnapshot; 64]> = const {
-        RefCell::new([const { PadSnapshot { pad: 0, cache: None } }; 64])
+    static THREAD_STATE: ThreadState = ThreadState {
+        spans: RefCell::new(Vec::new()),
+        snapshots: RefCell::new([const { PadSnapshot { pad: 0, cache: None } }; 64]),
+        cache_pool: RefCell::new(HashMap::new()),
+        sample_sequence: Cell::new(0),
+        sample_rate: *HISTOGRAM_SAMPLE_RATE,
     };
 }
 
@@ -205,7 +293,7 @@ fn latency_buckets() -> Vec<f64> {
 }
 
 struct SpanFrame {
-    cache: Option<Arc<PadCacheData>>,
+    cache: Option<Rc<PadCacheData>>,
     pad: *mut gst::ffi::GstPad,
     start_wall_ns: u64,
     start_cpu_ns: Option<u64>,
@@ -229,6 +317,8 @@ struct QueueRegistration {
 }
 
 struct QueueMetrics {
+    labels: (String, String),
+    generation: u64,
     level_buffers: IntGauge,
     level_bytes: IntGauge,
     level_time: Gauge,
@@ -253,20 +343,42 @@ pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 static TOPOLOGY_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Data structure to hold cached pad information used for latency measurement.
+#[derive(Clone)]
 struct PadCacheData {
     /// Pointer to the peer pad, used during unlink to verify the pad pair.
     peer: usize,
     generation: u64,
 
     metrics: Option<PadMetrics>,
-    sample_sequence: AtomicU64,
+    io: Option<Box<IoMetrics>>,
 }
 
+// Each thread owns a copy of the metric handles. Rc retains that snapshot
+// across each call without atomic reference-count operations. GLib qdata still
+// uses Arc for cross-thread access and replacement.
 struct PadSnapshot {
     pad: usize,
-    cache: Option<Arc<PadCacheData>>,
+    cache: Option<Rc<PadCacheData>>,
 }
 
+#[derive(Clone)]
+struct IoMetrics {
+    incoming: Option<IntCounter>,
+    outgoing: Option<IntCounter>,
+}
+
+impl IoMetrics {
+    fn observe(&self, buffers: u64) {
+        if let Some(counter) = &self.incoming {
+            counter.inc_by(buffers);
+        }
+        if let Some(counter) = &self.outgoing {
+            counter.inc_by(buffers);
+        }
+    }
+}
+
+#[derive(Clone)]
 struct PadMetrics {
     last_gauge: IntGauge,
     sum_counter: IntCounter,
@@ -285,65 +397,73 @@ impl PromLatencyTracerImp {
     /// Register all tracing hooks on construction
     pub fn constructed(&self, tracer_obj: &gst::Tracer) {
         // Hook callbacks
-        unsafe extern "C" fn do_push_buffer_pre(
+        unsafe extern "C" fn do_push_buffer_pre<const IO: bool>(
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
             buf_ptr: *mut gst::ffi::GstBuffer,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts(ts, pad, buf_ptr);
+            PromLatencyTracerImp::do_send_latency_ts::<false, IO>(ts, pad, buf_ptr, 1);
         }
 
-        unsafe extern "C" fn do_push_buffer_post(
+        unsafe extern "C" fn do_push_buffer_post<const IO: bool>(
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
             _result: gst::ffi::GstFlowReturn,
         ) {
-            PromLatencyTracerImp::do_receive_and_record_latency_ts(ts, pad);
+            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
         }
 
-        unsafe extern "C" fn do_push_list_pre(
+        unsafe extern "C" fn do_push_list_pre<const IO: bool>(
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
-            _list_ptr: *mut gst::ffi::GstBufferList,
+            list_ptr: *mut gst::ffi::GstBufferList,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts(ts, pad, std::ptr::null_mut());
+            let buffers = if IO {
+                u64::from(ffi::gst_buffer_list_length(list_ptr))
+            } else {
+                0
+            };
+            PromLatencyTracerImp::do_send_latency_ts::<false, IO>(
+                ts,
+                pad,
+                std::ptr::null_mut(),
+                buffers,
+            );
         }
 
-        unsafe extern "C" fn do_push_list_post(
+        unsafe extern "C" fn do_push_list_post<const IO: bool>(
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
             _result: gst::ffi::GstFlowReturn,
         ) {
-            PromLatencyTracerImp::do_receive_and_record_latency_ts(ts, pad);
+            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
         }
 
-        unsafe extern "C" fn do_pull_range_pre(
+        unsafe extern "C" fn do_pull_range_pre<const IO: bool>(
             _tracer: *mut gst::Tracer,
-            _ts: u64,
-            _pad: *mut gst::ffi::GstPad,
+            ts: u64,
+            pad: *mut gst::ffi::GstPad,
             _offset: u64,
             _size: libc::c_uint,
         ) {
-            // TODO - revisit pull, which requires us to be careful about how we traverse proxy and ghost pads.
-            // For pull, we treat sink as src, src as sink as we're going the other way
-            // let peer = ffi::gst_pad_get_peer(pad);
-            // PromLatencyTracerImp::do_send_latency_ts(ts, peer);
+            PromLatencyTracerImp::do_send_latency_ts::<true, IO>(ts, pad, std::ptr::null_mut(), 0);
         }
-        unsafe extern "C" fn do_pull_range_post(
+        unsafe extern "C" fn do_pull_range_post<const IO: bool>(
             _tracer: *mut gst::Tracer,
-            _ts: u64,
-            _pad: *mut gst::ffi::GstPad,
-            _buffer: *mut gst::ffi::GstBuffer,
-            _result: gst::ffi::GstFlowReturn,
+            ts: u64,
+            pad: *mut gst::ffi::GstPad,
+            buffer: *mut gst::ffi::GstBuffer,
+            result: gst::ffi::GstFlowReturn,
         ) {
-            // TODO - revisit pull, which requires us to be careful about how we traverse proxy and ghost pads.
-            // For pull, we treat sink as src, src as sink as we're going the other way
-            // let peer = ffi::gst_pad_get_peer(pad);
-            // PromLatencyTracerImp::do_receive_and_record_latency_ts(ts, peer, pad);
+            PromLatencyTracerImp::do_receive_and_record_latency_ts::<true, IO>(
+                ts,
+                pad,
+                result >= ffi::GST_FLOW_OK && !buffer.is_null(),
+            );
         }
 
         unsafe extern "C" fn do_pad_link_post(
@@ -390,28 +510,44 @@ impl PromLatencyTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-push-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_push_buffer_pre as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_push_buffer_pre::<true> as *const ()
+                    } else {
+                        do_push_buffer_pre::<false> as *const ()
+                    },
                 ),
             );
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
                 c"pad-push-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_push_buffer_post as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_push_buffer_post::<true> as *const ()
+                    } else {
+                        do_push_buffer_post::<false> as *const ()
+                    },
                 ),
             );
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
                 c"pad-push-list-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_push_list_pre as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_push_list_pre::<true> as *const ()
+                    } else {
+                        do_push_list_pre::<false> as *const ()
+                    },
                 ),
             );
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
                 c"pad-push-list-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_push_list_post as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_push_list_post::<true> as *const ()
+                    } else {
+                        do_push_list_post::<false> as *const ()
+                    },
                 ),
             );
             // Pull hooks; far less common, but still useful.
@@ -419,14 +555,22 @@ impl PromLatencyTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-pull-range-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_pull_range_pre as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_pull_range_pre::<true> as *const ()
+                    } else {
+                        do_pull_range_pre::<false> as *const ()
+                    },
                 ),
             );
             ffi::gst_tracing_register_hook(
                 tracer_obj.to_glib_none().0,
                 c"pad-pull-range-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    do_pull_range_post as *const (),
+                    if *IO_COUNTS_ENABLED {
+                        do_pull_range_post::<true> as *const ()
+                    } else {
+                        do_pull_range_post::<false> as *const ()
+                    },
                 ),
             );
             // Link hooks; allow us to populate and clear the pads' quark cache.
@@ -449,6 +593,12 @@ impl PromLatencyTracerImp {
 
     /// Handle the element-new hook
     pub fn element_new(&self, _ts: u64, element: &gst::Element, port: u16) {
+        if element.is::<gst::Pipeline>() {
+            // Watching every element disables GLib's no-handler signal fast
+            // path (notably identity's per-buffer handoff). Only root pipeline
+            // names can change while parented elements are streaming.
+            element.connect_notify(Some("name"), |_, _| Self::invalidate_topology());
+        }
         if element.is::<gst::Pipeline>() && port > 0 {
             METRICS_SERVER_ONCE.get_or_init(|| Self::maybe_start_metrics_server(port));
         }
@@ -461,6 +611,7 @@ impl PromLatencyTracerImp {
 
     // Add this function, which is the handler for the "metrics" signal
     pub fn request_metrics() -> String {
+        metric_lifecycle::prune();
         let metric_families = gather();
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
@@ -552,30 +703,55 @@ impl PromLatencyTracerImp {
         replaced
     }
 
-    #[inline]
-    unsafe fn current_pad_cache(pad: *mut ffi::GstPad) -> Arc<PadCacheData> {
+    // Keep the cache hit inline so the caller can reuse its TLS access.
+    #[inline(always)]
+    unsafe fn current_pad_cache(state: &ThreadState, pad: *mut ffi::GstPad) -> Rc<PadCacheData> {
         let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
         let key = pad as usize;
         let index = ((key >> 4) ^ (key >> 12)) & 63;
-        let cached = PAD_SNAPSHOTS.with(|slots| {
-            let slots = slots.borrow();
+        let cached = {
+            let slots = state.snapshots.borrow();
             let slot = &slots[index];
             slot.cache
                 .as_ref()
                 .filter(|cache| slot.pad == key && cache.generation == generation)
                 .cloned()
-        });
+        };
         if let Some(cache) = cached {
             return cache;
         }
         // Drop the TLS borrow before GObject calls, which can reenter tracing.
-        let cache = Self::refresh_pad_cache(pad);
-        PAD_SNAPSHOTS.with(|slots| {
-            slots.borrow_mut()[index] = PadSnapshot {
-                pad: key,
-                cache: Some(cache.clone()),
-            };
-        });
+        let cache = Self::thread_cache_miss(state, pad, generation);
+        state.snapshots.borrow_mut()[index] = PadSnapshot {
+            pad: key,
+            cache: Some(cache.clone()),
+        };
+        cache
+    }
+
+    #[cold]
+    unsafe fn thread_cache_miss(
+        state: &ThreadState,
+        pad: *mut ffi::GstPad,
+        generation: u64,
+    ) -> Rc<PadCacheData> {
+        let key = pad as usize;
+        let cached = state
+            .cache_pool
+            .borrow()
+            .get(&key)
+            .filter(|cache| cache.generation == generation)
+            .cloned();
+        if let Some(cache) = cached {
+            return cache;
+        }
+        // GObject calls may reenter tracing; no TLS borrow is held here.
+        let cache = Rc::new(Self::refresh_pad_cache(pad).as_ref().clone());
+        let mut pool = state.cache_pool.borrow_mut();
+        if pool.len() >= 256 {
+            pool.clear();
+        }
+        pool.insert(key, cache.clone());
         cache
     }
 
@@ -591,19 +767,7 @@ impl PromLatencyTracerImp {
             }
             let borrowed = gst::Pad::from_glib_borrow(pad);
             let peer = borrowed.peer();
-            let cache = peer
-                .as_ref()
-                .and_then(|peer| {
-                    Self::do_create_latency_cache_for_pad_pair(pad, peer.as_ptr(), generation)
-                })
-                .unwrap_or_else(|| {
-                    Arc::new(PadCacheData {
-                        peer: peer.as_ref().map_or(0, |peer| peer.as_ptr() as usize),
-                        generation,
-                        metrics: None,
-                        sample_sequence: AtomicU64::new(0),
-                    })
-                });
+            let cache = Self::create_pad_cache(&borrowed, peer.as_ref(), generation);
             if Self::replace_pad_cache(pad, previous.as_ref(), Some(&cache)) {
                 return cache;
             }
@@ -612,112 +776,247 @@ impl PromLatencyTracerImp {
         }
     }
 
-    /// Resolve labels only when first used or after a topology change. Owned
-    /// traversal references are released before returning the metric handles.
+    #[cfg(test)]
     fn do_create_latency_cache_for_pad_pair(
-        src_pad: *mut gst::ffi::GstPad,
-        sink_pad: *mut gst::ffi::GstPad,
+        pad: *mut ffi::GstPad,
+        peer: *mut ffi::GstPad,
         generation: u64,
     ) -> Option<Arc<PadCacheData>> {
-        if src_pad.is_null() || sink_pad.is_null() {
+        if pad.is_null() || peer.is_null() {
             return None;
         }
-        // Ghost/proxy forwarding adds nested push hooks. Record the edge into
-        // the real sink only, keeping forwarding frames for child accounting.
-        let sink = unsafe { gst::Pad::from_glib_borrow(sink_pad) };
-        if sink.is::<gst::ProxyPad>() {
-            return None;
-        }
-        let source = Self::resolve_pad(src_pad)?;
-        let _source_parent = source.parent_element()?;
-        let sink_parent = sink.parent_element()?;
+        let pad = unsafe { gst::Pad::from_glib_borrow(pad) };
+        let peer = unsafe { gst::Pad::from_glib_borrow(peer) };
+        Some(Self::create_pad_cache(&pad, Some(&peer), generation))
+    }
 
-        // Prepare metrics
-        let el_name = sink_parent.name().to_string();
-        let src_pad_name = Self::pad_name(source.as_ptr());
-        let sink_pad_name = Self::pad_name(sink_pad);
-
-        let ancestor_path = sink_parent
-            .parent()
-            .map(|p| p.path_string().to_string())
-            .unwrap_or("none".to_string());
-        let metrics = Self::element_selected(&el_name).then(|| {
-            let labels = [&el_name, &src_pad_name, &sink_pad_name, &ancestor_path];
-            let sink_element = glib::WeakRef::new();
-            sink_element.set(Some(&sink_parent));
-            PadMetrics {
-                last_gauge: LATENCY_LAST.with_label_values(&labels),
-                sum_counter: LATENCY_SUM.with_label_values(&labels),
-                count_counter: LATENCY_COUNT.with_label_values(&labels),
-                wall_histogram: SYNC_WALL_HISTOGRAM.with_label_values(&labels),
-                cpu_histogram: SYNC_CPU_HISTOGRAM.with_label_values(&labels),
-                blocked_histogram: SYNC_BLOCKED_HISTOGRAM.with_label_values(&labels),
-                pts_age_histogram: (*PTS_AGE_ENABLED)
-                    .then(|| BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels)),
-                sink_element,
+    fn create_pad_cache(
+        pad: &gst::Pad,
+        peer: Option<&gst::Pad>,
+        generation: u64,
+    ) -> Arc<PadCacheData> {
+        // Pull hooks arrive on sink pads; push hooks arrive on source pads.
+        let pull = pad.direction() == gst::PadDirection::Sink;
+        let (source, sink) = if pull {
+            (peer, Some(pad))
+        } else {
+            (Some(pad), peer)
+        };
+        let io = (*IO_COUNTS_ENABLED)
+            .then(|| IoMetrics {
+                incoming: sink.and_then(|pad| Self::io_counter(pad, true)),
+                outgoing: source.and_then(|pad| Self::io_counter(pad, false)),
+            })
+            .filter(|io| io.incoming.is_some() || io.outgoing.is_some())
+            .map(Box::new);
+        let metrics = peer.and_then(|peer| {
+            // Count forwarding only at the real callee. Intermediate ghost/proxy
+            // calls remain stack frames so their children are subtracted.
+            if peer.is::<gst::ProxyPad>() {
+                return None;
             }
+            let caller = Self::resolve_pad(pad.as_ptr())?;
+            let element = peer.parent_element()?;
+            if !Self::element_selected(element.name().as_str()) {
+                return None;
+            }
+            let (source, sink) = if pull {
+                (peer, &caller)
+            } else {
+                (&caller, peer)
+            };
+            let element_name = element.name();
+            let src_name = source.name();
+            let sink_name = sink.name();
+            let path = element
+                .parent()
+                .map(|parent| parent.path_string().to_string())
+                .unwrap_or_else(|| "none".to_owned());
+            let labels: [&str; 4] = [&element_name, &src_name, &sink_name, &path];
+            let remove = if pull {
+                Self::remove_pull_series
+            } else {
+                Self::remove_push_series
+            };
+            Some(metric_lifecycle::with_series(
+                if pull { "pull" } else { "push" },
+                &labels,
+                &[source.upcast_ref(), sink.upcast_ref()],
+                remove,
+                || PadMetrics {
+                    last_gauge: if pull {
+                        PULL_LAST.with_label_values(&labels)
+                    } else {
+                        LATENCY_LAST.with_label_values(&labels)
+                    },
+                    sum_counter: if pull {
+                        PULL_SUM.with_label_values(&labels)
+                    } else {
+                        LATENCY_SUM.with_label_values(&labels)
+                    },
+                    count_counter: if pull {
+                        PULL_COUNT.with_label_values(&labels)
+                    } else {
+                        LATENCY_COUNT.with_label_values(&labels)
+                    },
+                    wall_histogram: if pull {
+                        PULL_WALL.with_label_values(&labels)
+                    } else {
+                        SYNC_WALL_HISTOGRAM.with_label_values(&labels)
+                    },
+                    cpu_histogram: if pull {
+                        PULL_CPU.with_label_values(&labels)
+                    } else {
+                        SYNC_CPU_HISTOGRAM.with_label_values(&labels)
+                    },
+                    blocked_histogram: if pull {
+                        PULL_BLOCKED.with_label_values(&labels)
+                    } else {
+                        SYNC_BLOCKED_HISTOGRAM.with_label_values(&labels)
+                    },
+                    pts_age_histogram: (!pull && *PTS_AGE_ENABLED)
+                        .then(|| BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels)),
+                    sink_element: element.downgrade(),
+                },
+            ))
         });
-
-        // Create cache
-        Some(Arc::new(PadCacheData {
-            peer: sink_pad as usize,
+        Arc::new(PadCacheData {
+            peer: peer.map_or(0, |peer| peer.as_ptr() as usize),
             generation,
             metrics,
-            sample_sequence: AtomicU64::new(0),
-        }))
+            io,
+        })
     }
 
-    fn pad_name(pad: *mut gst::ffi::GstPad) -> String {
-        let name = unsafe { gst::Pad::from_glib_borrow(pad).name().to_string() };
-        // apply regex to strip off trailing _0-9+ if present
-        //
-        // FIXME - Make stripping off the end regexp configurable.
-        // If ends in _[0-9]{2}[0-9]+[_0-9]+, strip that off the end to improve label cardinality
-        let re = glib::Regex::new(
-            r"_[0-9]{2}[0-9]+(_[0-9]+)?$",
-            glib::RegexCompileFlags::empty(),
-            glib::RegexMatchFlags::empty(),
-        )
-        .unwrap();
-        re.unwrap()
-            .replace(name, 0i32, "", glib::RegexMatchFlags::empty())
-            .unwrap()
-            .to_string()
+    fn io_counter(pad: &gst::Pad, incoming: bool) -> Option<IntCounter> {
+        if pad.is::<gst::ProxyPad>() {
+            return None;
+        }
+        let element = pad.parent_element()?;
+        let name = element.name();
+        if !Self::element_selected(&name) {
+            return None;
+        }
+        // Initialize every real pad on the selected element, including zero
+        // outputs on dropping/buffering elements. This only runs on cache misses.
+        let counter = Self::io_counter_for_pad(pad, &element, incoming);
+        for other in element.pads() {
+            if other != *pad && !other.is::<gst::ProxyPad>() {
+                Self::io_counter_for_pad(
+                    &other,
+                    &element,
+                    other.direction() == gst::PadDirection::Sink,
+                );
+            }
+        }
+        Some(counter)
     }
 
-    unsafe fn do_send_latency_ts(
+    fn io_counter_for_pad(pad: &gst::Pad, element: &gst::Element, incoming: bool) -> IntCounter {
+        let name = element.name();
+        let pad_name = pad.name();
+        let path = element
+            .parent()
+            .map(|parent| parent.path_string().to_string())
+            .unwrap_or_else(|| "none".to_owned());
+        let labels: [&str; 3] = [&name, &pad_name, &path];
+        let (family, metric, remove): (_, _, fn(&[&str])) = if incoming {
+            ("in", &*BUFFERS_IN, Self::remove_in_series)
+        } else {
+            ("out", &*BUFFERS_OUT, Self::remove_out_series)
+        };
+        metric_lifecycle::with_series(family, &labels, &[pad.upcast_ref()], remove, || {
+            metric.with_label_values(&labels)
+        })
+    }
+
+    fn remove_in_series(labels: &[&str]) {
+        let _ = BUFFERS_IN.remove_label_values(labels);
+    }
+    fn remove_out_series(labels: &[&str]) {
+        let _ = BUFFERS_OUT.remove_label_values(labels);
+    }
+    fn remove_pull_series(labels: &[&str]) {
+        let _ = PULL_LAST.remove_label_values(labels);
+        let _ = PULL_SUM.remove_label_values(labels);
+        let _ = PULL_COUNT.remove_label_values(labels);
+        let _ = PULL_WALL.remove_label_values(labels);
+        let _ = PULL_CPU.remove_label_values(labels);
+        let _ = PULL_BLOCKED.remove_label_values(labels);
+    }
+
+    fn remove_push_series(labels: &[&str]) {
+        let _ = LATENCY_LAST.remove_label_values(labels);
+        let _ = LATENCY_SUM.remove_label_values(labels);
+        let _ = LATENCY_COUNT.remove_label_values(labels);
+        let _ = SYNC_WALL_HISTOGRAM.remove_label_values(labels);
+        let _ = SYNC_CPU_HISTOGRAM.remove_label_values(labels);
+        let _ = SYNC_BLOCKED_HISTOGRAM.remove_label_values(labels);
+        if *PTS_AGE_ENABLED {
+            let _ = BUFFER_PTS_AGE_HISTOGRAM.remove_label_values(labels);
+        }
+    }
+
+    fn remove_queue_series(labels: &[&str]) {
+        let _ = QUEUE_LEVEL_BUFFERS.remove_label_values(labels);
+        let _ = QUEUE_LEVEL_BYTES.remove_label_values(labels);
+        let _ = QUEUE_LEVEL_TIME.remove_label_values(labels);
+        let _ = QUEUE_OVERRUNS.remove_label_values(labels);
+        let _ = QUEUE_UNDERRUNS.remove_label_values(labels);
+    }
+
+    #[cfg(test)]
+    fn pad_name(pad: *mut ffi::GstPad) -> String {
+        unsafe { gst::Pad::from_glib_borrow(pad).name().to_string() }
+    }
+
+    unsafe fn do_send_latency_ts<const PULL: bool, const IO: bool>(
         _ts: u64,
         src_pad: *mut gst::ffi::GstPad,
         buffer: *mut gst::ffi::GstBuffer,
+        buffers: u64,
     ) {
-        let cache = Some(Self::current_pad_cache(src_pad));
-        let sampled = cache.as_ref().is_some_and(|cache| {
-            cache.metrics.is_some()
-                && Self::sample_sequence(
-                    cache.sample_sequence.fetch_add(1, Ordering::Relaxed),
-                    src_pad as usize as u64,
-                )
-        });
-        // Perform optional diagnostics before starting the span, and outside
-        // the mutable TLS borrow (GObject calls may invoke other callbacks).
-        if sampled && !buffer.is_null() {
-            if let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) {
-                if let Some(histogram) = &metrics.pts_age_histogram {
-                    if let Some(age) = Self::buffer_pts_age(src_pad, buffer, metrics) {
-                        histogram.observe(age);
+        THREAD_STATE.with(|state| {
+            let cache = Some(Self::current_pad_cache(state, src_pad));
+            if IO && !PULL {
+                if let Some(io) = cache.as_ref().and_then(|cache| cache.io.as_ref()) {
+                    io.observe(buffers);
+                }
+            }
+            let sampled = cache.as_ref().is_some_and(|cache| {
+                if cache.metrics.is_none() {
+                    return false;
+                }
+                let sequence = &state.sample_sequence;
+                let value = sequence.get();
+                sequence.set(value.wrapping_add(1));
+                let seed = sequence.as_ptr() as usize ^ src_pad as usize;
+                Self::sample_sequence(value, seed as u64, state.sample_rate)
+            });
+            // Perform optional diagnostics before starting the span, and outside
+            // the mutable TLS borrow (GObject calls may invoke other callbacks).
+            if sampled && !buffer.is_null() {
+                if let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) {
+                    if let Some(histogram) = &metrics.pts_age_histogram {
+                        if let Some(age) = Self::buffer_pts_age(src_pad, buffer, metrics) {
+                            histogram.observe(age);
+                        }
                     }
                 }
             }
-        }
-        SPAN_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
+            let mut stack = state.spans.borrow_mut();
             let selected = cache.as_ref().is_some_and(|cache| cache.metrics.is_some());
-            if !selected && stack.is_empty() {
+            let needs_frame =
+                selected || (IO && PULL && cache.as_ref().is_some_and(|cache| cache.io.is_some()));
+            if !needs_frame && stack.is_empty() {
                 return;
             }
             // A sampled parent needs child CPU spans even when that child is not
             // itself selected, otherwise child work gets charged to the parent.
-            let measure_cpu = sampled || stack.iter().any(|frame| frame.start_cpu_ns.is_some());
+            let measure_cpu = sampled
+                || stack
+                    .last()
+                    .is_some_and(|frame| frame.start_cpu_ns.is_some());
             let start_cpu_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
             stack.push(SpanFrame {
                 cache,
@@ -731,12 +1030,16 @@ impl PromLatencyTracerImp {
         });
     }
 
-    unsafe fn do_receive_and_record_latency_ts(_ts: u64, src_pad: *mut gst::ffi::GstPad) {
+    unsafe fn do_receive_and_record_latency_ts<const PULL: bool, const IO: bool>(
+        _ts: u64,
+        src_pad: *mut gst::ffi::GstPad,
+        returned_buffer: bool,
+    ) {
         // Use the same clock at both boundaries, excluding this span's metric
         // export work. Nested tracer bookkeeping still adds measurement noise.
         let wall_end_ns = gst::get_timestamp().nseconds();
-        let completed = SPAN_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
+        let completed = THREAD_STATE.with(|state| {
+            let mut stack = state.spans.borrow_mut();
             let measure_cpu = stack.last()?.start_cpu_ns.is_some();
             let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
             Self::complete_span(&mut stack, src_pad, wall_end_ns, cpu_end_ns)
@@ -744,10 +1047,14 @@ impl PromLatencyTracerImp {
         let Some((completed, cache)) = completed else {
             return;
         };
+        if IO && PULL && returned_buffer {
+            if let Some(io) = cache.as_ref().and_then(|cache| cache.io.as_ref()) {
+                io.observe(1);
+            }
+        }
         let Some(metrics) = cache.as_ref().and_then(|cache| cache.metrics.as_ref()) else {
             return;
         };
-        // Log the latency
         metrics
             .last_gauge
             .set(completed.exclusive_wall_ns.try_into().unwrap_or(i64::MAX));
@@ -773,12 +1080,12 @@ impl PromLatencyTracerImp {
         pad: *mut gst::ffi::GstPad,
         wall_end_ns: u64,
         cpu_end_ns: Option<u64>,
-    ) -> Option<(CompletedSpan, Option<Arc<PadCacheData>>)> {
+    ) -> Option<(CompletedSpan, Option<Rc<PadCacheData>>)> {
         let frame = stack.pop()?;
         if frame.pad != pad {
             gst::warning!(
                 CAT,
-                "unbalanced push hooks: expected {:?}, received {:?}",
+                "unbalanced timing hooks: expected {:?}, received {:?}",
                 frame.pad,
                 pad
             );
@@ -811,8 +1118,8 @@ impl PromLatencyTracerImp {
         ))
     }
 
-    fn sample_sequence(sequence: u64, pad: u64) -> bool {
-        if *HISTOGRAM_SAMPLE_RATE == 1 {
+    fn sample_sequence(sequence: u64, pad: u64, rate: u64) -> bool {
+        if rate == 1 {
             return true;
         }
         // SplitMix64 prevents fixed batch/stream periods aliasing with sampling.
@@ -820,7 +1127,12 @@ impl PromLatencyTracerImp {
         value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
         value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        (value ^ (value >> 31)).is_multiple_of(*HISTOGRAM_SAMPLE_RATE)
+        value ^= value >> 31;
+        if rate.is_power_of_two() {
+            value & (rate - 1) == 0
+        } else {
+            value.is_multiple_of(rate)
+        }
     }
 
     fn element_selected(element: &str) -> bool {
@@ -882,6 +1194,7 @@ impl PromLatencyTracerImp {
     }
 
     fn register_queue(element: &gst::Element) {
+        element.connect_notify(Some("name"), |_, _| Self::invalidate_topology());
         // queue2 exposes levels but has neither of queue's pressure signals.
         // Keep streaming-thread callbacks allocation-free; export on sampler.
         let overruns = Arc::new(AtomicU64::new(0));
@@ -916,64 +1229,79 @@ impl PromLatencyTracerImp {
     fn start_queue_sampler() {
         thread::spawn(|| loop {
             thread::sleep(Duration::from_millis(*QUEUE_SAMPLE_INTERVAL_MS));
-            QUEUE_REGISTRATIONS
-                .lock()
-                .unwrap()
-                .retain_mut(|registration| {
-                    let Some(element) = registration.element.upgrade() else {
-                        if let Some(metrics) = &registration.metrics {
-                            metrics.level_buffers.set(0);
-                            metrics.level_bytes.set(0);
-                            metrics.level_time.set(0.0);
-                        }
-                        return false;
-                    };
-
-                    // Capture labels only after assembly, when streaming can start.
-                    if element.current_state() < gst::State::Paused {
-                        if let Some(metrics) = &registration.metrics {
-                            metrics.level_buffers.set(0);
-                            metrics.level_bytes.set(0);
-                            metrics.level_time.set(0.0);
-                        }
-                        return true;
+            // Property reads and GObject destruction can reenter tracing. Keep
+            // them outside the registration lock, preserving new registrations.
+            let mut registrations = std::mem::take(&mut *QUEUE_REGISTRATIONS.lock().unwrap());
+            registrations.retain_mut(|registration| {
+                let Some(element) = registration.element.upgrade() else {
+                    if let Some(metrics) = &registration.metrics {
+                        metrics.level_buffers.set(0);
+                        metrics.level_bytes.set(0);
+                        metrics.level_time.set(0.0);
                     }
+                    return false;
+                };
 
-                    let metrics = registration.metrics.get_or_insert_with(|| {
-                        let (element_name, path) = Self::queue_labels(&element);
-                        let labels = [&element_name, &path];
-                        QueueMetrics {
+                // Capture labels only after assembly, when streaming can start.
+                if element.current_state() < gst::State::Paused {
+                    if let Some(metrics) = &registration.metrics {
+                        metrics.level_buffers.set(0);
+                        metrics.level_bytes.set(0);
+                        metrics.level_time.set(0.0);
+                    }
+                    return true;
+                }
+
+                let current_labels = Self::queue_labels(&element);
+                let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
+                if registration.metrics.as_ref().is_some_and(|metrics| {
+                    metrics.labels != current_labels || metrics.generation != generation
+                }) {
+                    registration.metrics = None;
+                }
+                let metrics = registration.metrics.get_or_insert_with(|| {
+                    let labels = [current_labels.0.as_str(), current_labels.1.as_str()];
+                    metric_lifecycle::with_series(
+                        "queue",
+                        &labels,
+                        &[element.upcast_ref()],
+                        Self::remove_queue_series,
+                        || QueueMetrics {
+                            labels: current_labels.clone(),
+                            generation,
                             level_buffers: QUEUE_LEVEL_BUFFERS.with_label_values(&labels),
                             level_bytes: QUEUE_LEVEL_BYTES.with_label_values(&labels),
                             level_time: QUEUE_LEVEL_TIME.with_label_values(&labels),
                             overruns: QUEUE_OVERRUNS.with_label_values(&labels),
                             underruns: QUEUE_UNDERRUNS.with_label_values(&labels),
-                        }
-                    });
-
-                    let buffers = element
-                        .property_value("current-level-buffers")
-                        .get::<u32>()
-                        .unwrap_or_default();
-                    let bytes = element
-                        .property_value("current-level-bytes")
-                        .get::<u32>()
-                        .unwrap_or_default();
-                    let time_ns = element
-                        .property_value("current-level-time")
-                        .get::<u64>()
-                        .unwrap_or_default();
-                    metrics.level_buffers.set(i64::from(buffers));
-                    metrics.level_bytes.set(i64::from(bytes));
-                    metrics.level_time.set(time_ns as f64 / 1_000_000_000f64);
-                    metrics
-                        .overruns
-                        .inc_by(registration.overruns.swap(0, Ordering::Relaxed));
-                    metrics
-                        .underruns
-                        .inc_by(registration.underruns.swap(0, Ordering::Relaxed));
-                    true
+                        },
+                    )
                 });
+
+                let buffers = element
+                    .property_value("current-level-buffers")
+                    .get::<u32>()
+                    .unwrap_or_default();
+                let bytes = element
+                    .property_value("current-level-bytes")
+                    .get::<u32>()
+                    .unwrap_or_default();
+                let time_ns = element
+                    .property_value("current-level-time")
+                    .get::<u64>()
+                    .unwrap_or_default();
+                metrics.level_buffers.set(i64::from(buffers));
+                metrics.level_bytes.set(i64::from(bytes));
+                metrics.level_time.set(time_ns as f64 / 1_000_000_000f64);
+                metrics
+                    .overruns
+                    .inc_by(registration.overruns.swap(0, Ordering::Relaxed));
+                metrics
+                    .underruns
+                    .inc_by(registration.underruns.swap(0, Ordering::Relaxed));
+                true
+            });
+            QUEUE_REGISTRATIONS.lock().unwrap().extend(registrations);
         });
     }
 
@@ -995,12 +1323,7 @@ impl PromLatencyTracerImp {
             gst::info!(CAT, "Prometheus metrics server listening on {}", port);
 
             for request in server.incoming_requests() {
-                // Gather and encode all registered metrics
-                let metric_families = gather();
-                let mut buffer = Vec::new();
-                TextEncoder::new()
-                    .encode(&metric_families, &mut buffer)
-                    .expect("Failed to encode metrics");
+                let buffer = Self::request_metrics().into_bytes();
 
                 // Build and send HTTP response
                 let response = Response::from_data(buffer).with_header(
@@ -1025,17 +1348,49 @@ mod tests {
     use gstreamer as gst;
     use std::sync::Arc;
 
+    // These two cache tests explicitly change the process-wide generation.
+    static TOPOLOGY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn empty_cache(generation: u64) -> Arc<super::PadCacheData> {
         Arc::new(super::PadCacheData {
             peer: 0,
             generation,
             metrics: None,
-            sample_sequence: std::sync::atomic::AtomicU64::new(0),
+            io: None,
         })
     }
 
     #[test]
+    fn colliding_pad_slots_reuse_their_thread_snapshot() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let pads: Vec<_> = (0..65)
+            .map(|_| gst::Pad::builder(gst::PadDirection::Src).build())
+            .collect();
+        let mut slots = [None; 64];
+        let (first, second) = pads
+            .iter()
+            .enumerate()
+            .find_map(|(index, pad)| {
+                let key = pad.as_ptr() as usize;
+                let slot = ((key >> 4) ^ (key >> 12)) & 63;
+                slots[slot].replace(index).map(|first| (first, index))
+            })
+            .unwrap();
+        super::THREAD_STATE.with(|state| unsafe {
+            let original = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            PromLatencyTracerImp::current_pad_cache(state, pads[second].as_ptr());
+            let reused = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            assert!(std::rc::Rc::ptr_eq(&original, &reused));
+            PromLatencyTracerImp::invalidate_topology();
+            let refreshed = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            assert!(!std::rc::Rc::ptr_eq(&original, &refreshed));
+        });
+    }
+
+    #[test]
     fn thread_cache_reuses_snapshots_until_topology_changes_without_retaining_elements() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
         gst::init().unwrap();
         let source = gst::ElementFactory::make("identity")
             .name("snapshot_source")
@@ -1049,14 +1404,14 @@ mod tests {
         let pad = source.static_pad("src").unwrap();
         let weak_source = source.downgrade();
         let weak_sink = sink.downgrade();
-        unsafe {
-            let first = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
-            let hit = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
-            assert!(Arc::ptr_eq(&first, &hit));
+        super::THREAD_STATE.with(|state| unsafe {
+            let first = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
+            let hit = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
+            assert!(std::rc::Rc::ptr_eq(&first, &hit));
             PromLatencyTracerImp::invalidate_topology();
-            let refreshed = PromLatencyTracerImp::current_pad_cache(pad.as_ptr());
-            assert!(!Arc::ptr_eq(&first, &refreshed));
-        }
+            let refreshed = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
+            assert!(!std::rc::Rc::ptr_eq(&first, &refreshed));
+        });
         drop(pad);
         drop(source);
         drop(sink);
@@ -1219,11 +1574,16 @@ mod tests {
                 Some(&cache),
             ));
             drop(cache);
-            let snapshot = PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).unwrap();
-            let weak = Arc::downgrade(&snapshot);
+            let snapshot = std::rc::Rc::new(
+                PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0)
+                    .unwrap()
+                    .as_ref()
+                    .clone(),
+            );
+            let weak = std::rc::Rc::downgrade(&snapshot);
             // Parent forces accounting even when a test environment filters this element.
-            super::SPAN_STACK.with(|stack| {
-                stack.borrow_mut().push(SpanFrame {
+            super::THREAD_STATE.with(|state| {
+                state.spans.borrow_mut().push(SpanFrame {
                     cache: Some(snapshot),
                     pad: src_pad.to_glib_none().0,
                     start_wall_ns: gst::get_timestamp().nseconds(),
@@ -1241,8 +1601,12 @@ mod tests {
             );
             assert!(PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).is_none());
             assert!(weak.upgrade().is_some());
-            PromLatencyTracerImp::do_receive_and_record_latency_ts(0, src_pad.to_glib_none().0);
-            assert!(super::SPAN_STACK.with(|stack| stack.borrow().is_empty()));
+            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, false>(
+                0,
+                src_pad.to_glib_none().0,
+                false,
+            );
+            assert!(super::THREAD_STATE.with(|state| state.spans.borrow().is_empty()));
             assert!(weak.upgrade().is_none());
         }
     }
@@ -1281,13 +1645,15 @@ mod tests {
 
     #[test]
     fn given_sampling_when_hashing_sequences_then_samples_are_spread() {
-        if *super::HISTOGRAM_SAMPLE_RATE != 16 {
-            return;
-        }
         let samples = (0..1024)
-            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234))
+            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234, 16))
             .count();
         assert!((40..90).contains(&samples), "sample count was {samples}");
+        let samples = (0..16384)
+            .step_by(96)
+            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234, 17))
+            .count();
+        assert!((3..20).contains(&samples), "sample count was {samples}");
     }
 
     #[test]
