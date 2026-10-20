@@ -1,6 +1,7 @@
 //! Optional debug logging is deliberately separate from compact span capture.
 use gstreamer as gst;
 use opentelemetry::logs::{LogRecord, Logger, LoggerProvider, Severity};
+use opentelemetry_otlp::{RetryPolicy, WithHttpConfig};
 use opentelemetry_sdk::{logs::SdkLoggerProvider, Resource};
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -12,6 +13,7 @@ thread_local! { static IN_LOG: Cell<bool> = const { Cell::new(false) }; }
 pub(crate) fn initialize(resource: Resource) -> Result<(), String> {
     let exporter = opentelemetry_otlp::LogExporter::builder()
         .with_http()
+        .with_retry_policy(RetryPolicy::disabled())
         .build()
         .map_err(|e| e.to_string())?;
     let provider = SdkLoggerProvider::builder()

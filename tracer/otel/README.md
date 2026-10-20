@@ -17,9 +17,10 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 gst-launch-1.0 videotestsrc num-buffers=100 ! videoconvert ! fakesink
 ```
 
-The exporter uses OpenTelemetry Rust 0.30, including its endpoint, headers,
+The exporter uses OpenTelemetry Rust 0.33.1, including its endpoint, headers,
 request timeout, and resource environment configuration. HTTPS uses Rustls with
-WebPKI roots. This build supports HTTP protobuf, not gRPC. `OTEL_SERVICE_NAME`
+the platform's native trust roots through reqwest 0.13. This build supports HTTP
+protobuf, not gRPC. `OTEL_SERVICE_NAME`
 and `OTEL_RESOURCE_ATTRIBUTES` are read by the SDK's resource detectors.
 
 ## Capture and export
@@ -28,7 +29,9 @@ A source starts a trace for each buffer journey. Synchronous nested pushes use a
 bounded thread-local stack. Buffer metadata carries an owned correlation token
 across queues and clones ownership when buffers are copied or transformed. A
 recycled source buffer starts a fresh journey. An external valid OTel context at
-the source supplies the parent, sampling decision, and trace state.
+the source supplies the parent, sampling decision, and trace state. OTLP records
+whether that parent is remote; subsequent locally captured spans have local
+parents, including across queues.
 
 Pad/element names, paths, and peer descriptions are cached per pad. Weak
 subscriptions to the pad, its peer, and their ancestors invalidate descriptions
@@ -42,7 +45,7 @@ Rejected traces propagate a rejection token without loading descriptions,
 reading buffer sizes, creating attributes, or enqueuing records. Source
 classification is cached separately; rejected synchronous descendants do not
 consult the pad cache at all. Roots with a zero sampling ratio need no random
-IDs. Partial sampling generates a trace ID once per root using the SDK 0.30 ratio
+IDs. Partial sampling generates a trace ID once per root using the SDK 0.33 ratio
 algorithm; descendants inherit the result.
 
 Sampled pushes capture IDs, monotonic timestamps, buffer identity/size, thread
@@ -50,10 +53,10 @@ identity, a descriptor reference, and the flow result. Post hooks use a bounded
 nonblocking queue. One worker enriches records into public `SpanData` batches,
 sets the resource on the OTLP exporter, and serializes/exports them directly.
 The worker drains up to 64 records between clock checks, preserves FIFO flush
-markers, and preallocates each replacement batch. A version-pinned
-[OpenTelemetry protobuf patch](../../vendor/opentelemetry-proto/PATCH.md)
-consumes `SpanData` during conversion instead of cloning every span; the normal
-OTLP exporter and HTTP transport remain in use.
+markers, and preallocates each replacement batch. Upstream OpenTelemetry 0.33.1
+consumes `SpanData` during protobuf conversion instead of cloning every span;
+the local vendored patch has been removed. The normal OTLP exporter and HTTP
+transport remain in use.
 The first sampled hook anchors GStreamer's monotonic clock to wall time; later
 wall-clock adjustments do not change recorded durations.
 
@@ -91,7 +94,11 @@ available without an accumulating registry. OTLP encoding temporarily
 allocates proportional to the bounded batch. Thread and pipeline counts remain
 application-controlled. Overflow drops the new record; it never waits for the
 receiver. A failed export counts the entire attempted batch as failed, with no
-additional retry queue. A timeout can leave delivery uncertain, and exporter
+additional retry queue. Exporter retries are explicitly disabled for traces and
+logs, preserving one attempt per batch despite the new 0.33 default. The HTTP
+exporter also rejects encoded request bodies larger than its default 64 MiB
+limit; rejected trace batches count as failed exports. A timeout can leave
+delivery uncertain, and exporter
 success does not guarantee durable storage or detect collector partial rejection.
 
 ## Drain and counters
@@ -179,3 +186,5 @@ source buffers; `--tee-queues` substitutes tee/queue stages to exercise shared
 buffers and asynchronous propagation (source CPU then excludes queue threads).
 Results and logs go under `target/otel-bench`. See the
 [follow-up measurements](bench/FOLLOWUP_RESULTS.md) for results and limitations.
+The [0.33.1 upgrade results](bench/UPGRADE_RESULTS.md) cover the current dependency
+stack, changed transport defaults, and its measured exporter cost.

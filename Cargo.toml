@@ -1,6 +1,5 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/opentelemetry-proto"]
 members = [
     "tracer/otel",
     "tracer/noop",
@@ -31,7 +30,3 @@ debug = true
 
 [profile.test]
 inherits = "dev"
-
-# Pinned 0.30 conversion fix: consume owned SpanData without cloning it.
-[patch.crates-io]
-opentelemetry-proto = { path = "vendor/opentelemetry-proto" }

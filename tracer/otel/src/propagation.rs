@@ -164,6 +164,7 @@ mod tests {
             trace_id: TraceId::from(id as u128),
             span_id: SpanId::from(id),
             flags: TraceFlags::SAMPLED,
+            is_remote: false,
             trace_state: Some(Arc::new(
                 TraceState::from_key_value([("vendor", "state")]).unwrap(),
             )),

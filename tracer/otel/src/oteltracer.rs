@@ -1,5 +1,6 @@
 use glib::{subclass::prelude::*, translate::IntoGlib};
 use gstreamer::{self as gst, prelude::*, subclass::prelude::*};
+use opentelemetry_otlp::{RetryPolicy, WithHttpConfig};
 use std::sync::{LazyLock, OnceLock};
 
 use crate::{
@@ -29,6 +30,8 @@ fn initialize() -> Result<Runtime, String> {
     let resource = export::resource();
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
+        // Keep one attempt per batch and the existing bounded drain behavior.
+        .with_retry_policy(RetryPolicy::disabled())
         .build()
         .map_err(|e| e.to_string())?;
     if config.logs {

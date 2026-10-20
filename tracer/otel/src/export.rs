@@ -379,6 +379,7 @@ fn span_data(
         span_id,
         flags,
         trace_state,
+        is_remote,
     } = record.token;
     let mut attributes = Vec::with_capacity(record.site.attributes.len() + 8);
     attributes.extend(record.site.attributes.iter().cloned());
@@ -398,10 +399,11 @@ fn span_data(
             trace_id,
             span_id,
             flags,
-            false,
+            is_remote,
             trace_state.as_deref().cloned().unwrap_or_default(),
         ),
         parent_span_id: record.parent,
+        parent_span_is_remote: record.parent_is_remote,
         span_kind: SpanKind::Internal,
         name: "gst.pad.push".into(),
         start_time: anchor.at(record.start),
@@ -550,11 +552,13 @@ pub(crate) mod tests {
                 trace_id: TraceId::from(1),
                 span_id: SpanId::from(index + 1),
                 flags: TraceFlags::SAMPLED,
+                is_remote: false,
                 trace_state: Some(Arc::new(
                     TraceState::from_key_value([("vendor", "value")]).unwrap(),
                 )),
             },
             parent: SpanId::from(7),
+            parent_is_remote: true,
             start: 100,
             end: 150,
             buffer_id: 123,
@@ -589,6 +593,8 @@ pub(crate) mod tests {
         let spans = collector.0.lock().unwrap();
         let span = &spans[0];
         assert_eq!(span.parent_span_id, SpanId::from(7));
+        assert!(span.parent_span_is_remote);
+        assert!(!span.span_context.is_remote());
         assert_eq!(span.span_context.trace_state().get("vendor"), Some("value"));
         assert_eq!(span.attributes.len(), 2);
         assert_eq!(span.dropped_attributes_count, 6);

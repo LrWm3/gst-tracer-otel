@@ -60,7 +60,9 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 request
-                    .respond(tiny_http::Response::empty(if fail { 500 } else { 200 }))
+                    // 503 is retryable by default in OTel 0.33. One received
+                    // copy of each span verifies our explicit no-retry policy.
+                    .respond(tiny_http::Response::empty(if fail { 503 } else { 200 }))
                     .unwrap();
             }
         }
@@ -130,6 +132,7 @@ fn complete_traces(spans: &[Span], size: usize) -> usize {
         for span in trace {
             assert!(span.start_time_unix_nano <= span.end_time_unix_nano);
             assert_eq!(span.flags & 1, 1);
+            assert_eq!(span.flags & 0x300, 0x100, "expected a local parent");
             assert!(span.parent_span_id.is_empty() || ids.contains(span.parent_span_id.as_slice()));
             assert_eq!(span.name, "gst.pad.push");
         }

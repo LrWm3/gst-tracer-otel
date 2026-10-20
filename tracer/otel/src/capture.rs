@@ -17,6 +17,7 @@ pub(crate) struct Token {
     pub trace_id: TraceId,
     pub span_id: SpanId,
     pub flags: TraceFlags,
+    pub is_remote: bool,
     pub trace_state: Option<Arc<TraceState>>,
 }
 impl Token {
@@ -25,6 +26,7 @@ impl Token {
             trace_id: TraceId::INVALID,
             span_id: SpanId::INVALID,
             flags: TraceFlags::default(),
+            is_remote: false,
             trace_state: None,
         }
     }
@@ -33,6 +35,7 @@ impl Token {
             trace_id: context.trace_id(),
             span_id: context.span_id(),
             flags: context.trace_flags(),
+            is_remote: context.is_remote(),
             trace_state: (context.trace_state() != &TraceState::default())
                 .then(|| Arc::new(context.trace_state().clone())),
         }
@@ -45,7 +48,7 @@ impl Token {
             self.trace_id,
             self.span_id,
             self.flags,
-            false,
+            self.is_remote,
             self.trace_state.as_deref().cloned().unwrap_or_default(),
         )
     }
@@ -61,6 +64,7 @@ pub(crate) struct Record {
     pub site: Arc<Site>,
     pub token: Token,
     pub parent: SpanId,
+    pub parent_is_remote: bool,
     pub start: u64,
     pub end: u64,
     pub buffer_id: usize,
@@ -102,6 +106,7 @@ fn root(ratio: f64) -> Token {
         trace_id,
         span_id: SpanId::INVALID,
         flags: TraceFlags::default().with_sampled(sampled),
+        is_remote: false,
         trace_state: None,
     }
 }
@@ -146,10 +151,12 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
         }
     });
     let parent = parent_token.span_id;
+    let parent_is_remote = parent_token.is_remote;
     let mut token = parent_token;
     let record = if token.sampled() && runtime.accepting() {
         let site = crate::metadata::site(pad, runtime.config.value_length_limit);
         token.span_id = IDS.new_span_id();
+        token.is_remote = false;
         runtime.anchor(ts);
         runtime.stats.local().started_spans.fetch_add(1, Relaxed);
         let thread = LOCAL.with(|local| {
@@ -175,6 +182,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
             site,
             token: token.clone(),
             parent,
+            parent_is_remote,
             start: ts,
             end: ts,
             buffer_id: buffer.as_ptr() as usize,
@@ -252,11 +260,58 @@ mod tests {
                 assert_eq!(token.sampled(), sampled);
                 assert_eq!(token.trace_id, context.trace_id());
                 assert_eq!(token.span_id, context.span_id());
+                assert!(token.context().is_remote());
                 assert_eq!(token.context().trace_state(), context.trace_state());
             }
         }
         assert!(!root(0.0).sampled());
         assert!(root(1.0).sampled());
+    }
+
+    #[test]
+    fn remote_parent_applies_only_to_the_first_local_span() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let downstream = gst::ElementFactory::make("identity").build().unwrap();
+        let source_pad = source.static_pad("src").unwrap();
+        let downstream_pad = downstream.static_pad("src").unwrap();
+        let parent = SpanContext::new(
+            TraceId::from(42),
+            SpanId::from(9),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let _guard = opentelemetry::Context::new()
+            .with_remote_span_context(parent.clone())
+            .attach();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffer = gst::Buffer::new();
+        begin(&runtime, 100, &source_pad, &buffer);
+        let local = current_context().unwrap();
+        assert!(!local.is_remote());
+        begin(&runtime, 110, &downstream_pad, &buffer);
+        end(&runtime, 120, &downstream_pad, 0);
+        end(&runtime, 130, &source_pad, 0);
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        let spans = collector.0.lock().unwrap();
+        assert_eq!(spans.len(), 2);
+        for span in spans.iter() {
+            let first_local = span.span_context.span_id() == local.span_id();
+            assert_eq!(span.span_context.trace_id(), parent.trace_id());
+            assert_eq!(span.parent_span_is_remote, first_local);
+            assert_eq!(
+                span.parent_span_id,
+                if first_local {
+                    parent.span_id()
+                } else {
+                    local.span_id()
+                }
+            );
+            let proto: opentelemetry_proto::tonic::trace::v1::Span = span.clone().into();
+            assert_eq!(proto.flags & 0x300, if first_local { 0x300 } else { 0x100 });
+        }
     }
 
     #[test]

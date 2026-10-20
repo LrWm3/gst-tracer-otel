@@ -115,3 +115,19 @@ queues require a separate design and are not justified by an isolated queue-cost
 measurement in this pass. See [follow-up results](tracer/otel/bench/FOLLOWUP_RESULTS.md)
 for all 213 measured runs, including timing variability, full-delivery checks,
 failure accounting, correctness tests, and the existing workspace check failures.
+
+## 4. Upgrade OpenTelemetry
+
+Authorized by the user: "can you upgrade otel as well".
+
+- [x] Upgrade the OTel API, SDK, OTLP, and protobuf crates from 0.30 to the latest
+  published release, 0.33.1, and update the protobuf test decoder.
+- [x] Remove the local conversion patch now that upstream consumes owned spans.
+- [x] Preserve one export attempt per batch and encode remote-parent flags.
+- [x] Validate collector delivery, sampling, log correlation, failure behavior,
+  release performance, and required repository checks.
+
+See [upgrade results](tracer/otel/bench/UPGRADE_RESULTS.md) for migration details,
+86 measured runs, tests, and the unchanged workspace audit/dependency findings.
+The controlled sampled comparison retained streaming performance but increased
+total process CPU by about 8–15%; the upgrade is not claimed as a speedup.
