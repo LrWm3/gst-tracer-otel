@@ -113,7 +113,7 @@ cargo test
 - [x] Implement a working version of `pyroscope`, for collecting profiles from gstreamer pipelines.
 - [x] Have `prom-latency` cache pad relationships and metric labels, refreshing them on topology changes to keep per-buffer lookups cheap.
 - [x] Have `prom-latency` latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
-- [ ] Have `prom-latency` measure whole-bin elapsed latency across queues and parallel branches.
+- ~~Have `prom-latency` measure whole-bin elapsed latency across queues and parallel branches.~~ Won't do: input/output matching and completion are ambiguous.
 - [x] In `prom-latency`, add opt-in per-pad input/output buffer counts for muxers and demuxers.
 - [x] In `prom-latency`, distinguish multiple sink/src pads and test branching, merging, and ghost forwarding.
 - [x] In `prom-latency`, measure exclusive pull-mode latency at the upstream element.
