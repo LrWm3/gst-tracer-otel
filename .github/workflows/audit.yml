@@ -28,10 +28,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
-      - name: Install cargo-audit with CVSS 4 support
+      - name: Install audit and coverage tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit@0.22.2
+          tool: cargo-audit@0.22.2,cargo-tarpaulin@0.37.5
 
       - name: Run audit
         run: just audit
