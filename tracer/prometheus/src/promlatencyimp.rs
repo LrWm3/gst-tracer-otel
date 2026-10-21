@@ -299,6 +299,7 @@ struct SpanFrame {
     start_cpu_ns: Option<u64>,
     child_wall_ns: u64,
     child_cpu_ns: u64,
+    child_cpu_valid: bool,
     sampled: bool,
 }
 
@@ -1011,12 +1012,9 @@ impl PromLatencyTracerImp {
             if !needs_frame && stack.is_empty() {
                 return;
             }
-            // A sampled parent needs child CPU spans even when that child is not
-            // itself selected, otherwise child work gets charged to the parent.
-            let measure_cpu = sampled
-                || stack
-                    .last()
-                    .is_some_and(|frame| frame.start_cpu_ns.is_some());
+            // A sampled parent needs each direct child's inclusive CPU time.
+            // That requirement does not extend to unsampled grandchildren.
+            let measure_cpu = sampled || stack.last().is_some_and(|frame| frame.sampled);
             let start_cpu_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
             stack.push(SpanFrame {
                 cache,
@@ -1025,6 +1023,7 @@ impl PromLatencyTracerImp {
                 start_cpu_ns,
                 child_wall_ns: 0,
                 child_cpu_ns: 0,
+                child_cpu_valid: true,
                 sampled,
             });
         });
@@ -1099,11 +1098,14 @@ impl PromLatencyTracerImp {
             .and_then(|start| cpu_end_ns.map(|end| end.saturating_sub(start)));
         if let Some(parent) = stack.last_mut() {
             parent.child_wall_ns = parent.child_wall_ns.saturating_add(raw_wall_ns);
-            if let Some(raw_cpu_ns) = raw_cpu_ns {
-                parent.child_cpu_ns = parent.child_cpu_ns.saturating_add(raw_cpu_ns);
-            } else {
-                // A failed child clock read invalidates parent CPU attribution.
-                parent.start_cpu_ns = None;
+            if parent.sampled {
+                if let Some(raw_cpu_ns) = raw_cpu_ns {
+                    parent.child_cpu_ns = parent.child_cpu_ns.saturating_add(raw_cpu_ns);
+                } else {
+                    // Invalidate exclusive CPU attribution, but preserve the
+                    // parent's inclusive measurement for its own parent.
+                    parent.child_cpu_valid = false;
+                }
             }
         }
 
@@ -1111,6 +1113,7 @@ impl PromLatencyTracerImp {
             CompletedSpan {
                 exclusive_wall_ns: Self::compute_element_latency(raw_wall_ns, frame.child_wall_ns),
                 exclusive_cpu_ns: raw_cpu_ns
+                    .filter(|_| frame.sampled && frame.child_cpu_valid)
                     .map(|cpu| Self::compute_element_latency(cpu, frame.child_cpu_ns)),
                 sampled: frame.sampled,
             },
@@ -1590,6 +1593,7 @@ mod tests {
                     start_cpu_ns: None,
                     child_wall_ns: 0,
                     child_cpu_ns: 0,
+                    child_cpu_valid: true,
                     sampled: false,
                 })
             });
@@ -1621,11 +1625,81 @@ mod tests {
             start_cpu_ns: Some(0),
             child_wall_ns: 0,
             child_cpu_ns: 0,
+            child_cpu_valid: true,
             sampled: true,
         }];
         let (span, _) = PromLatencyTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
         assert_eq!(span.exclusive_wall_ns, 10);
         assert_eq!(span.exclusive_cpu_ns, None);
+    }
+
+    fn timing_frame(start_wall_ns: u64, start_cpu_ns: Option<u64>, sampled: bool) -> SpanFrame {
+        SpanFrame {
+            cache: None,
+            pad: std::ptr::null_mut(),
+            start_wall_ns,
+            start_cpu_ns,
+            child_wall_ns: 0,
+            child_cpu_ns: 0,
+            child_cpu_valid: true,
+            sampled,
+        }
+    }
+
+    #[test]
+    fn given_unsampled_descendants_when_finishing_then_parent_cpu_stays_exclusive() {
+        let pad = std::ptr::null_mut();
+        let mut stack = vec![
+            timing_frame(0, Some(0), true),
+            // Only this direct child's inclusive CPU is needed by the parent.
+            timing_frame(10, Some(5), false),
+            timing_frame(20, None, false),
+            // A deeper span can still be sampled independently.
+            timing_frame(30, Some(15), true),
+        ];
+        let (leaf, _) = PromLatencyTracerImp::complete_span(&mut stack, pad, 40, Some(20)).unwrap();
+        assert_eq!(leaf.exclusive_wall_ns, 10);
+        assert_eq!(leaf.exclusive_cpu_ns, Some(5));
+        let (grandchild, _) =
+            PromLatencyTracerImp::complete_span(&mut stack, pad, 50, None).unwrap();
+        assert_eq!(grandchild.exclusive_wall_ns, 20);
+        assert_eq!(grandchild.exclusive_cpu_ns, None);
+        let (child, _) =
+            PromLatencyTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
+        assert_eq!(child.exclusive_wall_ns, 40);
+        assert_eq!(child.exclusive_cpu_ns, None);
+        let (parent, _) =
+            PromLatencyTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
+        assert_eq!(parent.exclusive_wall_ns, 30);
+        assert_eq!(parent.exclusive_cpu_ns, Some(20));
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn given_failed_grandchild_clock_when_finishing_then_only_direct_parent_loses_cpu_sample() {
+        let pad = std::ptr::null_mut();
+        for (start, end) in [(None, Some(20)), (Some(10), None), (None, None)] {
+            let mut stack = vec![
+                timing_frame(0, Some(0), true),
+                timing_frame(10, Some(5), true),
+                timing_frame(20, start, true),
+            ];
+            let (grandchild, _) =
+                PromLatencyTracerImp::complete_span(&mut stack, pad, 40, end).unwrap();
+            assert_eq!(grandchild.exclusive_cpu_ns, None);
+            // A later successful sibling must not hide the missing child time.
+            stack.push(timing_frame(50, Some(25), true));
+            PromLatencyTracerImp::complete_span(&mut stack, pad, 70, Some(30));
+            let (child, _) =
+                PromLatencyTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
+            assert_eq!(child.exclusive_wall_ns, 30);
+            assert_eq!(child.exclusive_cpu_ns, None);
+            let (parent, _) =
+                PromLatencyTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
+            assert_eq!(parent.exclusive_wall_ns, 30);
+            assert_eq!(parent.exclusive_cpu_ns, Some(20));
+            assert!(stack.is_empty());
+        }
     }
 
     #[test]
@@ -1689,6 +1763,7 @@ mod tests {
             start_cpu_ns: Some(0),
             child_wall_ns: 0,
             child_cpu_ns: 0,
+            child_cpu_valid: true,
             sampled: true,
         }];
 
@@ -1699,6 +1774,7 @@ mod tests {
             start_cpu_ns: Some(5),
             child_wall_ns: 0,
             child_cpu_ns: 0,
+            child_cpu_valid: true,
             sampled: true,
         });
         PromLatencyTracerImp::complete_span(&mut stack, first_child_pad, 30, Some(15));
@@ -1709,6 +1785,7 @@ mod tests {
             start_cpu_ns: Some(20),
             child_wall_ns: 0,
             child_cpu_ns: 0,
+            child_cpu_valid: true,
             sampled: true,
         });
         PromLatencyTracerImp::complete_span(&mut stack, second_child_pad, 65, Some(35));
@@ -1737,6 +1814,7 @@ mod tests {
             start_cpu_ns: None,
             child_wall_ns: 0,
             child_cpu_ns: 0,
+            child_cpu_valid: true,
             sampled: false,
         }];
 

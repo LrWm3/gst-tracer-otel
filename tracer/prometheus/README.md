@@ -86,6 +86,10 @@ export GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE=1000
   `gst_element_sync_cpu_seconds`, and `gst_element_sync_blocked_seconds`.
 - `gst_element_latency_last_gauge`, `gst_element_latency_sum_count`, and `gst_element_latency_count_count` are always recorded for every latency event.
 
+CPU clocks are read for sampled calls and their direct children, whose inclusive
+time is subtracted from the parent. Sampling does not force CPU clock reads
+through the rest of a nested call chain.
+
 Buckets begin at one microsecond so short decoder, inference, and tracker stages
 do not collapse into one millisecond bucket.
 

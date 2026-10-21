@@ -556,10 +556,16 @@ fn configuration_child() {
                 let sampled =
                     pad_value(&text, "gst_element_sync_wall_seconds_count", &stage, "src");
                 assert!((128.0..384.0).contains(&sampled), "stage{index}: {sampled}");
+                for metric in [
+                    "gst_element_sync_cpu_seconds_count",
+                    "gst_element_sync_blocked_seconds_count",
+                ] {
+                    assert_eq!(pad_value(&text, metric, &stage, "src"), sampled);
+                }
             }
         }
         "filter" => {
-            let graph = pipeline("filter", "fakesrc num-buffers=20 ! identity name=selected_parent ! identity name=unselected sleep-time=10000 ! identity name=selected_child ! fakesink");
+            let graph = pipeline("filter", "fakesrc num-buffers=20 ! identity name=selected_parent ! identity name=unselected sleep-time=10000 ! identity name=unselected_middle ! identity name=unselected_last ! identity name=selected_child ! fakesink");
             run(&graph);
             let text = metrics();
             let parent = graph.by_name("selected_parent").unwrap();
@@ -572,6 +578,16 @@ fn configuration_child() {
             assert!(
                 pad_value(&text, "gst_element_latency_sum_count", &parent, "src") < 100_000_000.0
             );
+            for name in ["selected_parent", "selected_child"] {
+                let element = graph.by_name(name).unwrap();
+                for metric in [
+                    "gst_element_sync_wall_seconds_count",
+                    "gst_element_sync_cpu_seconds_count",
+                    "gst_element_sync_blocked_seconds_count",
+                ] {
+                    assert_eq!(pad_value(&text, metric, &element, "src"), 20.0);
+                }
+            }
         }
         "pts" => {
             let graph = pipeline("pts", "fakesrc num-buffers=20 is-live=true do-timestamp=true format=time ! identity sleep-time=1000 ! identity name=work ! fakesink sync=false");
@@ -783,15 +799,13 @@ fn pull_latency_and_counts(io: bool) {
             ),
             12.0
         );
-        assert_eq!(
-            pad_value(
-                &text,
-                "gst_element_pull_wall_seconds_count",
-                element.upcast_ref(),
-                "src"
-            ),
-            12.0
-        );
+        for metric in [
+            "gst_element_pull_wall_seconds_count",
+            "gst_element_pull_cpu_seconds_count",
+            "gst_element_pull_blocked_seconds_count",
+        ] {
+            assert_eq!(pad_value(&text, metric, element.upcast_ref(), "src"), 12.0);
+        }
         let sum = pad_value(
             &text,
             "gst_element_pull_wall_nanoseconds_total",

@@ -386,3 +386,64 @@ A wider `cargo test --workspace` run timed out in OpenTelemetry after 120 second
 Its serial basic-pipeline test also timed out with a 90-second command limit on
 both this build and a separate checkout of `8445cda`. A standalone one-buffer
 OpenTelemetry pipeline completed with the upgraded bindings.
+
+## CPU sampling in nested calls — 2026-10-20
+
+CPU clocks now run only for sampled spans and their direct children. A child's
+inclusive CPU time is enough to subtract its work from the sampled parent;
+unsampled grandchildren need no clock reads. Child clock failures invalidate
+exclusive CPU attribution without discarding a valid inclusive measurement.
+Wall counters and per-call histogram sampling are unchanged.
+
+Compared with `7391de1` on the same i5-1345U host, using Rust 1.89.0 and native
+GStreamer 1.24.2, pinned to logical CPU 2 with the powersave governor. Release
+builds, separate registries, verified plugin paths, one warm-up and seven measured
+rounds per variant with alternating order, and one scrape per second. No builds
+or tests ran during measurements. All elements are selected and PTS age is off.
+
+Values are median child-process CPU microseconds per source buffer, including
+GStreamer, startup, teardown and scrapes. One-identity runs use 1,000,000 buffers,
+eight-identity runs use 250,000, and 96-identity runs use 16,384. The longer
+full-sampling control uses 1,000,000 buffers.
+
+| Workload | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| One identity, sample 16 | 1.452 | 1.455 | +0.2% |
+| Eight identities, sample 16 | 5.796 | 5.371 | -7.3% |
+| One identity, sample 1 | 2.209 | 2.197 | -0.6% |
+| Eight identities, sample 1 | 9.172 | 9.614 | +4.8% |
+| 96 identities, sample 16 | 105.244 | 78.112 | -25.8% |
+| Eight identities, sample 16, I/O enabled | 5.922 | 5.506 | -7.0% |
+| Eight identities, sample 1, longer control | 9.195 | 8.441 | -8.2% |
+
+The sampled eight-identity runs used 7.3% less CPU, or 7.0% less with I/O enabled.
+The 96-identity median fell 25.8%, with substantial run-to-run variation. Shallow
+pipelines were essentially unchanged. The full-sampling control initially showed
+a 4.8% increase; a longer repeat showed an 8.2% decrease, despite identical clock
+read counts. These controls show host variability, not an established full-sampling
+speedup or regression. The raw data retains both runs and all outliers. These
+synthetic results do not establish production video throughput gains.
+
+Separate `strace` runs counted `CLOCK_THREAD_CPUTIME_ID` reads over 1,000 buffers:
+
+| Workload | Before | After |
+| --- | ---: | ---: |
+| One identity, sample 16 | 378 | 390 |
+| Eight identities, sample 16 | 4,628 | 2,072 |
+| 96 identities, sample 16 | 165,778 | 23,046 |
+| Eight identities, sample 1 | 18,000 | 18,000 |
+
+Sampled runs have different process-specific seeds. The deep chains made about
+55% and 86% fewer CPU clock reads. Syscall counting ran separately from the
+timing benchmarks; no elapsed-time claims come from `strace`.
+
+Commands, binary hashes, syscall counts and every measured run are in
+[`benchmarks/2026-10-20-cpu-sampling.json`](benchmarks/2026-10-20-cpu-sampling.json).
+Use `bench_matched.py` with the recorded commands and sample rates to reproduce.
+
+Formatting, workspace Clippy with all features/targets, `cargo test`, the full
+Prometheus ASan suite, `cargo audit` and the required nightly dependency check
+passed. The suite has 17 unit tests, 16 integration tests and six isolated
+configuration runs. Added coverage checks unsampled descendants, failed child
+clocks, CPU/blocked sample counts in deep and filtered push chains, and pull
+sample counts through ghost pads with successful, EOS and error returns.
