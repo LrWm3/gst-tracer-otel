@@ -28,6 +28,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
+      - name: Install cargo-audit with CVSS 4 support
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+
       - name: Run audit
         run: just audit
       - name: Run lint
