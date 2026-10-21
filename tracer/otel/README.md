@@ -6,6 +6,12 @@ optional `profiles` feature adds an experimental embedded CPU sampler and
 Pyroscope delivery backend. The independent Pyroscope tracer is unchanged.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
+`gst-instrument` is an additional entry point in the same plugin, with shared
+push capture for metrics, trace exemplars, traces, logs, and CPU profiles.
+Set `GST_TRACERS=gst-instrument` to enable metrics and traces together; logs and
+CPU profiles remain opt-in. See
+[setup, measurements, bounds, and current coverage](INSTRUMENT.md).
+
 ## Run
 
 ```sh

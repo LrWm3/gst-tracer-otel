@@ -348,6 +348,8 @@ mod tests {
             r.buffer_size = 0;
             r.flow_return = i32::MIN;
             r.site = std::sync::Arc::new(crate::capture::Site {
+                metrics: Default::default(),
+                metric_rejected_epoch: Default::default(),
                 attributes: vec![KeyValue::new("src_pad.name", "é🙂")],
                 encoded: Default::default(),
                 epoch: 0,
@@ -407,6 +409,8 @@ mod tests {
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let site = std::sync::Arc::new(crate::capture::Site {
+            metrics: Default::default(),
+            metric_rejected_epoch: Default::default(),
             attributes: [
                 "src_pad.name",
                 "src_pad.element",

@@ -24,21 +24,58 @@ pub(crate) fn runtime() -> Result<&'static Runtime, FlushError> {
         .ok_or(FlushError::NotInitialized)
 }
 
-fn initialize() -> Result<Runtime, String> {
-    let config = Config::from_env()?;
+fn enabled(key: &str, default: bool) -> Result<bool, String> {
+    match std::env::var(key).as_deref() {
+        Err(_) => Ok(default),
+        Ok("true" | "1") => Ok(true),
+        Ok("false" | "0") => Ok(false),
+        _ => Err(format!("{key} must be true or false")),
+    }
+}
+
+fn initialize(instrument: bool) -> Result<Runtime, String> {
+    let mut config = Config::from_env()?;
+    let metrics = instrument && enabled("GST_INSTRUMENT_METRICS", true)?;
+    let profiles = !instrument || enabled("GST_INSTRUMENT_PROFILES", true)?;
+    if instrument {
+        config.traces = enabled("GST_INSTRUMENT_TRACES", true)?;
+        config.logs = enabled("GST_INSTRUMENT_LOGS", config.logs)?;
+    }
     let resource = export::resource();
-    let exporter = crate::transport::OtlpExporter::new(&resource)?;
+    let exporter = if config.traces {
+        Some(crate::transport::OtlpExporter::new(&resource)?)
+    } else {
+        None
+    };
+    let metrics = if metrics {
+        Some(crate::metrics::Metrics::new(
+            crate::metrics::Config::from_env()?,
+            &resource,
+        )?)
+    } else {
+        None
+    };
     if config.logs {
         crate::otellogbridge::initialize(resource.clone())?;
     }
-    let runtime = Runtime::new(config, exporter, resource.clone()).map_err(|e| e.to_string())?;
-    if let Err(error) = crate::profiles::initialize(&resource) {
-        gst::warning!(CAT, "Embedded profiles disabled: {error}");
+    let mut runtime = Runtime::new(config, export::OptionalExporter(exporter), resource.clone())
+        .map_err(|e| e.to_string())?;
+    runtime.metrics = metrics;
+    if profiles {
+        if let Err(error) = crate::profiles::initialize(&resource) {
+            gst::warning!(CAT, "Embedded profiles disabled: {error}");
+        }
     }
     Ok(runtime)
 }
 
-mod imp {
+static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// Both entry points use exactly the same hooks and capture stack. The first
+// constructed tracer selects the process-wide signal configuration.
+macro_rules! tracer_impl {
+($module:ident, $wrapper:ident, $name:literal, $instrument:literal) => {
+mod $module {
     use super::*;
 
     #[derive(Default)]
@@ -46,8 +83,8 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for OtelTracerImpl {
-        const NAME: &'static str = "GstTelemetryTracer";
-        type Type = super::TelemetryTracer;
+        const NAME: &'static str = $name;
+        type Type = super::$wrapper;
         type ParentType = gst::Tracer;
     }
 
@@ -56,7 +93,7 @@ mod imp {
             static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
                 vec![glib::ParamSpecBoxed::builder::<gst::Structure>("stats")
                     .read_only()
-                    .build()]
+                    .build(), glib::ParamSpecBoxed::builder::<gst::Structure>("metric-stats").read_only().build()]
             });
             PROPERTIES.as_ref()
         }
@@ -66,20 +103,20 @@ mod imp {
                     .ok()
                     .map(|r| r.stats.snapshot().to_structure())
                     .to_value(),
+                "metric-stats" => runtime().ok().map(|r| r.metrics.as_ref().map_or_else(crate::metrics::MetricStats::default, |m| m.stats()).to_structure()).to_value(),
                 _ => unreachable!(),
             }
         }
 
         fn constructed(&self) {
             self.parent_constructed();
-            if let Err(error) = RUNTIME.get_or_init(initialize) {
+            if let Err(error) = RUNTIME.get_or_init(|| initialize($instrument)) {
                 gst::error!(CAT, "OTel tracer disabled: {error}");
                 return;
             }
             // Multiple tracer instances would otherwise duplicate hooks and TLS frames.
-            static REGISTERED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
             if REGISTERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                gst::warning!(CAT, "A telemetry tracer is already active; retaining its signal configuration");
                 return;
             }
             for hook in [
@@ -162,7 +199,7 @@ mod imp {
                     if let Err(error) = runtime.flush(runtime.config.flush_timeout) {
                         gst::warning!(
                             CAT,
-                            "Trace drain failed: {error}; counters: {:?}",
+                            "Telemetry drain failed: {error}; counters: {:?}",
                             runtime.stats.snapshot()
                         );
                     }
@@ -174,11 +211,25 @@ mod imp {
 }
 
 glib::wrapper! {
-    /// Process-wide push tracer. Normally created by `GST_TRACERS=otel-tracer`.
-    pub struct TelemetryTracer(ObjectSubclass<imp::OtelTracerImpl>)
+    /// Process-wide telemetry tracer. The first instance selects signal settings.
+    pub struct $wrapper(ObjectSubclass<$module::OtelTracerImpl>)
         @extends gst::Tracer, gst::Object;
 }
+};
+}
+tracer_impl!(imp, TelemetryTracer, "GstTelemetryTracer", false);
+tracer_impl!(
+    instrument_imp,
+    InstrumentTracer,
+    "GstInstrumentTracer",
+    true
+);
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    gst::Tracer::register(Some(plugin), "otel-tracer", TelemetryTracer::static_type())
+    gst::Tracer::register(Some(plugin), "otel-tracer", TelemetryTracer::static_type())?;
+    gst::Tracer::register(
+        Some(plugin),
+        "gst-instrument",
+        InstrumentTracer::static_type(),
+    )
 }

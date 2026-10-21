@@ -2,8 +2,10 @@
 
 A collection of GStreamer `Tracer` plugins for Prometheus latency metrics,
 OpenTelemetry push-call traces and correlated logs, and Pyroscope profiles.
+The experimental `gst-instrument` entry point combines metrics, traces, logs,
+and CPU profiles through shared push capture.
 
-A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](ensonic@users.sf.net), with additional features for Prometheus & Otel compatibility.
+A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](mailto:ensonic@users.sf.net), with additional features for Prometheus & Otel compatibility.
 
 ## Plugins available
 
@@ -12,6 +14,7 @@ The table below contains the plugins available in this repository.
 | plugin name                                 | description                                                                                                               | performance | stability |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
 | [prom-latency](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
+| [gst-instrument](tracer/otel/INSTRUMENT.md) | shared push metrics with exemplars, traces, optional logs and CPU profiles | [measured overhead](tracer/otel/bench/INSTRUMENT_RESULTS.md) | experimental |
 | [otel-tracer](tracer/otel/README.md)        | exports inclusive push-call spans over OTLP/HTTP, with optional correlated GStreamer logs | [measured overhead](tracer/otel/README.md#performance-and-sampling-cost) | pre-alpha |
 | [pyroscope](tracer/pyroscope/README.md)     | captures pyroscope profiles for the Gstreamer pipeline, requires debug symbols for best results | optimized   | alpha |
 | [noop-latency](tracer/noop/README.md)       | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
@@ -22,9 +25,10 @@ In general `prom-latency` is recommended for now, and `otel-tracer` is still a w
 and exports traces on a worker through a bounded queue with explicit loss
 accounting. It uses OpenTelemetry Rust 0.33.1 without creating live SDK spans.
 Parent-based sampling preserves decisions across synchronous pushes, queues,
-and buffer copies. These improvements work with stock GStreamer. Metrics with
-exemplars remain future work. An opt-in embedded sampler now prototypes
-Pyroscope trace correlation on Linux x86-64; see the
+and buffer copies. These improvements work with stock GStreamer.
+`gst-instrument` adds cumulative push metrics with trace exemplars using the
+same capture stack. An opt-in embedded sampler provides experimental Pyroscope
+trace correlation on Linux x86-64; see the
 [profile setup and limitations](tracer/otel/README.md#experimental-correlated-cpu-profiles).
 
 See the [trace/profile integration investigation](TRACE_PROFILE_INTEGRATION.md)
@@ -103,6 +107,41 @@ gst_element_latency_last_gauge{element="fakesink0",path="/GstPipeline:pipeline0"
 .. etc. ..
 ```
 
+### Correlated telemetry with `gst-instrument`
+
+Enable the metrics and traces pipelines on an OTLP/HTTP collector listening on
+port 4318, then run:
+
+```bash
+cargo build --release -p gst-otel-tracer
+export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
+export GST_TRACERS=gst-instrument
+export OTEL_SERVICE_NAME=gstreamer-pipeline
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+gst-launch-1.0 videotestsrc num-buffers=300 ! videoconvert ! fakesink sync=false
+```
+
+Metrics and traces are enabled by default. Histogram exemplars carry trace/span
+IDs, allowing a metric observation to link to its trace. Metric collection
+continues when traces are sampled out or the trace export queue is full.
+Set `GST_INSTRUMENT_TRACES=false` for metrics-only operation.
+
+For CPU profiles on Linux x86-64, rebuild with
+`cargo build --release -p gst-otel-tracer --features profiles` and set
+`GST_OTEL_PROFILE_URL=http://localhost:4040` before starting the pipeline.
+Profiles use the same service identity and label samples with active span IDs.
+Enable correlated GStreamer logs with `GST_INSTRUMENT_LOGS=true` and select
+categories using `GST_DEBUG`.
+
+Select one of `gst-instrument` or `otel-tracer` per process. This first version
+covers ordinary push calls; pull mode, buffer lists, and the remaining
+`prom-latency` diagnostics are still separate. See the
+[configuration and correlation guide](tracer/otel/INSTRUMENT.md) for signal
+controls, metric semantics, memory bounds, backend links, and shutdown behavior,
+and the [benchmark results](tracer/otel/bench/INSTRUMENT_RESULTS.md) for measured
+overhead and limitations.
+
 ### OpenTelemetry traces
 
 With an OTLP/HTTP collector listening on port 4318:
@@ -131,6 +170,7 @@ limits, delivery counters, shutdown, and performance measurements.
 See the individual plugin README files for usage instructions:
 
 - [prom-latency](tracer/prometheus/README.md)
+- [gst-instrument](tracer/otel/INSTRUMENT.md)
 - [otel-tracer](tracer/otel/README.md)
 - [pyroscope](tracer/pyroscope/README.md)
 
@@ -144,6 +184,8 @@ just test
 cargo test
 # The default member is Prometheus; also run the OTel tests explicitly.
 cargo test -p gst-otel-tracer
+# Include the embedded profiler and metrics → trace → profile correlation tests.
+cargo test -p gst-otel-tracer --features profiles
 ```
 
 ## Roadmap
@@ -160,10 +202,11 @@ cargo test -p gst-otel-tracer
 - [x] In `prom-latency`, implement `pad_push_list_pre` and `pad_push_list_post` hooks to capture latency.
 - [x] In `otel-tracer`, cache descriptions, preserve sampling decisions, and move compact records through bounded queues to worker-side OTLP encoding and export.
 - [ ] Further reduce `otel-tracer` capture overhead on stock GStreamer; see the [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
-- [ ] Implement correct, opt-in Pyroscope trace correlation separately from span capture.
-- [ ] `otel-tracer` to collect metrics with trace and span data included in exemplars.
+- [x] Implement experimental opt-in Pyroscope trace correlation separately from span capture (Linux x86-64).
+- [x] Add push metrics with trace/span exemplars through the `gst-instrument` entry point.
 - [x] In `pyroscope`, determine how to get debug symbols for all of gstreamers dependencies.
-- [ ] Create an all-in-one tracer, `gst-instrument`, which can collect correlated logs, metrics, spans, traces and profiles with performance improvements & lessons learned from the above.
+- [x] Create an experimental `gst-instrument` tracer with shared push capture for correlated metrics, traces, logs and CPU profiles. See [scope and setup](tracer/otel/INSTRUMENT.md).
+- [ ] Extend unified capture to pull mode and buffer lists, bring over remaining Prometheus diagnostics, and complete production soak/platform validation.
 
 ## License
 

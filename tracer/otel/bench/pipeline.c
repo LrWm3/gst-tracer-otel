@@ -72,6 +72,18 @@ static guint64 exporter_ticks(void) {
   closedir(dir);
   return total;
 }
+static unsigned long peak_rss_kb(void) {
+  /* /proc starts a new address-space high-water mark after exec. getrusage's
+   * ru_maxrss can include the Python launcher's pre-exec memory footprint. */
+  FILE *f = fopen("/proc/self/status", "r");
+  if (!f) return 0;
+  char line[256];
+  unsigned long peak = 0;
+  while (fgets(line, sizeof line, f))
+    if (sscanf(line, "VmHWM: %lu kB", &peak) == 1) break;
+  fclose(f);
+  return peak;
+}
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
   GstTracer *empty = g_strcmp0(g_getenv("OTEL_BENCH_EMPTY_HOOKS"), "1") == 0
@@ -119,9 +131,9 @@ int main(int argc, char **argv) {
     gst_clear_object(&streams[i].unrelated);
   }
   g_free(streams);
-  printf("RESULT elapsed_ns=%" G_GUINT64_FORMAT " stream_cpu_ns=%" G_GUINT64_FORMAT
+  printf("RESULT max_rss_kb=%lu elapsed_ns=%" G_GUINT64_FORMAT " stream_cpu_ns=%" G_GUINT64_FORMAT
          " process_cpu_ns=%" G_GUINT64_FORMAT " exporter_cpu_ns=%" G_GUINT64_FORMAT
-         " sink_pad_refs=%d status=%d\n", elapsed, stream_cpu,
+         " sink_pad_refs=%d status=%d\n", peak_rss_kb(), elapsed, stream_cpu,
          cpu_time(CLOCK_PROCESS_CPUTIME_ID) - process_start,
          exporter_ticks() * 1000000000 / sysconf(_SC_CLK_TCK), refs, result);
   GList *tracers = gst_tracing_get_active_tracers();
@@ -132,6 +144,16 @@ int main(int argc, char **argv) {
       if (stats) {
         char *text = gst_structure_to_string(stats);
         printf("COUNTERS %s\n", text);
+        g_free(text);
+        gst_structure_free(stats);
+      }
+    }
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(item->data), "metric-stats")) {
+      GstStructure *stats = NULL;
+      g_object_get(item->data, "metric-stats", &stats, NULL);
+      if (stats) {
+        char *text = gst_structure_to_string(stats);
+        printf("METRICS %s\n", text);
         g_free(text);
         gst_structure_free(stats);
       }

@@ -23,10 +23,10 @@ use crate::capture::Token;
 
 // Fixed storage bounds memory even when applications create many short-lived
 // threads. Threads share a shard only after the index wraps; no registry grows.
-const SHARDS: usize = 64;
+pub(crate) const SHARDS: usize = 64;
 static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
 thread_local! { static SHARD: usize = NEXT_SHARD.fetch_add(1, Relaxed) % SHARDS; }
-fn shard_index() -> usize {
+pub(crate) fn shard_index() -> usize {
     SHARD.with(|index| *index)
 }
 
@@ -92,6 +92,7 @@ impl std::error::Error for FlushError {}
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub ratio: f64,
+    pub traces: bool,
     pub queue_capacity: usize,
     pub batch_size: usize,
     pub interval: Duration,
@@ -104,6 +105,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ratio: 1.0,
+            traces: true,
             queue_capacity: 8192,
             batch_size: 512,
             interval: Duration::from_millis(200),
@@ -235,6 +237,21 @@ pub(crate) trait RecordExporter: Send + 'static {
     }
 }
 
+pub(crate) struct OptionalExporter(pub Option<crate::transport::OtlpExporter>);
+impl RecordExporter for OptionalExporter {
+    fn export(
+        &mut self,
+        records: &[Record],
+        anchor: &Anchor,
+        config: &Config,
+    ) -> Result<(), FlushError> {
+        self.0
+            .as_mut()
+            .ok_or(FlushError::Closed)?
+            .export(records, anchor, config)
+    }
+}
+
 enum Message {
     Span(Record),
     Flush(Sender<Result<(), FlushError>>),
@@ -244,6 +261,7 @@ enum Message {
 pub(crate) struct Runtime {
     pub config: Config,
     pub stats: Arc<Counters>,
+    pub metrics: Option<crate::metrics::Metrics>,
     sender: Sender<Message>,
     accepting: AtomicBool,
     submissions: [SubmissionCount; SHARDS],
@@ -258,7 +276,11 @@ impl Runtime {
         resource: Resource,
     ) -> std::io::Result<Self> {
         exporter.set_resource(&resource);
-        let (sender, receiver) = bounded(config.queue_capacity);
+        let (sender, receiver) = bounded(if config.traces {
+            config.queue_capacity
+        } else {
+            0
+        });
         let stats = Arc::new(Counters::default());
         let anchor = Arc::new(OnceLock::new());
         let stopped = Arc::new(OnceLock::new());
@@ -266,25 +288,32 @@ impl Runtime {
         let worker_config = config.clone();
         let worker_stats = stats.clone();
         let worker_anchor = anchor.clone();
-        let worker = thread::Builder::new()
-            .name("gst-otel-export".into())
-            .spawn(move || {
-                worker_loop(
-                    exporter,
-                    receiver,
-                    &worker_config,
-                    &worker_stats,
-                    &worker_anchor,
-                    &worker_stopped,
-                );
-            })?;
+        let worker = if config.traces {
+            Some(
+                thread::Builder::new()
+                    .name("gst-otel-export".into())
+                    .spawn(move || {
+                        worker_loop(
+                            exporter,
+                            receiver,
+                            &worker_config,
+                            &worker_stats,
+                            &worker_anchor,
+                            &worker_stopped,
+                        );
+                    })?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             config,
             stats,
+            metrics: None,
             sender,
             accepting: AtomicBool::new(true),
             submissions: std::array::from_fn(|_| SubmissionCount::default()),
-            worker: Mutex::new(Some(worker)),
+            worker: Mutex::new(worker),
             anchor,
             stopped,
         })
@@ -301,7 +330,7 @@ impl Runtime {
         });
     }
 
-    pub fn submit(&self, record: Record) {
+    pub fn submit(&self, record: Record) -> bool {
         let index = shard_index();
         let stats = &self.stats.shards[index];
         let active = &self.submissions[index].0;
@@ -313,11 +342,12 @@ impl Runtime {
         if !self.accepting.load(SeqCst) {
             active.fetch_sub(1, Release);
             stats.dropped_closed.fetch_add(1, Relaxed);
-            return;
+            return false;
         }
-        match self.sender.try_send(Message::Span(record)) {
+        let accepted = match self.sender.try_send(Message::Span(record)) {
             Ok(()) => {
                 stats.enqueued_spans.fetch_add(1, Relaxed);
+                true
             }
             Err(error) => {
                 let counter = match error {
@@ -325,12 +355,17 @@ impl Runtime {
                     TrySendError::Disconnected(_) => &stats.dropped_closed,
                 };
                 counter.fetch_add(1, Relaxed);
+                false
             }
-        }
+        };
         active.fetch_sub(1, Release);
+        accepted
     }
 
     fn finish(&self, timeout: Duration, shutdown: bool) -> Result<ExportStats, FlushError> {
+        if !self.config.traces {
+            return Ok(self.stats.snapshot());
+        }
         let start = Instant::now();
         let (tx, rx) = bounded(1);
         let message = if shutdown {
@@ -357,10 +392,28 @@ impl Runtime {
     }
 
     pub fn flush(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
-        self.finish(timeout, false)
+        let start = Instant::now();
+        let traces = self.finish(timeout, false);
+        let metrics = self
+            .metrics
+            .as_ref()
+            .map_or(Ok(()), |m| m.flush(timeout.saturating_sub(start.elapsed())));
+        traces.and_then(|stats| metrics.map(|()| stats))
     }
 
     pub fn shutdown(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
+        let start = Instant::now();
+        if let Some(metrics) = &self.metrics {
+            metrics.request_stop();
+        }
+        let traces = self.shutdown_traces(timeout);
+        let metrics = self.metrics.as_ref().map_or(Ok(()), |m| {
+            m.shutdown(timeout.saturating_sub(start.elapsed()))
+        });
+        traces.and_then(|stats| metrics.map(|()| stats))
+    }
+
+    fn shutdown_traces(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
         let start = Instant::now();
         self.accepting.store(false, SeqCst);
         while self
@@ -602,6 +655,8 @@ pub(crate) mod tests {
     pub fn record(index: u64) -> Record {
         Record {
             site: Arc::new(Site {
+                metrics: Default::default(),
+                metric_rejected_epoch: Default::default(),
                 encoded: Default::default(),
                 attributes: vec![KeyValue::new("src_pad.name", "src")],
                 epoch: 0,

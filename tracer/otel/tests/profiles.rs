@@ -4,7 +4,13 @@
 
 use gstreamer::{self as gst, prelude::*};
 use opentelemetry_proto::tonic::{
-    collector::trace::v1::ExportTraceServiceRequest, trace::v1::Span,
+    collector::{
+        logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest,
+        trace::v1::ExportTraceServiceRequest,
+    },
+    logs::v1::LogRecord,
+    metrics::v1::{metric::Data, Exemplar},
+    trace::v1::Span,
 };
 use prost::Message;
 use pyroscope::encode::gen::{google::Profile, push::PushRequest};
@@ -23,6 +29,8 @@ use std::{
 struct Received {
     spans: Vec<Span>,
     profiles: Vec<Profile>,
+    exemplars: Vec<Exemplar>,
+    logs: Vec<LogRecord>,
 }
 
 fn collect(mode: &str) -> (Received, String) {
@@ -45,6 +53,26 @@ fn collect(mode: &str) -> (Received, String) {
                 for resource in decoded.resource_spans {
                     for scope in resource.scope_spans {
                         output.lock().unwrap().spans.extend(scope.spans);
+                    }
+                }
+            } else if request.url() == "/v1/metrics" {
+                let decoded = ExportMetricsServiceRequest::decode(bytes.as_slice()).unwrap();
+                for resource in decoded.resource_metrics {
+                    for scope in resource.scope_metrics {
+                        for metric in scope.metrics {
+                            if let Some(Data::Histogram(histogram)) = metric.data {
+                                for point in histogram.data_points {
+                                    output.lock().unwrap().exemplars.extend(point.exemplars);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if request.url() == "/v1/logs" {
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).unwrap();
+                for resource in decoded.resource_logs {
+                    for scope in resource.scope_logs {
+                        output.lock().unwrap().logs.extend(scope.log_records);
                     }
                 }
             } else {
@@ -103,6 +131,11 @@ fn collect(mode: &str) -> (Received, String) {
                 "parentbased_always_on"
             },
         );
+    if mode == "instrument" {
+        command
+            .env("GST_INSTRUMENT_LOGS", "true")
+            .env("GST_DEBUG", "instrument-test:4");
+    }
     if mode != "disabled" {
         command.env("GST_OTEL_PROFILE_URL", format!("http://{address}"));
     }
@@ -257,6 +290,10 @@ fn slow_profile_receiver_does_not_extend_shutdown_deadline() {
 
 #[inline(never)]
 fn busy(phase: &str) {
+    static CAT: std::sync::LazyLock<gst::DebugCategory> = std::sync::LazyLock::new(|| {
+        gst::DebugCategory::new("instrument-test", gst::DebugColorFlags::empty(), None)
+    });
+    gst::info!(*CAT, "CPU phase {phase}");
     if let Some(context) = gstoteltracer::current_span_context().filter(|c| c.is_sampled()) {
         println!(
             "EXPECTED {phase} {} {}",
@@ -285,7 +322,11 @@ fn profile_child() {
         }
     }
     gst::init().unwrap();
-    let _tracer: gstoteltracer::TelemetryTracer = glib::Object::new();
+    let _tracer: gst::Tracer = if mode == "instrument" {
+        glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()
+    } else {
+        glib::Object::new::<gstoteltracer::TelemetryTracer>().upcast()
+    };
     let source = gst::Pad::builder(gst::PadDirection::Src)
         .name("nested-source")
         .build();
@@ -371,4 +412,56 @@ fn profile_child() {
             "final report must drain samples"
         );
     }
+}
+
+#[test]
+fn instrument_links_metric_exemplars_to_traces_logs_and_real_cpu_samples() {
+    let (received, _) = collect("instrument");
+    assert!(!received.exemplars.is_empty());
+    let mut profiles = HashSet::new();
+    for profile in &received.profiles {
+        for sample in &profile.sample {
+            let labels: HashMap<_, _> = sample
+                .label
+                .iter()
+                .map(|l| {
+                    (
+                        profile.string_table[l.key as usize].as_str(),
+                        profile.string_table[l.str as usize].as_str(),
+                    )
+                })
+                .collect();
+            if let (Some(trace), Some(span)) = (labels.get("trace_id"), labels.get("span_id")) {
+                profiles.insert(((*trace).to_string(), (*span).to_string()));
+            }
+        }
+    }
+    let linked: Vec<_> = received
+        .exemplars
+        .iter()
+        .filter(|e| profiles.contains(&(hex(&e.trace_id), hex(&e.span_id))))
+        .collect();
+    assert!(
+        !linked.is_empty(),
+        "expected a metric exemplar with actual CPU samples"
+    );
+    for example in linked {
+        let span = received
+            .spans
+            .iter()
+            .find(|s| s.trace_id == example.trace_id && s.span_id == example.span_id)
+            .expect("matching exported trace span");
+        assert!(span
+            .attributes
+            .iter()
+            .any(|a| a.key == "pyroscope.profile.id"
+                && format!("{:?}", a.value).contains(&hex(&span.span_id))));
+    }
+    assert!(
+        received.logs.iter().any(|log| received
+            .spans
+            .iter()
+            .any(|span| span.trace_id == log.trace_id && span.span_id == log.span_id)),
+        "matching log trace/span fields"
+    );
 }

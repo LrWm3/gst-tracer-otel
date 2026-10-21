@@ -12,6 +12,8 @@ use crate::export::text_value;
 
 pub(crate) struct Site {
     pub attributes: Vec<KeyValue>,
+    pub metrics: OnceLock<Arc<crate::metrics::Series>>,
+    pub metric_rejected_epoch: AtomicU64,
     pub encoded: OnceLock<crate::wire::EncodedAttributes>,
     pub(crate) epoch: u64,
 }
@@ -207,6 +209,8 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
     ];
     let descriptor = Arc::new(Site {
         encoded: OnceLock::new(),
+        metrics: OnceLock::new(),
+        metric_rejected_epoch: AtomicU64::new(0),
         attributes: values
             .into_iter()
             .map(|(key, value)| KeyValue::new(key, text_value(&value, limit)))

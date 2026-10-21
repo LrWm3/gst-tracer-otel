@@ -19,6 +19,7 @@ use gstreamer as gst;
 mod capture;
 mod export;
 mod metadata;
+mod metrics;
 mod otellogbridge;
 mod oteltracer;
 mod profiles;
@@ -27,10 +28,12 @@ mod transport;
 mod wire;
 
 pub use export::{ExportStats, FlushError};
-pub use oteltracer::TelemetryTracer;
+pub use metrics::MetricStats;
+pub use oteltracer::{InstrumentTracer, TelemetryTracer};
 pub use profiles::{profile_stats, ProfileStats};
 
-/// Drain captured records and finish export attempts, bounded by `timeout`.
+/// Drain traces and snapshot cumulative metrics, bounded by `timeout`.
+/// Stop streaming first for an exact final snapshot. Logs have a separate SDK flush.
 pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     oteltracer::runtime()?.flush(timeout)
 }
@@ -55,6 +58,14 @@ pub fn current_span_context() -> Option<opentelemetry::trace::SpanContext> {
 /// Cumulative counters; a concurrent snapshot can span multiple updates.
 pub fn stats() -> Result<ExportStats, FlushError> {
     Ok(oteltracer::runtime()?.stats.snapshot())
+}
+
+/// Metrics accounting, or zero counters when metrics are disabled.
+pub fn metric_stats() -> Result<MetricStats, FlushError> {
+    Ok(oteltracer::runtime()?
+        .metrics
+        .as_ref()
+        .map_or_else(MetricStats::default, |m| m.stats()))
 }
 
 // ───────────────── plugin boilerplate ──────────────────

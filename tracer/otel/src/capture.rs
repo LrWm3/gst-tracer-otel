@@ -79,6 +79,7 @@ struct Frame {
     pad: usize,
     token: Token,
     recording: bool,
+    timing: Option<crate::metrics::Timing>,
 }
 #[derive(Default)]
 struct ThreadState {
@@ -87,6 +88,7 @@ struct ThreadState {
     overflow: usize,
     info: Option<Arc<ThreadInfo>>,
     profile_invalid: bool,
+    sequence: u64,
 }
 thread_local! {
     static LOCAL: RefCell<ThreadState> = const { RefCell::new(ThreadState {
@@ -95,6 +97,7 @@ thread_local! {
         overflow: 0,
         info: None,
         profile_invalid: false,
+        sequence: 0,
     }) };
 }
 
@@ -151,6 +154,9 @@ fn begin_local(
         let mut state = local.borrow_mut();
         if state.overflow > 0 || state.frames.len() == MAX_DEPTH {
             state.overflow += 1;
+            if let Some(timing) = state.frames.last_mut().and_then(|f| f.timing.as_mut()) {
+                timing.valid = false;
+            }
             (true, None)
         } else {
             (false, state.frames.last().map(|frame| frame.token.clone()))
@@ -161,26 +167,36 @@ fn begin_local(
         return;
     }
     // A real source starts a new buffer journey, even when a buffer was recycled.
-    let is_root = inherited.is_none() && crate::metadata::is_source(pad);
-    let parent_token = inherited.unwrap_or_else(|| {
-        if is_root {
-            root(runtime.config.ratio)
-        } else {
-            crate::propagation::read(buffer).unwrap_or_else(|| {
-                runtime
-                    .stats
-                    .local()
-                    .propagation_misses
-                    .fetch_add(1, Relaxed);
-                Token::rejected()
-            })
-        }
-    });
+    let is_root = runtime.config.traces && inherited.is_none() && crate::metadata::is_source(pad);
+    let parent_token = if !runtime.config.traces {
+        Token::rejected()
+    } else {
+        inherited.unwrap_or_else(|| {
+            if is_root {
+                root(runtime.config.ratio)
+            } else {
+                crate::propagation::read(buffer).unwrap_or_else(|| {
+                    runtime
+                        .stats
+                        .local()
+                        .propagation_misses
+                        .fetch_add(1, Relaxed);
+                    Token::rejected()
+                })
+            }
+        })
+    };
     let parent = parent_token.span_id;
     let parent_is_remote = parent_token.is_remote;
     let mut token = parent_token;
+    let site = (runtime.metrics.is_some() || (token.sampled() && runtime.accepting()))
+        .then(|| crate::metadata::site(pad, runtime.config.value_length_limit));
+    let series = runtime
+        .metrics
+        .as_ref()
+        .and_then(|m| m.series(site.as_ref().unwrap()));
     let record = if token.sampled() && runtime.accepting() {
-        let site = crate::metadata::site(pad, runtime.config.value_length_limit);
+        let site = site.unwrap();
         token.span_id = IDS.new_span_id();
         token.is_remote = false;
         runtime.anchor(ts);
@@ -221,12 +237,14 @@ fn begin_local(
     } else {
         if token.sampled() {
             runtime.stats.local().skipped_closed.fetch_add(1, Relaxed);
-        } else {
+        } else if runtime.config.traces {
             runtime.stats.local().unsampled_pushes.fetch_add(1, Relaxed);
         }
         None
     };
-    crate::propagation::write(buffer, &token, is_root, &runtime.stats);
+    if runtime.config.traces {
+        crate::propagation::write(buffer, &token, is_root, &runtime.stats);
+    }
     {
         let mut state = local.borrow_mut();
         let recording = record.is_some();
@@ -237,11 +255,33 @@ fn begin_local(
             pad: pad.as_ptr() as usize,
             token,
             recording,
+            timing: None,
         });
         if publish_profile(&state) {
             if let Some(record) = state.sampled.last_mut() {
                 record.profiled = true;
             }
+        }
+        if let Some(metrics) = &runtime.metrics {
+            let sampled =
+                series.is_some() && metrics.cpu_sampled(state.sequence, pad.as_ptr() as usize);
+            state.sequence = state.sequence.wrapping_add(1);
+            let parent_sampled = state
+                .frames
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|f| f.timing.as_ref())
+                .is_some_and(|t| t.sample_cpu);
+            let cpu = (sampled || parent_sampled)
+                .then(crate::metrics::cpu_time)
+                .flatten();
+            state.frames.last_mut().unwrap().timing = Some(crate::metrics::Timing::new(
+                series,
+                gst::get_timestamp().nseconds(),
+                cpu,
+                sampled,
+            ));
         }
     }
 }
@@ -256,8 +296,12 @@ fn publish_profile(state: &ThreadState) -> bool {
 }
 
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) {
+    let end = runtime
+        .metrics
+        .as_ref()
+        .map(|_| gst::get_timestamp().nseconds());
     crate::profiles::clear();
-    let record = LOCAL.with(|local| {
+    let completed = LOCAL.with(|local| {
         let mut state = local.borrow_mut();
         if state.overflow > 0 {
             state.overflow -= 1;
@@ -271,9 +315,26 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
         {
             runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
             state.profile_invalid = !state.frames.is_empty();
+            for frame in &mut state.frames {
+                if let Some(timing) = &mut frame.timing {
+                    timing.valid = false;
+                }
+            }
             return None;
         }
-        let record = if state.frames.pop().unwrap().recording {
+        let frame = state.frames.pop().unwrap();
+        let cpu = frame
+            .timing
+            .as_ref()
+            .filter(|t| t.start_cpu.is_some())
+            .and_then(|_| crate::metrics::cpu_time());
+        if let (Some(parent), Some(child)) = (
+            state.frames.last_mut().and_then(|f| f.timing.as_mut()),
+            frame.timing.as_ref(),
+        ) {
+            parent.finish_child(child, end.unwrap(), cpu);
+        }
+        let record = if frame.recording {
             state.sampled.pop()
         } else {
             None
@@ -282,12 +343,19 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
             state.profile_invalid = false;
         }
         publish_profile(&state);
-        record
+        Some((record, frame, cpu))
     });
-    if let Some(mut record) = record {
-        record.end = ts;
-        record.flow_return = flow_return;
-        runtime.submit(record);
+    if let Some((record, frame, cpu)) = completed {
+        let accepted = if let Some(mut record) = record {
+            record.end = ts;
+            record.flow_return = flow_return;
+            runtime.submit(record)
+        } else {
+            false
+        };
+        if let (Some(metrics), Some(timing)) = (&runtime.metrics, frame.timing) {
+            metrics.observe(timing, end.unwrap(), cpu, accepted.then_some(&frame.token));
+        }
     }
 }
 

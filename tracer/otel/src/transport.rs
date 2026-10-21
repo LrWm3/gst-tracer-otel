@@ -22,33 +22,37 @@ struct Settings {
     asynchronous: bool,
 }
 impl Settings {
-    fn read(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+    fn read(signal: &str, get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let setting = |suffix: &str| {
-            get(&format!("OTEL_EXPORTER_OTLP_TRACES_{suffix}"))
+            get(&format!("OTEL_EXPORTER_OTLP_{signal}_{suffix}"))
                 .or_else(|| get(&format!("OTEL_EXPORTER_OTLP_{suffix}")))
         };
         if setting("PROTOCOL").is_some_and(|p| !p.is_empty() && p != "http/protobuf") {
-            return Err("trace export requires http/protobuf".into());
+            return Err("OTLP export requires http/protobuf".into());
         }
         if setting("COMPRESSION").is_some_and(|p| !p.is_empty() && p != "none") {
-            return Err("trace compression is not enabled in this build".into());
+            return Err("OTLP compression is not enabled in this build".into());
         }
         let endpoint = if let Some(url) =
-            get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").filter(|s| !s.is_empty())
+            get(&format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT")).filter(|s| !s.is_empty())
         {
-            Url::parse(&url).map_err(|_| "invalid OTLP trace endpoint")?
+            Url::parse(&url).map_err(|_| "invalid OTLP endpoint")?
         } else {
             let base = get("OTEL_EXPORTER_OTLP_ENDPOINT")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "http://localhost:4318".into());
-            let mut url = Url::parse(&base).map_err(|_| "invalid OTLP trace endpoint")?;
-            url.set_path(&format!("{}/v1/traces", url.path().trim_end_matches('/')));
+            let mut url = Url::parse(&base).map_err(|_| "invalid OTLP endpoint")?;
+            url.set_path(&format!(
+                "{}/v1/{}",
+                url.path().trim_end_matches('/'),
+                signal.to_ascii_lowercase()
+            ));
             url
         };
         if !matches!(endpoint.scheme(), "http" | "https") || endpoint.host_str().is_none() {
-            return Err("OTLP trace endpoint requires an HTTP(S) host".into());
+            return Err("OTLP endpoint requires an HTTP(S) host".into());
         }
-        let timeout = get("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
+        let timeout = get(&format!("OTEL_EXPORTER_OTLP_{signal}_TIMEOUT"))
             .and_then(|s| s.parse().ok())
             .or_else(|| get("OTEL_EXPORTER_OTLP_TIMEOUT").and_then(|s| s.parse().ok()))
             .unwrap_or(10_000);
@@ -99,17 +103,15 @@ enum Client {
         runtime: tokio::runtime::Runtime,
     },
 }
-pub(crate) struct OtlpExporter {
+pub(crate) struct HttpExporter {
     client: Client,
     settings: Settings,
-    encoder: Encoder,
 }
-impl OtlpExporter {
-    pub fn new(resource: &Resource) -> Result<Self, String> {
-        let settings = Settings::read(|key| std::env::var(key).ok())?;
-        Self::with_settings(settings, resource)
+impl HttpExporter {
+    pub fn new(signal: &str) -> Result<Self, String> {
+        Self::with_settings(Settings::read(signal, |key| std::env::var(key).ok())?)
     }
-    fn with_settings(settings: Settings, resource: &Resource) -> Result<Self, String> {
+    fn with_settings(settings: Settings) -> Result<Self, String> {
         let client = if settings.asynchronous {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -135,13 +137,15 @@ impl OtlpExporter {
             .map_err(|e| e.to_string())?;
             Client::Blocking(client)
         };
-        Ok(Self {
-            client,
-            settings,
-            encoder: Encoder::new(resource),
-        })
+        Ok(Self { client, settings })
     }
-    fn send(&self, body: Bytes) -> Result<(), FlushError> {
+    pub fn send(&self, body: Bytes) -> Result<(), FlushError> {
+        self.request(body, false).map(|_| ())
+    }
+    pub fn send_response(&self, body: Bytes) -> Result<Vec<u8>, FlushError> {
+        self.request(body, true)
+    }
+    fn request(&self, body: Bytes, retain_response: bool) -> Result<Vec<u8>, FlushError> {
         let failed = |_| FlushError::ExportFailed;
         match &self.client {
             Client::Blocking(client) => {
@@ -154,13 +158,17 @@ impl OtlpExporter {
                     .map_err(failed)?;
                 let status = response.status();
                 let mut limited = response.take(MAX_RESPONSE as u64 + 1);
-                // Consume the response for connection reuse without allocating a
-                // response-sized buffer. Partial rejection remains transport success.
-                let count = std::io::copy(&mut limited, &mut std::io::sink())
-                    .map_err(|_| FlushError::ExportFailed)?;
+                let mut response = Vec::new();
+                let count = if retain_response {
+                    limited.read_to_end(&mut response).map(|n| n as u64)
+                } else {
+                    std::io::copy(&mut limited, &mut std::io::sink())
+                }
+                .map_err(|_| FlushError::ExportFailed)?;
                 if !status.is_success() || count > MAX_RESPONSE as u64 {
                     return Err(FlushError::ExportFailed);
                 }
+                Ok(response)
             }
             Client::Async { client, runtime } => runtime.block_on(async {
                 let mut response = client
@@ -171,21 +179,36 @@ impl OtlpExporter {
                     .await
                     .map_err(failed)?;
                 let status = response.status();
-                let mut length = 0usize;
-                while let Some(bytes) = response.chunk().await.map_err(failed)? {
-                    length += bytes.len();
+                let mut bytes = Vec::new();
+                let mut length = 0;
+                while let Some(chunk) = response.chunk().await.map_err(failed)? {
+                    length += chunk.len();
                     if length > MAX_RESPONSE {
                         return Err(FlushError::ExportFailed);
                     }
+                    if retain_response {
+                        bytes.extend_from_slice(&chunk);
+                    }
                 }
                 if status.is_success() {
-                    Ok(())
+                    Ok(bytes)
                 } else {
                     Err(FlushError::ExportFailed)
                 }
-            })?,
+            }),
         }
-        Ok(())
+    }
+}
+pub(crate) struct OtlpExporter {
+    http: HttpExporter,
+    encoder: Encoder,
+}
+impl OtlpExporter {
+    pub fn new(resource: &Resource) -> Result<Self, String> {
+        Ok(Self {
+            http: HttpExporter::new("TRACES")?,
+            encoder: Encoder::new(resource),
+        })
     }
 }
 impl RecordExporter for OtlpExporter {
@@ -197,7 +220,7 @@ impl RecordExporter for OtlpExporter {
     ) -> Result<(), FlushError> {
         self.encoder.encode(records, anchor, config)?;
         let body = std::mem::take(&mut self.encoder.body).freeze();
-        let result = self.send(body.clone());
+        let result = self.http.send(body.clone());
         // The request has completed; normally this recovers the same allocation.
         self.encoder.body = body.try_into_mut().unwrap_or_default();
         result
@@ -208,7 +231,7 @@ impl RecordExporter for OtlpExporter {
 mod tests {
     use super::*;
     fn settings(values: &[(&str, &str)]) -> Result<Settings, String> {
-        Settings::read(|key| {
+        Settings::read("TRACES", |key| {
             values
                 .iter()
                 .find(|(k, _)| *k == key)
@@ -271,14 +294,13 @@ mod tests {
                 let _ = waiting.recv_timeout(Duration::from_secs(2));
                 let _ = request.respond(tiny_http::Response::empty(200));
             });
-            let client = OtlpExporter::with_settings(
+            let client = HttpExporter::with_settings(
                 settings(&[
                     ("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint),
                     ("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", "50"),
                     ("GST_OTEL_HTTP_CLIENT", mode),
                 ])
                 .unwrap(),
-                &Resource::builder_empty().build(),
             )
             .unwrap();
             assert_eq!(
