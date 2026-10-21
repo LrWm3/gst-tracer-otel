@@ -73,6 +73,7 @@ pub(crate) struct Record {
     pub buffer_size: usize,
     pub thread: Arc<ThreadInfo>,
     pub flow_return: i32,
+    pub profiled: bool,
 }
 struct Frame {
     pad: usize,
@@ -85,6 +86,7 @@ struct ThreadState {
     sampled: Vec<Record>,
     overflow: usize,
     info: Option<Arc<ThreadInfo>>,
+    profile_invalid: bool,
 }
 thread_local! {
     static LOCAL: RefCell<ThreadState> = const { RefCell::new(ThreadState {
@@ -92,6 +94,7 @@ thread_local! {
         sampled: Vec::new(),
         overflow: 0,
         info: None,
+        profile_invalid: false,
     }) };
 }
 
@@ -141,6 +144,7 @@ fn begin_local(
     pad: &gst::Pad,
     buffer: &gst::Buffer,
 ) {
+    crate::profiles::clear();
     // Resolve TLS once. Individual borrows still end before GStreamer calls,
     // allowing callbacks and the optional log bridge to inspect the context.
     let (overflow, inherited) = {
@@ -212,6 +216,7 @@ fn begin_local(
             buffer_size: buffer.size(),
             thread,
             flow_return: 0,
+            profiled: false,
         })
     } else {
         if token.sampled() {
@@ -232,15 +237,31 @@ fn begin_local(
             pad: pad.as_ptr() as usize,
             token,
             recording,
-        })
+        });
+        if publish_profile(&state) {
+            if let Some(record) = state.sampled.last_mut() {
+                record.profiled = true;
+            }
+        }
     }
 }
 
+fn publish_profile(state: &ThreadState) -> bool {
+    let token = state
+        .frames
+        .last()
+        .filter(|frame| frame.recording && state.overflow == 0 && !state.profile_invalid)
+        .map(|frame| &frame.token);
+    crate::profiles::publish(token)
+}
+
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) {
+    crate::profiles::clear();
     let record = LOCAL.with(|local| {
         let mut state = local.borrow_mut();
         if state.overflow > 0 {
             state.overflow -= 1;
+            publish_profile(&state);
             return None;
         }
         if state
@@ -249,13 +270,19 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
             .is_none_or(|f| f.pad != pad.as_ptr() as usize)
         {
             runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
+            state.profile_invalid = !state.frames.is_empty();
             return None;
         }
-        if state.frames.pop().unwrap().recording {
+        let record = if state.frames.pop().unwrap().recording {
             state.sampled.pop()
         } else {
             None
+        };
+        if state.frames.is_empty() {
+            state.profile_invalid = false;
         }
+        publish_profile(&state);
+        record
     });
     if let Some(mut record) = record {
         record.end = ts;

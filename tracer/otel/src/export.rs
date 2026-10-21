@@ -417,7 +417,12 @@ pub(crate) fn span_data(
         KeyValue::new("thread.name", record.thread.name.clone()),
         KeyValue::new("gst.flow_return", record.flow_return as i64),
     ]);
-    let dropped = attributes.len().saturating_sub(config.attribute_limit);
+    let omitted_profile = record.profiled && config.value_length_limit < 16;
+    if record.profiled && !omitted_profile {
+        attributes.push(KeyValue::new("pyroscope.profile.id", span_id.to_string()));
+    }
+    let dropped =
+        attributes.len().saturating_sub(config.attribute_limit) + usize::from(omitted_profile);
     attributes.truncate(config.attribute_limit);
     SpanData {
         span_context: SpanContext::new(
@@ -622,6 +627,7 @@ pub(crate) mod tests {
                 name: "stream".into(),
             }),
             flow_return: 0,
+            profiled: false,
         }
     }
     pub fn runtime(config: Config, collector: Collector) -> Runtime {

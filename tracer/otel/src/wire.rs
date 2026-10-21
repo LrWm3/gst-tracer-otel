@@ -153,7 +153,7 @@ impl Encoder {
             integer(span, 6, 1); // INTERNAL
             fixed64(span, 7, anchor.nanos(record.start));
             fixed64(span, 8, anchor.nanos(record.end.max(record.start)));
-            let total_attributes = record.site.attributes.len() + 7;
+            let total_attributes = record.site.attributes.len() + 7 + usize::from(record.profiled);
             let mut remaining = config.attribute_limit;
             record
                 .site
@@ -183,11 +183,24 @@ impl Encoder {
                 .append(span, &mut remaining);
             if remaining > 0 {
                 int_attribute(span, "gst.flow_return", record.flow_return as i64);
+                remaining -= 1;
+            }
+            if record.profiled && remaining > 0 && config.value_length_limit >= 16 {
+                // Fixed-size KeyValue/AnyValue: avoid allocating strings and
+                // temporary protobuf messages for every profiled span.
+                let mut id = [0; 16];
+                for (i, byte) in record.token.span_id.to_bytes().into_iter().enumerate() {
+                    id[i * 2] = b"0123456789abcdef"[(byte >> 4) as usize];
+                    id[i * 2 + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+                }
+                span.extend_from_slice(b"\x4a\x2a\x0a\x14pyroscope.profile.id\x12\x12\x0a\x10");
+                span.extend_from_slice(&id);
+                remaining -= 1;
             }
             integer(
                 span,
                 10,
-                total_attributes.saturating_sub(config.attribute_limit) as u64,
+                total_attributes.saturating_sub(config.attribute_limit - remaining) as u64,
             );
             if record.flow_return < 0 {
                 // Status { message: "GStreamer push failed", code: ERROR }.
@@ -251,29 +264,49 @@ mod tests {
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let mut encoder = Encoder::new(&resource);
-        for limit in [0, 1, 2, 4, 5, 6, 7, 8, 128] {
+        for limit in [0, 1, 2, 4, 5, 6, 7, 8, 9, 128] {
             for (flow, remote) in [(0, false), (-5, true)] {
-                let config = Config {
-                    attribute_limit: limit,
-                    ..Config::default()
-                };
-                let mut a = record(1);
-                a.flow_return = flow;
-                a.parent_is_remote = remote;
-                let mut b = record(1);
-                b.flow_return = flow;
-                b.parent_is_remote = remote;
-                encoder.encode(&[a], &anchor, &config).unwrap();
-                let decoded = ExportTraceServiceRequest::decode(encoder.body.as_ref()).unwrap();
-                let expected =
+                for (profiled, value_length_limit) in [
+                    (false, 4096),
+                    (true, 0),
+                    (true, 15),
+                    (true, 16),
+                    (true, 4096),
+                ] {
+                    let config = Config {
+                        attribute_limit: limit,
+                        value_length_limit,
+                        ..Config::default()
+                    };
+                    let mut a = record(1);
+                    a.flow_return = flow;
+                    a.parent_is_remote = remote;
+                    a.profiled = profiled;
+                    let mut b = record(1);
+                    b.flow_return = flow;
+                    b.parent_is_remote = remote;
+                    b.profiled = profiled;
+                    encoder.encode(&[a], &anchor, &config).unwrap();
+                    let decoded = ExportTraceServiceRequest::decode(encoder.body.as_ref()).unwrap();
+                    let expected =
                     opentelemetry_proto::transform::trace::tonic::group_spans_by_resource_and_scope(
                         vec![span_data(b, &anchor, &config, &scope)],
                         &(&resource).into(),
                     );
-                assert_eq!(
+                    assert_eq!(
                     decoded.resource_spans, expected,
-                    "limit {limit}, flow {flow}"
+                    "limit {limit}, flow {flow}, profiled {profiled}, value length {value_length_limit}"
                 );
+                    let span = &decoded.resource_spans[0].scope_spans[0].spans[0];
+                    let profile_id = span
+                        .attributes
+                        .iter()
+                        .find(|a| a.key == "pyroscope.profile.id");
+                    assert_eq!(
+                        profile_id.is_some(),
+                        profiled && limit >= 9 && value_length_limit >= 16
+                    );
+                }
             }
         }
     }

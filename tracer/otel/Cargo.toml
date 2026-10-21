@@ -21,6 +21,12 @@ bytes = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 tokio = { version = "1", features = ["rt", "time", "net"] }
 percent-encoding = "2"
+pyroscope = { version = "=2.1.2", optional = true }
+libc = { version = "0.2", optional = true }
+addr2line = { version = "0.27.1", optional = true }
+object = { version = "0.40", default-features = false, features = ["read", "std"], optional = true }
+# Decode gzip uploads in feature-gated integration tests; also used by Pyroscope.
+libflate = { version = "2", optional = true }
 [dev-dependencies]
 futures-executor = "0.3"
 tiny_http = "0.12"
@@ -28,3 +34,4 @@ tiny_http = "0.12"
 [features]
 noop = []
 capi = []
+profiles = ["dep:pyroscope", "dep:libc", "dep:addr2line", "dep:object", "dep:libflate"]

@@ -21,24 +21,29 @@ mod export;
 mod metadata;
 mod otellogbridge;
 mod oteltracer;
+mod profiles;
 mod propagation;
 mod transport;
 mod wire;
 
 pub use export::{ExportStats, FlushError};
 pub use oteltracer::TelemetryTracer;
+pub use profiles::{profile_stats, ProfileStats};
 
 /// Drain captured records and finish export attempts, bounded by `timeout`.
 pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     oteltracer::runtime()?.flush(timeout)
 }
 
-/// Stop accepting records, drain the worker, and shut down the exporter.
+/// Stop accepting records, drain exporters and stop the optional CPU profiler.
+/// The timeout covers all cleanup; timed-out workers may continue in background.
+/// Profile HTTP delivery acknowledgements are not exposed by the Pyroscope SDK.
 pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     let start = std::time::Instant::now();
     let result = oteltracer::runtime()?.shutdown(timeout);
     otellogbridge::shutdown(timeout.saturating_sub(start.elapsed()));
-    result
+    let profiles = profiles::shutdown(timeout.saturating_sub(start.elapsed()));
+    result.and_then(|stats| profiles.map(|()| stats))
 }
 
 /// Context of the current push, for explicit application instrumentation bridges.

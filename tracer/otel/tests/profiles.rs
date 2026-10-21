@@ -1,0 +1,374 @@
+//! Decode actual Pyroscope uploads and OTLP spans from a fresh process. The
+//! child uses real CPU timers, nested pad pushes, and a GStreamer queue thread.
+#![cfg(all(feature = "profiles", target_os = "linux", target_arch = "x86_64"))]
+
+use gstreamer::{self as gst, prelude::*};
+use opentelemetry_proto::tonic::{
+    collector::trace::v1::ExportTraceServiceRequest, trace::v1::Span,
+};
+use prost::Message;
+use pyroscope::encode::gen::{google::Profile, push::PushRequest};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{Duration, Instant},
+};
+
+#[derive(Default)]
+struct Received {
+    spans: Vec<Span>,
+    profiles: Vec<Profile>,
+}
+
+fn collect(mode: &str) -> (Received, String) {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let address = server.server_addr().to_string();
+    let received = Arc::new(Mutex::new(Received::default()));
+    let output = received.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = stop.clone();
+    let fail = mode == "slow";
+    let worker = std::thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) {
+            let Some(mut request) = server.recv_timeout(Duration::from_millis(10)).unwrap() else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            request.as_reader().read_to_end(&mut bytes).unwrap();
+            if request.url() == "/v1/traces" {
+                let decoded = ExportTraceServiceRequest::decode(bytes.as_slice()).unwrap();
+                for resource in decoded.resource_spans {
+                    for scope in resource.scope_spans {
+                        output.lock().unwrap().spans.extend(scope.spans);
+                    }
+                }
+            } else {
+                assert_eq!(request.url(), "/push.v1.PusherService/Push");
+                let mut data = Vec::new();
+                libflate::gzip::Decoder::new(bytes.as_slice())
+                    .unwrap()
+                    .read_to_end(&mut data)
+                    .unwrap();
+                let decoded = PushRequest::decode(data.as_slice()).unwrap();
+                for series in decoded.series {
+                    assert!(series
+                        .labels
+                        .iter()
+                        .any(|l| l.name == "service_name" && l.value == "profile-test"));
+                    assert!(!series
+                        .labels
+                        .iter()
+                        .any(|l| l.name == "span_id" || l.name == "trace_id"));
+                    for sample in series.samples {
+                        output
+                            .lock()
+                            .unwrap()
+                            .profiles
+                            .push(Profile::decode(sample.raw_profile.as_slice()).unwrap());
+                    }
+                }
+                if fail {
+                    // Keep accepting traces while the profile upload stalls.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        let _ = request.respond(tiny_http::Response::empty(503));
+                    });
+                    continue;
+                }
+            }
+            request.respond(tiny_http::Response::empty(200)).unwrap();
+        }
+    });
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    for (key, _) in
+        std::env::vars().filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_"))
+    {
+        command.env_remove(key);
+    }
+    command
+        .args(["--exact", "profile_child", "--ignored", "--nocapture"])
+        .env("OTEL_PROFILE_TEST", mode)
+        .env("OTEL_SERVICE_NAME", "profile-test")
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", format!("http://{address}"))
+        .env(
+            "OTEL_TRACES_SAMPLER",
+            if mode == "unsampled" {
+                "parentbased_always_off"
+            } else {
+                "parentbased_always_on"
+            },
+        );
+    if mode != "disabled" {
+        command.env("GST_OTEL_PROFILE_URL", format!("http://{address}"));
+    }
+    if mode == "invalid-rate" {
+        command.env("GST_OTEL_PROFILE_HZ", "0");
+    }
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let stdout = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let stderr = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break child.wait().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let child = std::process::Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    };
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    assert!(
+        child.status.success(),
+        "child failed: {}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let result = Arc::try_unwrap(received)
+        .ok()
+        .unwrap()
+        .into_inner()
+        .unwrap();
+    (result, String::from_utf8(child.stdout).unwrap())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
+    let (received, stdout) = collect("sampled");
+    let expected: HashMap<_, _> = stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.strip_prefix("EXPECTED ")?.split_whitespace();
+            let phase = fields.next()?.to_owned();
+            Some((
+                (fields.next()?.to_owned(), fields.next()?.to_owned()),
+                phase,
+            ))
+        })
+        .collect();
+    let spans: HashMap<_, _> = received
+        .spans
+        .iter()
+        .map(|span| ((hex(&span.trace_id), hex(&span.span_id)), span))
+        .collect();
+    let mut phases = HashSet::new();
+    let mut tids = HashSet::new();
+    for profile in &received.profiles {
+        assert_eq!(profile.period, 10_000_000);
+        for sample in &profile.sample {
+            let labels: HashMap<_, _> = sample
+                .label
+                .iter()
+                .map(|l| {
+                    (
+                        profile.string_table[l.key as usize].as_str(),
+                        profile.string_table[l.str as usize].as_str(),
+                    )
+                })
+                .collect();
+            let Some(span_id) = labels.get("span_id") else {
+                continue;
+            };
+            let key = (labels["trace_id"].to_owned(), (*span_id).to_owned());
+            let span = spans
+                .get(&key)
+                .expect("profile sample must refer to an exported span");
+            assert!(span
+                .attributes
+                .iter()
+                .any(|a| a.key == "pyroscope.profile.id"
+                    && format!("{:?}", a.value).contains(*span_id)));
+            if let Some(phase) = expected.get(&key) {
+                phases.insert(phase.as_str());
+            }
+            tids.insert(labels["thread_id"].to_owned());
+            assert!(!sample.location_id.is_empty());
+            assert!(sample.value[0] > 0);
+        }
+    }
+    assert!(phases.contains("outer"), "{phases:?}");
+    assert!(phases.contains("nested"), "{phases:?}");
+    assert!(phases.contains("queue"), "{phases:?}");
+    assert!(tids.len() >= 2, "queue must sample its own native thread");
+}
+
+#[test]
+fn unsampled_traces_still_profile_without_span_labels() {
+    let (received, _) = collect("unsampled");
+    assert!(received.spans.is_empty());
+    assert!(received.profiles.iter().any(|p| !p.sample.is_empty()));
+    for profile in received.profiles {
+        for sample in profile.sample {
+            assert!(sample.label.iter().all(|l| !matches!(
+                profile.string_table[l.key as usize].as_str(),
+                "span_id" | "trace_id"
+            )));
+        }
+    }
+}
+
+#[test]
+fn disabled_or_failed_profiler_initialization_preserves_tracing() {
+    for mode in ["disabled", "invalid-rate", "signal-conflict"] {
+        let (received, _) = collect(mode);
+        assert!(!received.spans.is_empty());
+        assert!(received.profiles.is_empty());
+        assert!(received
+            .spans
+            .iter()
+            .all(|s| s.attributes.iter().all(|a| a.key != "pyroscope.profile.id")));
+    }
+}
+
+#[test]
+fn slow_profile_receiver_does_not_extend_shutdown_deadline() {
+    collect("slow");
+}
+
+#[inline(never)]
+fn busy(phase: &str) {
+    if let Some(context) = gstoteltracer::current_span_context().filter(|c| c.is_sampled()) {
+        println!(
+            "EXPECTED {phase} {} {}",
+            context.trace_id(),
+            context.span_id()
+        );
+    }
+    let start = Instant::now();
+    let mut value = 1u64;
+    while start.elapsed() < Duration::from_millis(80) {
+        for _ in 0..10000 {
+            value = std::hint::black_box(value.wrapping_mul(6364136223846793005).wrapping_add(1));
+        }
+    }
+    std::hint::black_box(value);
+}
+
+#[test]
+#[ignore = "subprocess with isolated signal disposition, GStreamer and profiler globals"]
+fn profile_child() {
+    let mode = std::env::var("OTEL_PROFILE_TEST").unwrap();
+    if mode == "signal-conflict" {
+        // SAFETY: isolated child reserves the default profiling signal first.
+        unsafe {
+            libc::signal(libc::SIGRTMIN() + 6, libc::SIG_IGN);
+        }
+    }
+    gst::init().unwrap();
+    let _tracer: gstoteltracer::TelemetryTracer = glib::Object::new();
+    let source = gst::Pad::builder(gst::PadDirection::Src)
+        .name("nested-source")
+        .build();
+    let sink = gst::Pad::builder(gst::PadDirection::Sink)
+        .name("nested-sink")
+        .chain_function(|_, _, _| {
+            busy("nested");
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .build();
+    source.link(&sink).unwrap();
+    source.set_active(true).unwrap();
+    sink.set_active(true).unwrap();
+    source.push_event(gst::event::StreamStart::new("nested"));
+    source.push_event(gst::event::Segment::new(&gst::FormattedSegment::<
+        gst::format::Bytes,
+    >::new()));
+    let pipeline = gst::parse::launch("fakesrc num-buffers=4 ! identity name=outer ! queue ! identity name=worker ! fakesink sync=false")
+        .unwrap().downcast::<gst::Pipeline>().unwrap();
+    let nested = source.clone();
+    pipeline
+        .by_name("outer")
+        .unwrap()
+        .connect("handoff", false, move |_| {
+            let before = gstoteltracer::current_span_context();
+            busy("outer");
+            nested.push(gst::Buffer::new()).unwrap();
+            assert_eq!(
+                gstoteltracer::current_span_context(),
+                before,
+                "nested return must restore parent"
+            );
+            busy("outer");
+            None
+        });
+    pipeline
+        .by_name("worker")
+        .unwrap()
+        .connect("handoff", false, |_| {
+            busy("queue");
+            None
+        });
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let message = pipeline
+        .bus()
+        .unwrap()
+        .timed_pop_filtered(
+            gst::ClockTime::from_seconds(20),
+            &[gst::MessageType::Eos, gst::MessageType::Error],
+        )
+        .expect("EOS");
+    if let gst::MessageView::Error(e) = message.view() {
+        panic!("{} {:?}", e.error(), e.debug());
+    }
+    pipeline.set_state(gst::State::Null).unwrap();
+    source.set_active(false).unwrap();
+    sink.set_active(false).unwrap();
+    // Drain trace export before testing the independent profile deadline.
+    gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+    let start = Instant::now();
+    let shutdown = gstoteltracer::shutdown(Duration::from_millis(if mode == "slow" {
+        30
+    } else {
+        5000
+    }));
+    if mode == "slow" {
+        assert_eq!(shutdown, Err(gstoteltracer::FlushError::Timeout));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    } else {
+        shutdown.unwrap();
+    }
+    let stats = gstoteltracer::profile_stats();
+    println!("STATS {stats:?}");
+    assert_eq!(stats.active_threads, 0);
+    if matches!(mode.as_str(), "sampled" | "unsampled") {
+        assert!(stats.samples > 0, "{stats:?}");
+        assert_eq!(stats.dropped_full, 0, "{stats:?}");
+        assert_eq!(stats.dropped_processing, 0, "{stats:?}");
+        assert_eq!(stats.dropped_upload, 0, "{stats:?}");
+        assert_eq!(stats.registration_failures, 0, "{stats:?}");
+        assert_eq!(
+            stats.reported_samples, stats.samples,
+            "final report must drain samples"
+        );
+    }
+}

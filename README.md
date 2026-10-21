@@ -23,8 +23,12 @@ and exports traces on a worker through a bounded queue with explicit loss
 accounting. It uses OpenTelemetry Rust 0.33.1 without creating live SDK spans.
 Parent-based sampling preserves decisions across synchronous pushes, queues,
 and buffer copies. These improvements work with stock GStreamer. Metrics with
-exemplars and Pyroscope trace correlation remain future work; the broken
-automatic profiler integration has been removed.
+exemplars remain future work. An opt-in embedded sampler now prototypes
+Pyroscope trace correlation on Linux x86-64; see the
+[profile setup and limitations](tracer/otel/README.md#experimental-correlated-cpu-profiles).
+
+See the [trace/profile integration investigation](TRACE_PROFILE_INTEGRATION.md)
+for the design rationale, backend constraints, and remaining validation work.
 
 > Currently, the way per element latency is calculated using the `prom-latency` element does not cleanly handle
 > thread-boundaries introduced by the `threadshare` plugin.

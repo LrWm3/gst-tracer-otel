@@ -31,7 +31,11 @@ fn initialize() -> Result<Runtime, String> {
     if config.logs {
         crate::otellogbridge::initialize(resource.clone())?;
     }
-    Runtime::new(config, exporter, resource).map_err(|e| e.to_string())
+    let runtime = Runtime::new(config, exporter, resource.clone()).map_err(|e| e.to_string())?;
+    if let Err(error) = crate::profiles::initialize(&resource) {
+        gst::warning!(CAT, "Embedded profiles disabled: {error}");
+    }
+    Ok(runtime)
 }
 
 mod imp {

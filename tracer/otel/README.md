@@ -1,9 +1,9 @@
 # OpenTelemetry push tracing for GStreamer
 
 `otel-tracer` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
-It does not create live SDK spans, install a global tracer provider, or start a
-Pyroscope agent. Profile correlation needs a separate implementation; the old
-span processor has been removed. The independent Pyroscope tracer is unchanged.
+It does not create live SDK spans or install a global tracer provider. An
+optional `profiles` feature adds an experimental embedded CPU sampler and
+Pyroscope delivery backend. The independent Pyroscope tracer is unchanged.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
 ## Run
@@ -30,6 +30,134 @@ appended to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
 counterparts. Headers use comma-separated, percent-encoded key/value pairs;
 timeouts are milliseconds and default to 10000. Unsupported protocol or
 compression settings disable tracing with an initialization error.
+
+## Experimental correlated CPU profiles
+
+On Linux x86-64, build the optional feature and set the Pyroscope base URL:
+
+```sh
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p gst-otel-tracer --features profiles
+export GST_PLUGIN_PATH="$PWD/target/profiling"
+export GST_TRACERS=otel-tracer
+export OTEL_SERVICE_NAME=gstreamer-pipeline
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export GST_OTEL_PROFILE_URL=http://localhost:4040
+gst-launch-1.0 videotestsrc num-buffers=1000 ! videoconvert ! fakesink
+```
+
+The implementation is isolated in [src/profiles.rs](src/profiles.rs), including
+signal handling, thread registration, context publication, aggregation, the
+Pyroscope 2.1.2 custom backend and shutdown. Capture hooks publish fixed IDs;
+they do not call Pyroscope's thread-tag API. The sampler reads those IDs when a
+CPU timer interrupts the executing thread, and includes them in the aggregation
+key. Nested pushes replace the active ID and restore the parent on return.
+Queue workers publish their own active push, using the existing buffer context
+propagation. Overflow or uncertain hook nesting suppresses correlation until
+the stack recovers. Unsampled pushes still contribute CPU samples without IDs.
+
+Profiles use the trace resource's `service.name` as Pyroscope `service_name`.
+`span_id`, `trace_id` and native `thread_id` are **pprof sample labels**, not
+series labels. Eligible spans have `pyroscope.profile.id` equal to their
+16-character span ID. The marker means sampling was enabled for that span;
+short spans may receive no samples, and dropped trace/profile exports can leave
+missing counterparts. Attribute limits can omit the marker; a string limit
+below 16 omits it instead of truncating the identifier. Configure Grafana's
+Tempo-to-Pyroscope link separately, selecting the same service and span IDs.
+The automated tests validate upload payloads. A local Pyroscope 2.4.0 server
+also accepted the uploads: aggregate, span-ID and trace-ID queries returned the
+exact CPU weights decoded from those payloads, and an unknown span returned no
+samples. Grafana UI navigation has not been tested. The reproducible
+[profile benchmark](bench/profiles.py) can forward uploads with `--pyroscope`
+and check these server queries.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `GST_OTEL_PROFILE_URL` | unset (disabled) | HTTP(S) Pyroscope base URL; delivery uses `/push.v1.PusherService/Push` |
+| `GST_OTEL_PROFILE_HZ` | `100` | Per-thread CPU sampling frequency, from 1 to 1000 Hz |
+| `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Numeric realtime signal reserved by this sampler |
+
+Feature compilation alone does not start profiling. Missing feature/platform,
+invalid settings, or an occupied signal log an initialization warning and leave
+tracing operational. A thread that blocks the signal or cannot create a timer
+is skipped and increments `registration_failures`; it is not retried. Profiling
+initialization and shutdown are process-wide and cannot be restarted. Configure
+credentials/authentication at a local forwarding proxy for this prototype;
+it does not map OTLP headers to Pyroscope requests.
+
+Sampling covers up to 64 simultaneously registered **push threads**, including
+their CPU work between pushes after registration. It does not measure sleeping
+time, all process threads, or CPU work before a thread's first push. CPU is
+attributed to the innermost active push, not duplicated into every enclosing
+span. Each thread has a 256-sample ring, a 64-frame limit and an 8 KiB stack
+snapshot. Storage is allocated on first registration: about 146 KiB per used
+slot, rather than allocating about 9 MiB for all 64 slots at startup. Retiring
+threads release their timers and slots; their buffers remain available for
+reuse and safe handling of pending signals. Full rings drop samples.
+
+A dedicated report worker drains rings every second, aggregates raw stacks,
+reuses a bounded symbol cache, and interns frames directly into pprof. The SDK
+upload queue holds at most ten encoded profiles, each capped at 8 MiB. A full
+queue drops the new profile without blocking sampling or report processing.
+Oversized reports are dropped before enqueueing. These bounds exclude the
+current report, compression/HTTP scratch space and transient debug-file parsing.
+The worker uses a stop channel and joins instead of the SDK Agent's timer and
+stop-condition-variable lifecycle. Caller shutdown deadlines still apply while
+uploads finish in the background.
+
+The symbol cache holds at most 4096 addresses and 4 MiB of frame/string payload,
+with at most 16 inline frames per address and 1024 bytes per name/path. Executable
+mapping changes invalidate it. ELF files are read directly, with one temporary
+DWARF resolver per mapped executable region; no process-wide backtrace mutex or
+dynamic-loader enumeration is involved. Embedded and installed build-ID debug
+files provide names, file/line and inline frames. Debuglink-only/supplementary
+debug files and symbols unloaded before report processing are not guaranteed;
+unresolved addresses remain visible. Debug parsing can still raise peak RSS.
+
+Profile time windows use actual report intervals, rather than per-sample
+timestamps; reporting delays can place buffered samples in a later window.
+The measurements below characterize this prototype, without a production
+overhead guarantee.
+
+The signal handler snapshots registers and copies stack memory with Linux
+`process_vm_readv`, then follows frame pointers only inside that bounded copy.
+Unavailable stack reads retain the interrupted instruction. Build the
+application and relevant native dependencies with frame pointers and install
+debug symbols for useful stacks; the Rust flag above affects Rust code only.
+Optimized GStreamer/dependency builds without frame pointers can yield shallow
+or incomplete stacks. Sandboxes denying `process_vm_readv` also limit samples
+to the interrupted instruction. This implementation does not provide DWARF
+unwinding or JIT stack support.
+
+`gstoteltracer::profile_stats()` reports queued/correlated samples, full-ring
+drops, timer overruns, failed stack reads, truncated stacks, registration
+failures, reported samples and active timers. `dropped_processing` counts samples
+discarded by the encoded-size limit; `dropped_upload` counts samples discarded
+when the upload queue is full or disconnected. `reported_samples` counts samples
+successfully enqueued to the SDK, **not successful delivery**: the SDK does not expose HTTP
+acknowledgements or failures through the backend interface. A successful
+`shutdown` therefore cannot guarantee profile delivery.
+
+Stop streaming, then call `gstoteltracer::shutdown(timeout)` to stop the timers,
+drain a final profile and finish SDK shutdown. It shares the existing caller
+deadline; background cleanup continues after timeout and shutdown may be
+retried. `flush()` and the automatic pipeline-NULL drain cover traces only.
+`gst-launch-1.0` relies on periodic profile uploads and may lose the final
+interval when it exits. Applications needing a final profile drain must use the
+explicit Rust shutdown API. Pending timer signals require keeping the small
+handler and sampler storage resident after shutdown. GStreamer's normal plugin
+loader does this; unloading an rlib's hosting DSO and forking after profiler
+initialization are unsupported. Applications must reserve the chosen signal
+and not replace its handler or send their own timer notifications through it.
+
+Run `cargo test -p gst-otel-tracer --features profiles` for real CPU-timer tests
+that decode Pyroscope and OTLP requests, including nested/queue attribution,
+sampling rejection, initialization failures, thread retirement, context recovery
+and shutdown under slow delivery. Regression tests also hold glibc's loader
+lock during symbolization, exercise a saturated/disconnected upload queue, and
+run 1000 Hz sampling alongside allocation, mutexes and thread/loader activity.
+These checks do not identify the cause of an earlier production deadlock;
+[the lock audit](../../TRACE_PROFILE_INTEGRATION.md#deadlock-audit-and-worker-changes)
+records the concrete hazards removed and the remaining limits.
 
 ## Capture and export
 
@@ -148,6 +276,128 @@ the OTel hooks, omit `otel-tracer` from `GST_TRACERS` before process startup.
 Other active tracers can still incur GStreamer's shared dispatch overhead.
 
 ## Performance and sampling cost
+
+**Background processing and memory follow-up, 2026-10-21.** Both columns below
+enable 100 Hz profiling and 100% trace sampling: the initial embedded prototype
+versus the optimized worker. Builds use the same release/frame-pointer flags,
+Rust 1.89, stock GStreamer 1.24.2, and CPU affinities described below. The final
+worker uses `addr2line` 0.27.1 and `object` 0.40.0. Three measured repetitions
+follow a discarded warm-up; the two variants alternate execution order.
+
+Median milliseconds, except peak RSS in MiB; **previous → optimized**:
+
+| Workload | CPU outside streaming threads | Total process CPU | Peak RSS |
+| --- | ---: | ---: | ---: |
+| 50,000 tiny pushes, one source | 84.1 → 81.4 | 117.6 → 113.6 | 68.4 → 60.5 |
+| 200,000 tiny pushes, four sources | 300.5 → 162.4 | 479.7 → 343.2 | 93.2 → 85.1 |
+| 240 frames, 1080p conversion | 213.6 → 137.2 | 2724.9 → 2632.0 | 82.6 → 75.0 |
+| 1200 frames, 1080p conversion | 1262.5 → 561.4 | 15465.9 → 15332.9 | 84.9 → 76.1 |
+
+CPU outside streaming threads is computed per run as process CPU minus the sum
+of source-thread CPU, then the median is taken. It includes trace export and
+other process work as well as profiling; it is not an isolated symbolizer
+measurement. The two-second drain remains outside pipeline wall time and inside
+process CPU. Peak RSS still includes debug parsing and allocator retention.
+Cold symbolization remains expensive on tiny workloads; the persistent cache
+helps workloads that span multiple reporting intervals.
+
+The long-video case reduced CPU outside streaming threads by 55.5%, and the
+short-video case by 35.8%. Peak RSS fell by about 7.6–8.7 MiB across these cases.
+Long-video source CPU varied from 12.4 to 18.2 seconds across both variants;
+that variation prevents a reliable end-to-end speedup claim. All 1,534,560
+spans in the measured follow-up runs arrived without trace export losses, and
+every received correlated sample matched an exported span and profile marker.
+The final build also passed the separate Pyroscope 2.4.0 ingestion/query check.
+
+[Follow-up raw measurements](bench/PROFILE_OPTIMIZATION_RESULTS.csv) retain every
+run, including warm-ups. The `previous` mode is the original enabled prototype;
+`enabled` is the optimized build. Reproduce with the existing benchmark arguments
+plus `--previous /path/to/original-profiles --modes previous enabled`. Keep the
+old library before rebuilding. As with the earlier measurements, these are
+development-laptop observations, not production overhead guarantees.
+
+**Initial embedded prototype measurements, 2026-10-21.** Compared against trace-only
+commit `1b9e13e`, with 100% trace sampling and 100 Hz CPU profiling. All variants
+used Rust 1.89 release builds with `-C force-frame-pointers=yes`, stock
+GStreamer 1.24.2 and an i5-1345U. Child processes were pinned to the two physical
+P cores (CPUs 0 and 2), with the local HTTP receiver on CPU 4. No Rust runtime
+code was changed between these measurements and the initial prototype; this
+historical table predates the worker and memory changes above.
+
+Median milliseconds; each cell is **trace-only → profiles enabled**:
+
+| Workload | Streaming-thread CPU | Pipeline wall time | Total process CPU, including drain |
+| --- | ---: | ---: | ---: |
+| 50,000 tiny pushes, one source | 30.58 → 31.54 (+3.1%) | 31.23 → 32.72 (+4.8%) | 59.07 → 118.94 (+101%) |
+| 200,000 tiny pushes, four sources | 134.99 → 140.71 (+4.2%) | 81.46 → 90.78 (+11.4%) | 206.43 → 297.87 (+44.3%) |
+| 240 frames, 1080p conversion | 2366.93 → 2361.74 (−0.2%) | 2378.32 → 2387.09 (+0.4%) | 2438.69 → 2585.91 (+6.0%) |
+| 1200 frames, 1080p conversion | 12821.14 → 13181.80 (+2.8%) | 12838.98 → 13461.34 (+4.8%) | 13124.28 → 14225.81 (+8.4%) |
+
+The tiny workload is `fakesrc` through four `identity` elements into `fakesink`.
+The video workload generates 1920×1080 RGBA noise and converts it to I420.
+The first and third rows use five repetitions; the longer cases use three.
+Every variant had a discarded warm-up, and execution order rotated between
+repetitions. Both variants waited two seconds after stopping the pipeline to
+include profile/report processing in process CPU. Wall time excludes that wait.
+The receiver acknowledged actual uploads without decoding them during timing;
+payload decoding and attribution checks happened after each child exited.
+The Pyroscope server test ran separately from performance measurements.
+
+The initial prototype added about 45–48 MiB of peak RSS when samples were
+processed, including roughly 9 MiB of fixed sampler storage. The longer video run rose from 37.1 to
+85.0 MiB. Its remaining CPU overhead shows that profile processing cost persists
+beyond startup. A separate 1 Hz tiny-push control captured no samples yet added
+16.2 ms of process CPU, indicating that publication, profile-link attributes and
+agent management also have a cost. That control does not isolate those components
+individually. The follow-up above replaces the per-report cache and per-span
+profile-link allocation, and allocates sampling buffers on demand.
+
+Compiling the feature with no profile URL added 2.9% streaming CPU on the
+single-source tiny workload and 0.04% on short video. Omitting the feature showed
+no consistent streaming regression. These are observations from a development
+laptop with other services running, not confidence bounds or production
+guarantees; sub-percent differences are within observed variation. Debug symbols
+and different native libraries can change stack quality, symbolization time and
+memory use. Many native frames in this environment remain raw addresses.
+The long-video pairs ranged from +7.1% to +14.3% total CPU; both variants slowed
+substantially in the last pair. Treat the +8.4% median as an approximate result,
+not a precise overhead bound.
+
+All 3,548,000 spans from the measured runs arrived without trace export losses,
+and every correlated profile sample matched an exported span and its profile
+attribute. The initial 50,000-push/four-source run captured **no CPU samples**:
+each worker finished before its first timer tick. Its rows remain in the raw
+data, but the table uses a longer run with samples. At 100 Hz, very short pushes
+and short-lived threads can have no profile despite having a link attribute.
+
+[Raw per-run measurements](bench/PROFILE_RESULTS.csv) include warm-ups with
+`repeat=-1`. [profiles.py](bench/profiles.py) compares three prebuilt plugin
+directories: the pre-change baseline, the current default build, and the current
+`--features profiles` build. Build each with the same flags and copy its shared
+library into a separate directory, then run, for example:
+
+```sh
+taskset -c 4 python3 tracer/otel/bench/profiles.py \
+  --baseline /path/to/baseline --no-feature /path/to/default \
+  --profiles /path/to/profiles --cpus 0,2 --repeats 5
+# Longer sampled four-source case; enlarge the queue to retain all spans.
+taskset -c 4 python3 tracer/otel/bench/profiles.py \
+  --baseline /path/to/baseline --no-feature /path/to/default \
+  --profiles /path/to/profiles --modes baseline enabled --workloads push4 \
+  --buffers 40000 --queue-capacity 262144 --repeats 3
+# Separately validate ingestion and query weights against an isolated server.
+python3 tracer/otel/bench/profiles.py \
+  --baseline /path/to/baseline --no-feature /path/to/default \
+  --profiles /path/to/profiles --modes enabled --workloads video --repeats 1 \
+  --pyroscope http://localhost:4040
+```
+
+Choose CPU affinities appropriate to the host. The server check requires a fresh
+time range/service: it uses `service_name="gst-profile-bench"` and verifies total,
+span and trace CPU weights through Pyroscope's
+[query API](https://grafana.com/docs/pyroscope/latest/reference-server-api/).
+
+**Earlier trace-only measurements.**
 
 The last isolated plugin comparison used stock GStreamer 1.24.2, Rust 1.89,
 release builds, one stream, 10000 buffers, and five pushes per buffer. Logging
