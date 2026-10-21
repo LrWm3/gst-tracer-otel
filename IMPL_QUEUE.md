@@ -154,3 +154,23 @@ individual submissions preserves the previous flush and pending-record semantics
 See [direct export results](tracer/otel/bench/DIRECT_RESULTS.md) for 445 pipeline
 runs, the isolated encoding benchmark, reproducible experiment patches, unchanged
 workspace check failures, and the limits of these shared-machine measurements.
+
+## 6. Reduce capture propagation cost
+
+Authorized by the user: "ok continue iterating and give me the same metrics
+before and after the change". Baseline: `22f2ecb`.
+
+- [x] Measure rejected propagation and capture separately from pipeline cost.
+- [x] Remove routine mini-object qdata lookups when trace metadata is present.
+- [x] Preserve concurrent shared-root overrides, copied token ownership, and
+  retirement of stale overrides when writable metadata is installed or copied.
+- [x] Measure the GStreamer tracing floor using benchmark-only empty push hooks.
+- [x] Complete paired disabled/0%/10%/100% comparisons, delivery and loss checks,
+  and repository validation; record the same source and process CPU metrics.
+
+Shared-root overrides now live alongside owned trace metadata, initialized only
+when needed. Initially shared buffers without metadata retain the synchronized
+qdata fallback. The identity-pipeline comparison reduces source CPU by 2–3% at
+one stream and 6–9% at four/sixteen streams; tee/queue differences are smaller
+and noisy. See [capture results](tracer/otel/bench/CAPTURE_RESULTS.md) for all 422
+runs, the empty-hook diagnostic, and unchanged workspace check failures.

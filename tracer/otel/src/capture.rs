@@ -453,3 +453,68 @@ mod sampling_metadata_tests {
         runtime.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }
 }
+
+#[cfg(test)]
+mod benchmarks {
+    use super::*;
+    use crate::export::{
+        tests::{runtime, Collector},
+        Config,
+    };
+    use std::{
+        hint::black_box,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    #[ignore = "manual release benchmark; reports timings without timing assertions"]
+    fn rejected_capture_benchmark() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let buffer = gst::Buffer::new();
+        let runtime = runtime(
+            Config {
+                ratio: 0.0,
+                ..Config::default()
+            },
+            Collector::default(),
+        );
+        let token = Token::rejected();
+        begin(&runtime, 0, &pad, &buffer);
+        end(&runtime, 1, &pad, 0);
+        for round in 0..5 {
+            let start = Instant::now();
+            for _ in 0..500_000 {
+                crate::propagation::write(
+                    black_box(&buffer),
+                    black_box(&token),
+                    false,
+                    &runtime.stats,
+                );
+            }
+            println!(
+                "CAPTURE round={round} stage=propagation operations=500000 elapsed_ns={}",
+                start.elapsed().as_nanos()
+            );
+            let start = Instant::now();
+            for _ in 0..100_000 {
+                for ts in 0..5 {
+                    begin(&runtime, ts, black_box(&pad), black_box(&buffer));
+                }
+                for ts in 5..10 {
+                    end(&runtime, ts, black_box(&pad), 0);
+                }
+            }
+            println!(
+                "CAPTURE round={round} stage=nested_hooks operations=500000 elapsed_ns={}",
+                start.elapsed().as_nanos()
+            );
+            assert!(current_context().is_none());
+        }
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.unsampled_pushes, 2_500_001);
+        assert_eq!(stats.propagation_misses, 0);
+        assert_eq!(stats.mismatched_hooks, 0);
+    }
+}

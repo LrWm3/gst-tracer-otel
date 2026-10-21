@@ -16,8 +16,9 @@ parser.add_argument('--baseline', type=Path, help='Directory containing a prebui
 parser.add_argument('--repeats', type=int, default=3)
 parser.add_argument('--streams', type=int, nargs='+', default=[1])
 parser.add_argument('--buffers', type=int, default=10000, help='Total buffers shared between streams')
-parser.add_argument('--modes', nargs='+', default=['none', 'sampled', 'unsampled', 'partial', 'slow', 'absent'])
+parser.add_argument('--modes', nargs='+', choices=['none', 'hooks', 'sampled', 'unsampled', 'partial', 'slow', 'absent'], default=['none', 'sampled', 'unsampled', 'partial', 'slow', 'absent'], help='hooks runs benchmark-only empty push hooks')
 parser.add_argument('--baseline-sampling', action='store_true', help='Compare sampling modes too, for baselines that support them')
+parser.add_argument('--baseline-disabled', action='store_true', help='Also run a tracing-disabled control with the baseline plugin directory')
 parser.add_argument('--drain-ms', type=int, default=2000, help='Use 0 when both plugins flush on pipeline NULL')
 parser.add_argument('--output', default='results.json')
 parser.add_argument('--batch-size', type=int, default=512)
@@ -97,6 +98,8 @@ base.update(GST_DEBUG='0',
 results = []
 configs = list(args.modes)
 if args.baseline:
+    if args.baseline_disabled and 'none' in configs:
+        configs.insert(configs.index('none'), 'baseline-none')
     if 'sampled' in configs:
         configs.insert(configs.index('sampled'), 'baseline')
     if args.baseline_sampling:
@@ -118,7 +121,8 @@ try:
                 directory = args.baseline.resolve() if baseline else ROOT / 'target/release'
                 env = dict(base, GST_PLUGIN_PATH=str(directory),
                            GST_REGISTRY=str(OUT / f'registry-{name}.bin'),
-                           GST_TRACERS='' if mode == 'none' else 'otel-tracer',
+                           GST_TRACERS='' if mode in ('none', 'hooks') else 'otel-tracer',
+                           OTEL_BENCH_EMPTY_HOOKS='1' if mode == 'hooks' else '0',
                            GST_OTEL_LOGS='false', GST_OTEL_BATCH_SIZE=str(args.batch_size),
                            GST_OTEL_HTTP_CLIENT=args.http_client,
                            GST_OTEL_EXPORT_INTERVAL_MS='10',
@@ -168,7 +172,7 @@ try:
                         assert stats['propagation_fallbacks'] > 0, result
                 if mode == 'sampled':
                     assert result['received_spans'] == args.buffers * 5, result
-                if mode == 'unsampled':
+                if mode in ('none', 'hooks', 'unsampled'):
                     assert result['received_spans'] == 0, result
                 results.append(result)
                 (OUT / args.output).write_text(json.dumps(results, indent=2) + '\n')

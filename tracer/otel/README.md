@@ -164,10 +164,13 @@ retain all failures, including ones already reported during pipeline stop.
 
 - Shared buffers cannot safely accept mutable metadata. Branches retain the
   last common ancestor; exact immediate parentage across every branch is not
-  promised. An initially shared buffer without our metadata uses a synchronized
-  sidecar. Its slot is installed once under a global installation lock; later
-  access synchronizes only on that buffer. Copying that buffer cannot copy the
-  sidecar. A later asynchronous
+  promised. A shared root can replace that ancestor through a lazily initialized,
+  synchronized slot owned by our metadata. Routine metadata propagation does not
+  consult mini-object qdata. An initially shared buffer without our metadata uses
+  a qdata sidecar; its installation and GStreamer's qdata lookup use global locks.
+  Copying a buffer without our metadata cannot copy the sidecar. Installing or
+  copying our metadata into a writable buffer retires its old qdata override.
+  A later asynchronous
   push with missing context is counted and suppressed, never resampled as a root.
 - Elements that strip metadata or create unrelated buffers asynchronously need
   element-specific propagation. Generic fan-in retains the first copied input
@@ -190,7 +193,9 @@ python3 tracer/otel/bench/run.py
 python3 tracer/otel/bench/run.py --baseline /path/to/old/plugin/directory
 # Compare compact-capture versions, including parallel streams and sampling:
 python3 tracer/otel/bench/run.py --baseline /path/to/compact-v1 \
-  --baseline-sampling --streams 1 4 16 --repeats 5 --drain-ms 0
+  --baseline-sampling --baseline-disabled --streams 1 4 16 --repeats 5 --drain-ms 0
+# Measure the GStreamer tracing floor with empty push callbacks:
+python3 tracer/otel/bench/run.py --modes none hooks unsampled sampled --drain-ms 0
 ```
 
 The Linux benchmark needs a C compiler, GStreamer development files, and Python.
@@ -211,3 +216,7 @@ current encoder and transport, rejected producer batching, adapter/batch-size
 experiments, and isolated encoding cost. Use `--http-client`, `--batch-size`, and
 `--keep-alive` to reproduce transport comparisons. The default benchmark collector
 uses HTTP/1.0; `--keep-alive` tests persistent HTTP/1.1 connections.
+[Capture propagation measurements](bench/CAPTURE_RESULTS.md) compare the next
+iteration against direct export, including disabled controls, the empty-hook
+diagnostic, and isolated rejected-capture timings. The `hooks` mode registers
+benchmark-only empty C callbacks; it does not run the OTel tracer.

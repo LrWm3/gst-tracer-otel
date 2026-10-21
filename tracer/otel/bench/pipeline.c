@@ -7,6 +7,22 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Benchmark-only floor for GStreamer's hook dispatch and timestamps. */
+typedef struct { GstTracer parent; } BenchEmptyTracer;
+typedef struct { GstTracerClass parent; } BenchEmptyTracerClass;
+G_DEFINE_TYPE(BenchEmptyTracer, bench_empty_tracer, GST_TYPE_TRACER)
+static void empty_pre(GstTracer *self, guint64 ts, GstPad *pad, GstBuffer *buffer) {
+  (void) self; (void) ts; (void) pad; (void) buffer;
+}
+static void empty_post(GstTracer *self, guint64 ts, GstPad *pad, GstFlowReturn result) {
+  (void) self; (void) ts; (void) pad; (void) result;
+}
+static void bench_empty_tracer_class_init(BenchEmptyTracerClass *klass) { (void) klass; }
+static void bench_empty_tracer_init(BenchEmptyTracer *self) {
+  gst_tracing_register_hook(GST_TRACER(self), "pad-push-pre", G_CALLBACK(empty_pre));
+  gst_tracing_register_hook(GST_TRACER(self), "pad-push-post", G_CALLBACK(empty_post));
+}
+
 typedef struct {
   guint64 start, cpu, buffers, churn_every;
   GstElement *unrelated;
@@ -58,6 +74,9 @@ static guint64 exporter_ticks(void) {
 }
 int main(int argc, char **argv) {
   gst_init(&argc, &argv);
+  GstTracer *empty = g_strcmp0(g_getenv("OTEL_BENCH_EMPTY_HOOKS"), "1") == 0
+      ? g_object_new(bench_empty_tracer_get_type(), NULL) : NULL;
+  if (empty) gst_object_ref_sink(empty);
   if (argc != 2 && argc != 3) return 2;
   int stream_count = argc == 3 ? atoi(argv[2]) : 1;
   if (stream_count < 1 || stream_count > 64) return 2;
@@ -122,5 +141,6 @@ int main(int argc, char **argv) {
   if (msg) gst_message_unref(msg);
   gst_object_unref(bus);
   gst_object_unref(pipeline);
+  gst_clear_object(&empty);
   return result;
 }

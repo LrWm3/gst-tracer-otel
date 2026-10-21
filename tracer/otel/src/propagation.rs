@@ -12,13 +12,16 @@ use crate::export::Counters;
 struct ContextMeta {
     meta: gst::ffi::GstMeta,
     token: std::mem::ManuallyDrop<Token>,
+    // Shared roots may override the immutable common ancestor. Keep that rare
+    // state with the meta so normal reads/writes never consult mini-object qdata.
+    shared: std::mem::ManuallyDrop<OnceLock<Box<Fallback>>>,
 }
 
 fn api() -> glib::ffi::GType {
     static API: OnceLock<glib::ffi::GType> = OnceLock::new();
     *API.get_or_init(|| unsafe {
         let mut tags = [std::ptr::null()];
-        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV2API".as_ptr(), tags.as_mut_ptr())
+        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV3API".as_ptr(), tags.as_mut_ptr())
     })
 }
 fn info() -> *const gst::ffi::GstMetaInfo {
@@ -27,7 +30,7 @@ fn info() -> *const gst::ffi::GstMetaInfo {
     *INFO.get_or_init(|| unsafe {
         gst::ffi::gst_meta_register(
             api(),
-            c"GstOtelContextV2".as_ptr(),
+            c"GstOtelContextV3".as_ptr(),
             std::mem::size_of::<ContextMeta>(),
             Some(init),
             Some(free),
@@ -49,10 +52,15 @@ unsafe extern "C" fn init(
         std::ptr::addr_of_mut!((*(meta as *mut ContextMeta)).token),
         std::mem::ManuallyDrop::new(token),
     );
+    std::ptr::write(
+        std::ptr::addr_of_mut!((*(meta as *mut ContextMeta)).shared),
+        std::mem::ManuallyDrop::new(OnceLock::new()),
+    );
     glib::ffi::GTRUE
 }
 unsafe extern "C" fn free(meta: *mut gst::ffi::GstMeta, _: *mut gst::ffi::GstBuffer) {
     std::mem::ManuallyDrop::drop(&mut (*(meta as *mut ContextMeta)).token);
+    std::mem::ManuallyDrop::drop(&mut (*(meta as *mut ContextMeta)).shared);
 }
 unsafe extern "C" fn transform(
     dest: *mut gst::ffi::GstBuffer,
@@ -68,13 +76,12 @@ unsafe extern "C" fn transform(
     if !gst::ffi::gst_buffer_get_meta(dest, api()).is_null() {
         return glib::ffi::GTRUE;
     }
-    (!gst::ffi::gst_buffer_add_meta(dest, info(), &token as *const Token as *mut _).is_null())
-        .into_glib()
+    install_meta(dest, &token).into_glib()
 }
 
-// Shared buffers retain a common ancestor. Sidecar pointers are installed once
-// and remain stable until buffer destruction, so existing buffers synchronize
-// only with their own readers/writers. The global lock covers first installation.
+// Initially shared buffers without our meta still need a qdata sidecar. Pointers
+// remain stable until buffer destruction. INSTALL_LOCK covers first installation;
+// GStreamer's qdata getter also takes its own global lock on every lookup.
 static FALLBACK_QUARK: LazyLock<glib::Quark> =
     LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v3"));
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
@@ -102,7 +109,29 @@ unsafe fn fallback(buffer: &gst::Buffer, create: bool) -> Option<&Fallback> {
     ptr.as_ref()
 }
 
+// The caller owns writable metadata access and has checked that no context meta
+// is installed. This also applies to a metadata transform's destination buffer.
+unsafe fn install_meta(buffer: *mut gst::ffi::GstBuffer, token: &Token) -> bool {
+    // Retire an initially-shared override before installing a meta. Otherwise
+    // removing that meta later could resurrect stale context.
+    let sidecar = gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib())
+        as *const Fallback;
+    if let Some(sidecar) = sidecar.as_ref() {
+        *sidecar.token.write().unwrap() = None;
+    }
+    !gst::ffi::gst_buffer_add_meta(buffer, info(), token as *const Token as *mut _).is_null()
+}
+
 unsafe fn read_raw(buffer: *mut gst::ffi::GstBuffer) -> Option<Token> {
+    let meta = gst::ffi::gst_buffer_get_meta(buffer, api()) as *const ContextMeta;
+    if !meta.is_null() {
+        if let Some(shared) = (*meta).shared.get() {
+            if let Some(token) = &*shared.token.read().unwrap() {
+                return Some(token.clone());
+            }
+        }
+        return Some(Token::clone(&(*meta).token));
+    }
     // The caller's buffer reference keeps this permanently installed slot alive.
     let sidecar = gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib())
         as *const Fallback;
@@ -111,8 +140,7 @@ unsafe fn read_raw(buffer: *mut gst::ffi::GstBuffer) -> Option<Token> {
             return Some(token.clone());
         }
     }
-    let meta = gst::ffi::gst_buffer_get_meta(buffer, api()) as *const ContextMeta;
-    (!meta.is_null()).then(|| Token::clone(&(*meta).token))
+    None
 }
 
 pub(crate) fn read(buffer: &gst::Buffer) -> Option<Token> {
@@ -123,18 +151,16 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
     unsafe {
         let ptr = buffer.as_ptr() as *mut gst::ffi::GstBuffer;
         let mini = ptr.cast();
+        let meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
         if gst::ffi::gst_mini_object_is_writable(mini) != glib::ffi::GFALSE {
-            if let Some(sidecar) = fallback(buffer, false) {
-                *sidecar.token.write().unwrap() = None;
-            }
-            let meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
             if meta.is_null() {
-                if gst::ffi::gst_buffer_add_meta(ptr, info(), token as *const Token as *mut _)
-                    .is_null()
-                {
+                if !install_meta(ptr, token) {
                     counters.local().propagation_misses.fetch_add(1, Relaxed);
                 }
             } else {
+                if let Some(shared) = (*meta).shared.get() {
+                    *shared.token.write().unwrap() = None;
+                }
                 // No outstanding borrowed token escapes read(); buffer writability
                 // excludes concurrent access to its metadata.
                 // Rejected descendants carry the same decision and identity.
@@ -145,7 +171,17 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
             }
         } else {
             counters.local().propagation_fallbacks.fetch_add(1, Relaxed);
-            if !is_root && !gst::ffi::gst_buffer_get_meta(ptr, api()).is_null() {
+            if !meta.is_null() {
+                if is_root {
+                    // The metadata remains installed while this buffer is shared.
+                    // Only OnceLock/RwLock fields are mutated through shared access.
+                    let shared = (*meta).shared.get_or_init(|| {
+                        Box::new(Fallback {
+                            token: RwLock::new(None),
+                        })
+                    });
+                    *shared.token.write().unwrap() = Some(token.clone());
+                }
                 return;
             }
             let sidecar = fallback(buffer, true).unwrap();
@@ -225,6 +261,87 @@ mod tests {
         // Sidecars cannot survive a copy of a buffer that had no writable meta.
         assert!(read(&buffer.copy()).is_none());
         assert_eq!(stats.snapshot().propagation_fallbacks, 2);
+    }
+
+    #[test]
+    fn installing_metadata_retires_the_initially_shared_override() {
+        gst::init().unwrap();
+        for copy in [false, true] {
+            let mut buffer = gst::Buffer::new();
+            let shared = buffer.clone();
+            let stats = Counters::default();
+            let old = token(1);
+            let new = token(2);
+            write(&buffer, &old, true, &stats);
+            assert_eq!(read(&shared).unwrap(), old);
+            drop(shared);
+            if copy {
+                let source = gst::Buffer::new();
+                write(&source, &new, true, &stats);
+                source
+                    .copy_into(buffer.get_mut().unwrap(), gst::BufferCopyFlags::META, ..)
+                    .unwrap();
+            } else {
+                write(&buffer, &new, true, &stats);
+            }
+            assert_eq!(read(&buffer).unwrap(), new);
+            unsafe {
+                assert!(fallback(&buffer, false)
+                    .unwrap()
+                    .token
+                    .read()
+                    .unwrap()
+                    .is_none());
+                let ptr = buffer.as_ptr().cast_mut();
+                let meta = gst::ffi::gst_buffer_get_meta(ptr, api());
+                assert!(!meta.is_null());
+                assert_ne!(
+                    gst::ffi::gst_buffer_remove_meta(ptr, meta),
+                    glib::ffi::GFALSE
+                );
+            }
+            assert!(read(&buffer).is_none());
+            assert_eq!(Arc::strong_count(old.trace_state.as_ref().unwrap()), 1);
+            assert_eq!(Arc::strong_count(new.trace_state.as_ref().unwrap()), 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_shared_metadata_overrides_and_copies_keep_owned_tokens() {
+        gst::init().unwrap();
+        let buffer = gst::Buffer::new();
+        let stats = Counters::default();
+        let tokens: Vec<_> = (1..=8).map(token).collect();
+        write(&buffer, &tokens[0], true, &stats);
+        let barrier = std::sync::Barrier::new(tokens.len());
+        std::thread::scope(|scope| {
+            for token in &tokens {
+                let buffer = buffer.clone();
+                let stats = &stats;
+                let barrier = &barrier;
+                let tokens = &tokens;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..500 {
+                        write(&buffer, token, true, stats);
+                        assert!(tokens.contains(&read(&buffer).unwrap()));
+                        let copy = buffer.copy();
+                        let copied = read(&copy).unwrap();
+                        assert!(tokens.contains(&copied));
+                        // Later overrides cannot mutate the copy's owned context.
+                        write(&buffer, token, true, stats);
+                        assert_eq!(read(&copy).unwrap(), copied);
+                    }
+                });
+            }
+        });
+        assert_eq!(stats.snapshot().propagation_fallbacks, 8_000);
+        write(&buffer, &tokens[0], true, &stats);
+        assert_eq!(read(&buffer).unwrap(), tokens[0]);
+        drop(buffer);
+        for token in tokens {
+            assert_eq!(Arc::strong_count(token.trace_state.as_ref().unwrap()), 1);
+        }
     }
 
     #[test]
