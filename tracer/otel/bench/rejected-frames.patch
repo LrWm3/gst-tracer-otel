@@ -1,0 +1,93 @@
+diff --git a/tracer/otel/src/capture.rs b/tracer/otel/src/capture.rs
+index 2cd26a2..49e3af3 100644
+--- a/tracer/otel/src/capture.rs
++++ b/tracer/otel/src/capture.rs
+@@ -76,17 +76,26 @@ pub(crate) struct Record {
+ }
+ struct Frame {
+     pad: usize,
+-    token: Token,
+     recording: bool,
++    owns_context: bool,
+ }
+ #[derive(Default)]
+ struct ThreadState {
+     frames: Vec<Frame>,
++    contexts: Vec<Token>,
+     sampled: Vec<Record>,
+     overflow: usize,
+     info: Option<Arc<ThreadInfo>>,
+ }
+-thread_local! { static LOCAL: RefCell<ThreadState> = RefCell::new(ThreadState::default()); }
++thread_local! {
++    static LOCAL: RefCell<ThreadState> = const { RefCell::new(ThreadState {
++        frames: Vec::new(),
++        contexts: Vec::new(),
++        sampled: Vec::new(),
++        overflow: 0,
++        info: None,
++    }) };
++}
+
+ fn root(ratio: f64) -> Token {
+     // External unsampled contexts must remain unsampled, including at sources.
+@@ -119,7 +128,7 @@ pub(crate) fn current_context() -> Option<SpanContext> {
+         local
+             .try_borrow()
+             .ok()
+-            .and_then(|s| s.frames.last().map(|f| f.token.context()))
++            .and_then(|s| s.contexts.last().map(Token::context))
+     })
+ }
+
+@@ -130,7 +139,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
+             state.overflow += 1;
+             (true, None)
+         } else {
+-            (false, state.frames.last().map(|frame| frame.token.clone()))
++            (false, state.contexts.last().cloned())
+         }
+     });
+     if overflow {
+@@ -139,6 +148,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
+     }
+     // A real source starts a new buffer journey, even when a buffer was recycled.
+     let is_root = inherited.is_none() && crate::metadata::is_source(pad);
++    let new_context = inherited.is_none();
+     let parent_token = inherited.unwrap_or_else(|| {
+         if is_root {
+             root(runtime.config.ratio)
+@@ -206,13 +216,19 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
+     LOCAL.with(|local| {
+         let mut state = local.borrow_mut();
+         let recording = record.is_some();
++        // Rejected descendants retain exactly the same context as their parent.
++        // Store it once for that nested run instead of in every push frame.
++        let owns_context = new_context || token.sampled();
++        if owns_context {
++            state.contexts.push(token);
++        }
+         if let Some(record) = record {
+             state.sampled.push(record);
+         }
+         state.frames.push(Frame {
+             pad: pad.as_ptr() as usize,
+-            token,
+             recording,
++            owns_context,
+         })
+     });
+ }
+@@ -232,7 +248,11 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32)
+             runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
+             return None;
+         }
+-        if state.frames.pop().unwrap().recording {
++        let frame = state.frames.pop().unwrap();
++        if frame.owns_context {
++            state.contexts.pop();
++        }
++        if frame.recording {
+             state.sampled.pop()
+         } else {
+             None

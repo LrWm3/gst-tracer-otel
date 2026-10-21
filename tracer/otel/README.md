@@ -1,105 +1,287 @@
-# OpenTelemetry Tracer for GStreamer
+# OpenTelemetry push tracing for GStreamer
 
-This folder contains the implementation of an OpenTelemetry (OTLP) tracer for GStreamer, enabling distributed tracing and metrics collection for GStreamer pipelines using the OpenTelemetry protocol.
+`otel-tracer` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
+It does not create live SDK spans, install a global tracer provider, or start a
+Pyroscope agent. Profile correlation needs a separate implementation; the old
+span processor has been removed. The independent Pyroscope tracer is unchanged.
+Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
-## Overview
+## Run
 
-This tracer integrates with GStreamer to provide observability features such as:
-
-- OpenTelemetry spans for GStreamer element pads and traces following Gstreamer buffers.
-- Records buffer flow and latency as distributed traces.
-- Exports traces via OTLP (HTTP).
-- Integrates with GStreamer's logging system for structured logs, with logs containing trace and span context for correlation with traces.
-- Supports custom attributes for spans, including pad names, element names, buffer IDs, timestamps, and thread information.
-- Future work will include metric collection and export with exemplars for correlation with traces and logs.
-
-## Warning
-
-This plugin was an early experiment when I was still learning the basics of Rust, Gstreamer and OpenTelemetry.
-
-The code is poorly structured, unoptimized, and has many allocations on the critical path. It is not recommended for production use.
-
-It is extraordinarily slow compared to `prom-latency`. It is primarily intended for educational purposes and to demonstrate how one could to integrate OpenTelemetry with GStreamer in a meaningful way.
-
-The [tracing-gstreamer](https://github.com/standard-ai/tracing-gstreamer) repository partially inspired this work, as it
-allows for otel traces to be collected via the tracing framework & using an otel bridge, but this was done in such a way that did not feel particularly idiomatic to me from the perspective of a GStreamer developer.
-
-Additionally, I need to revisit latency calculations for this plugin to ensure they are correct, as they were
-incorrect in `prom-latency` and were only recently fixed.
-
-Once I am done improving `prom-latency`, I will revisit this plugin to ensure it is correct and performant and
-will remove this warning.
-
-## How it works
-
-This plugin uses the OpenTelemetry Rust SDK to create spans for GStreamer elements and their pads. It captures buffer flow through the pipeline, recording timestamps and other metadata. The spans are exported using the OTLP exporter, which can be configured to send data to an OpenTelemetry collector or backend.
-
-Tracing in gstreamer is complicated by the thread management and by the fact that buffers may be artibrarily destroyed, reallocted, or bundled. The tracer handles these complexities by:
-
-- Creating spans for each GStreamer element and its pads.
-- Attaching spans to pad Quarks to allow for later retrieval of span information.
-- Using Otelmetry's `Context` to manage trace context within thread local storage, allowing for the propagation of active span context within the context of a single thread.
-- Using GStreamer buffer metadata to propagate trace context to relate parent and child spans across thread boundaries.
-
-## Installation
-
-First build the plugin:
-
-```bash
-# from the root of this repository
-cd $(git rev-parse --show-toplevel)
-
-# Build the otel-tracer plugin
+```sh
 cargo build --release -p gst-otel-tracer
-
-# or from anywhere
-just build-package gst-otel-tracer
-```
-
-Then copy the built plugin into a directory on your GStreamer plugin search path, or update `GST_PLUGIN_PATH`:
-
-```bash
-# System-wide install (requires permissions)
-sudo cp target/release/libgst*.so /usr/lib/gstreamer-1.0/
-
-# Or for a local setup (debug)
-export GST_PLUGIN_PATH="$PWD/target/debug/:$GST_PLUGIN_PATH"
-
-# Or local setup (release)
-export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-```
-
-## Usage
-
-Enable the tracer by setting the following environment variables before running your pipeline:
-
-```bash
-export GST_PLUGIN_PATH="$PWD/target/release/:$PWD/target/debug/:$GST_PLUGIN_PATH"
-export GST_TRACERS='otel-tracer(flags=element)'
-# Optionally set GST_DEBUG to see debug logs
-# Leave GST_DEBUG unset in production
-export GST_DEBUG=GST_TRACER:5,otel-tracer:6
-
-# Configure the OpenTelemetry exporter
-# See Otel official documentation for more options: https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#general-sdk-configuration
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http
+export GST_PLUGIN_PATH="$PWD/target/release"
+export GST_TRACERS=otel-tracer
 export OTEL_SERVICE_NAME=gstreamer-pipeline
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+gst-launch-1.0 videotestsrc num-buffers=100 ! videoconvert ! fakesink
 ```
 
-Deploy a OpenTelemetry collector to receive the traces
+The tracer uses OpenTelemetry Rust 0.33.1 for context, IDs, resource detection,
+and the optional log exporter. Traces use a dedicated OTLP/HTTP protobuf encoder
+and reqwest 0.13 transport. HTTPS uses Rustls with the platform's native trust
+roots. This build supports HTTP protobuf without compression. `OTEL_SERVICE_NAME`
+and `OTEL_RESOURCE_ATTRIBUTES` are read by the SDK's resource detectors.
 
-```bash
-# Run a local OpenTelemetry collector with Grafana as the UI
-# 4318 is http otel which we are using; 4040 is profiles and 4317 is grpc otel
-# grpc otel has not been tested yet.
-docker run -p 3000:3000 -p 4040:4040 -p 4317:4317 -p 4318:4318 -d grafana/otel-lgtm
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used exactly; otherwise `/v1/traces` is
+appended to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `_TIMEOUT` override their general OTLP
+counterparts. Headers use comma-separated, percent-encoded key/value pairs;
+timeouts are milliseconds and default to 10000. Unsupported protocol or
+compression settings disable tracing with an initialization error.
+
+## Capture and export
+
+A source starts a trace for each buffer journey. Synchronous nested pushes use a
+bounded thread-local stack. Buffer metadata carries an owned correlation token
+across queues and clones ownership when buffers are copied or transformed. A
+recycled source buffer starts a fresh journey. An external valid OTel context at
+the source supplies the parent, sampling decision, and trace state. OTLP records
+whether that parent is remote; subsequent locally captured spans have local
+parents, including across queues.
+
+Pad/element names, paths, and peer descriptions are cached per pad. Weak
+subscriptions to the pad, its peer, and their ancestors invalidate descriptions
+when those objects change. Unrelated pipelines do not invalidate the cache.
+Pending records retain their captured description. Cached descriptors own
+strings, not pad references. First sampled use and invalidation rebuild metadata
+on the streaming thread; the steady path does no descriptive formatting. Thread
+descriptions are cached on first sampled use of each thread.
+
+Rejected traces propagate a rejection token without loading descriptions,
+reading buffer sizes, creating attributes, or enqueuing records. Source
+classification is cached separately; rejected synchronous descendants do not
+consult the pad cache at all. Roots with a zero sampling ratio need no random
+IDs. Rejected frames store just pad identity and the correlation token; sampled
+records use a separate stack. Unchanged rejected metadata tokens are not rewritten,
+while external identity and recycled-root decisions remain intact.
+Partial sampling generates a trace ID once per root using the SDK 0.33 ratio
+algorithm; descendants inherit the result.
+Each begin hook resolves the capture thread-local state once. Its borrows end
+before calling GStreamer, preserving reentrant callbacks and log correlation.
+
+Sampled pushes capture IDs, monotonic timestamps, buffer identity/size, thread
+identity, a descriptor reference, and the flow result. Post hooks use a bounded
+nonblocking queue. One worker drains compact records into reusable batches and
+encodes them directly into OTLP protobuf. Static site and thread attributes are
+encoded once on the worker and cached with their descriptions. Resource and scope
+headers are encoded once per exporter. Dynamic integers, IDs, timestamps, status,
+and flags are written directly, without `SpanData` or per-span protobuf objects.
+The SDK conversion remains a test oracle for decoded message equivalence.
+
+The worker reuses its encoding buffers and sends reference-counted `Bytes`
+bodies, without cloning the encoded payload. A single request is in flight at a
+time. Both blocking and worker-owned asynchronous reqwest adapters are available;
+neither depends on an application Tokio runtime. Logs retain the upstream SDK
+exporter. Producer handoffs remain individual records: a measured batching
+experiment increased streaming CPU and was removed.
+The first sampled hook anchors GStreamer's monotonic clock to wall time; later
+wall-clock adjustments do not change recorded durations.
+
+Spans are named `gst.pad.push`, with `src_pad.*`, `sink_pad.*`, `buffer.id`,
+`buffer.size`, `thread.id`, `thread.name`, `ts.start`, `ts.end`, and
+`gst.flow_return` attributes. A negative flow return sets error status. Duration
+is the inclusive push call, including synchronous downstream work; it is not
+exclusive element processing time or end-to-end buffer latency.
+
+## Configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also accepts `parentbased_always_off` and `parentbased_traceidratio` |
+| `OTEL_TRACES_SAMPLER_ARG` | Required for ratio sampler | Finite number between 0 and 1 |
+| `GST_OTEL_QUEUE_CAPACITY` | 8192 | Pending compact records, 1–1048576 |
+| `GST_OTEL_BATCH_SIZE` | 512, capped by queue size | Worker batch, 1–queue capacity |
+| `GST_OTEL_HTTP_CLIENT` | blocking | `blocking` or `async`; both send one batch at a time |
+| `GST_OTEL_EXPORT_INTERVAL_MS` | 200 | Partial batch export interval, 1–60000 ms |
+| `GST_OTEL_FLUSH_TIMEOUT_MS` | 10000 | Pipeline-stop drain deadline, 1–60000 ms |
+| `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` | 128 | 0–4096; omitted attributes increment OTLP's dropped count |
+| `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` | 4096 | 1–1048576 Unicode characters per descriptive value |
+| `GST_OTEL_LOGS` | false | `true` or `1` opts into the separate debug-log bridge |
+
+Invalid tracing configuration disables hooks and emits an `otel-tracer` error.
+Non-parent-based and custom samplers are not supported. `OTEL_BSP_*` does not
+configure this worker; there is no SDK batch span processor. No events or links
+are currently produced. SDK span processors and custom global tracer providers
+do not intercept this export path.
+
+The memory bound is a queue plus one export batch, up to 256 nested frames per
+streaming thread, and metadata for live pads/buffers. Counters and in-progress
+submission counts use 64 fixed, cache-aligned shards selected per thread;
+additional threads share shards safely, and retired threads leave their totals
+available without an accumulating registry. The worker's reusable OTLP buffers
+are bounded by the batch and a 64 MiB encoded request limit. Cached encoded
+attributes live with their descriptors; invalidation creates a new descriptor
+while pending records retain the old one. Thread and pipeline counts remain
+application-controlled. Overflow drops the new record; it never waits for the
+receiver. A failed export counts the entire attempted batch as failed, with no
+additional retry queue. Trace transport makes one export attempt per batch; SDK log-exporter retries
+are explicitly disabled. Responses are consumed for connection reuse and capped
+at 4 MiB. Non-success HTTP status, request timeout, oversized responses, and
+encoded bodies over 64 MiB count the attempted trace batch as failed. A timeout can leave
+delivery uncertain, and exporter
+success does not guarantee durable storage or detect collector partial rejection.
+
+## Sampling
+
+Sampling is decided once for each new root buffer journey. For example, to
+record approximately 10% of roots:
+
+```sh
+export OTEL_TRACES_SAMPLER=parentbased_traceidratio
+export OTEL_TRACES_SAMPLER_ARG=0.1
 ```
 
-Then launch your pipeline as usual, for example:
+Every descendant inherits that decision, including across queue boundaries and
+buffer copies that preserve metadata. This samples whole trace journeys, not
+individual pushes. If an external valid parent is present, its sampled flag
+wins over the root ratio: even at 0%, a sampled external parent is recorded.
+`parentbased_always_off` rejects new roots with the same parent-preserving behavior;
+the default `parentbased_always_on` samples all new roots.
 
-```bash
-gst-launch-1.0 videotestsrc ! videoconvert ! autovideosink
+At 0%, rejected roots avoid random IDs, descriptive metadata, record creation,
+serialization, and export. GStreamer still dispatches the registered hooks, and
+the tracer still tracks nesting, propagates rejection, and counts unsampled
+pushes. This prevents downstream stages from resampling rejected work. To remove
+the OTel hooks, omit `otel-tracer` from `GST_TRACERS` before process startup.
+Other active tracers can still incur GStreamer's shared dispatch overhead.
+
+## Performance and sampling cost
+
+The last isolated plugin comparison used stock GStreamer 1.24.2, Rust 1.89,
+release builds, one stream, 10000 buffers, and five pushes per buffer. Logging
+was disabled; a local HTTP/1.0 collector received exports with a 65536-record
+queue and batches of 512. Median CPU milliseconds over seven repetitions:
+
+| Sampling | Source-thread CPU | Process CPU, including drain |
+| --- | ---: | ---: |
+| Tracer disabled | 20.92 | 21.82 |
+| 0% | 42.87 | 44.00 |
+| 10% | 48.08 | 59.44 |
+| 100% | 56.09 | 94.88 |
+
+These measurements were recorded for plugin commit `8b519d8`, before merging
+`main`'s GStreamer Rust binding upgrade. They include ordinary pipeline work,
+and are a small synthetic workload, not a production overhead guarantee. All
+healthy fully sampled runs delivered 50000 spans without drops or pending
+records. The final TLS optimization reduced 0% source CPU from 44.95 to 42.87 ms
+(4.6%); at 16 streams the smaller difference was comparable to control variation.
+See [rejected-path measurements](bench/REJECTED_RESULTS.md) for paired results,
+parallel streams, tee/queue workloads, failure accounting, and raw data.
+
+Zero sampling still costs roughly twice the disabled source CPU in this case.
+A separate empty-hook benchmark identifies substantial overhead in GStreamer's
+dispatcher, before the tracer's own capture work. Further reductions therefore
+have limits within the plugin alone. An experimental GStreamer 1.24.2 dispatcher
+patch is retained under `bench/` for research; deploying it is deferred because
+it requires rebuilding the core library. Its larger gains are separate from the
+plugin measurements above, and it is not part of normal installation or the
+supported runtime setup.
+
+## Drain and counters
+
+A successful pipeline transition from READY to NULL flushes completed records.
+Stop streaming before requesting the final drain. Flush covers records enqueued
+before its queue marker, not open pushes or concurrent later submissions. Rust
+applications can use:
+
+```rust,ignore
+let counters = gstoteltracer::flush(std::time::Duration::from_secs(5))?;
+let snapshot = gstoteltracer::stats()?;
+gstoteltracer::shutdown(std::time::Duration::from_secs(5))?;
 ```
 
-Now navigate to `http://localhost:3000` to access the Grafana UI and view your traces and logs.
+Shutdown closes submissions, drains accepted records, and shuts down the
+exporter. It is process-wide and cannot be restarted. Records completing after
+closure increment `dropped_closed`. On a caller timeout, the worker may still be
+finishing a request; counters remain inspectable, and shutdown may be retried.
+Abrupt process termination cannot guarantee a drain.
+
+C and other GStreamer applications can find the tracer through
+`gst_tracing_get_active_tracers()` and read its `stats` property, a `GstStructure`.
+The same cumulative fields are available through the Rust API:
+
+- `started_spans`, `completed_spans`, `enqueued_spans`, `exported_spans`.
+- `dropped_queue_full`, `dropped_closed`, `failed_export_spans`, `failed_exports`.
+- `pending_spans`, including queued, batched, and currently exporting records.
+- `unsampled_pushes`, `skipped_closed` (sampled pushes begun after shutdown),
+  `propagation_misses`, `propagation_fallbacks`,
+  `dropped_depth`, `mismatched_hooks`.
+
+At quiescence, completed = exported + failed-export + queue-full + closed +
+pending. Started − completed identifies open pushes. Counters are a concurrent
+snapshot, not an atomic transaction. `pending_spans` is derived from enqueued
+minus exported/failed spans and clamps transient inconsistent reads to zero;
+it is exact after producers stop and a successful drain completes.
+Record loss can produce incomplete traces
+and missing parents; sampling decisions do not change when telemetry is dropped.
+`flush` reports export failures since the previous flush; cumulative counters
+retain all failures, including ones already reported during pipeline stop.
+
+## Correlation boundaries
+
+- Shared buffers cannot safely accept mutable metadata. Branches retain the
+  last common ancestor; exact immediate parentage across every branch is not
+  promised. A shared root can replace that ancestor through a lazily initialized,
+  synchronized slot owned by our metadata. Routine metadata propagation does not
+  consult mini-object qdata. An initially shared buffer without our metadata uses
+  a qdata sidecar; its installation and GStreamer's qdata lookup use global locks.
+  Copying a buffer without our metadata cannot copy the sidecar. Installing or
+  copying our metadata into a writable buffer retires its old qdata override.
+  A later asynchronous
+  push with missing context is counted and suppressed, never resampled as a root.
+- Elements that strip metadata or create unrelated buffers asynchronously need
+  element-specific propagation. Generic fan-in retains the first copied input
+  context and does not reconstruct multi-input links. Buffer lists and pull-mode
+  operations are outside the current push-hook coverage.
+- Capture does not attach SDK contexts per push. Application instrumentation can
+  explicitly bridge `current_span_context()` if it needs a child SDK span. The
+  optional log bridge uses native log trace/span fields from the capture stack.
+- Debug log formatting still runs on the caller thread when opted in. Logs use
+  their own SDK batch processor, queue, and accounting; the trace limits and
+  counters do not cover logs. The standard GStreamer log handler remains active.
+
+## Validation and benchmark
+
+```sh
+cargo test -p gst-otel-tracer
+cargo build --release -p gst-otel-tracer
+python3 tracer/otel/bench/run.py
+# Compare against a separately built old plugin with Pyroscope removed:
+python3 tracer/otel/bench/run.py --baseline /path/to/old/plugin/directory
+# Compare compact-capture versions, including parallel streams and sampling:
+python3 tracer/otel/bench/run.py --baseline /path/to/compact-v1 \
+  --baseline-sampling --baseline-disabled --streams 1 4 16 --repeats 5 --drain-ms 0
+# Measure the GStreamer tracing floor with empty push callbacks:
+python3 tracer/otel/bench/run.py --modes none hooks unsampled sampled --drain-ms 0
+```
+
+The Linux benchmark needs a C compiler, GStreamer development files, and Python.
+It measures 10000 buffers total, divided between `--streams` independent sources,
+with five pushes per buffer, against a local receiver. It records pipeline wall
+time, summed source-thread CPU, process CPU including export
+drain, exporter CPU at Linux scheduler-tick resolution, actual received spans,
+and the tracer's counters. Logging is disabled. Healthy cases use a 65536-record
+queue to compare full delivery; slow/absent cases deliberately use a queue of
+128 and batches of 64. `--churn-every 10` renames an unrelated element every ten
+source buffers; `--tee-queues` substitutes tee/queue stages to exercise shared
+buffers and asynchronous propagation (source CPU then excludes queue threads).
+Results and logs go under `target/otel-bench`. See the
+[follow-up measurements](bench/FOLLOWUP_RESULTS.md) for results and limitations.
+The [0.33.1 upgrade results](bench/UPGRADE_RESULTS.md) cover the previous SDK
+export path. [Direct export measurements](bench/DIRECT_RESULTS.md) compare the
+current encoder and transport, rejected producer batching, adapter/batch-size
+experiments, and isolated encoding cost. Use `--http-client`, `--batch-size`, and
+`--keep-alive` to reproduce transport comparisons. The default benchmark collector
+uses HTTP/1.0; `--keep-alive` tests persistent HTTP/1.1 connections.
+[Capture propagation measurements](bench/CAPTURE_RESULTS.md) compare the next
+iteration against direct export, including disabled controls, the empty-hook
+diagnostic, and isolated rejected-capture timings. The `hooks` mode registers
+benchmark-only empty C callbacks; it does not run the OTel tracer.
+[Rejected-path measurements](bench/REJECTED_RESULTS.md) cover the subsequent
+TLS improvement and the deferred GStreamer 1.24.2 dispatcher prototype. The larger
+dispatcher gains require a rebuilt GStreamer; they are separate from improvements
+in this plugin. `--gst-library-path` and `--baseline-gst-library-path` select
+private core libraries for that experiment; `--baseline-hooks` also compares
+empty callbacks.
