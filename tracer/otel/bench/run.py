@@ -19,6 +19,9 @@ parser.add_argument('--buffers', type=int, default=10000, help='Total buffers sh
 parser.add_argument('--modes', nargs='+', choices=['none', 'hooks', 'sampled', 'unsampled', 'partial', 'slow', 'absent'], default=['none', 'sampled', 'unsampled', 'partial', 'slow', 'absent'], help='hooks runs benchmark-only empty push hooks')
 parser.add_argument('--baseline-sampling', action='store_true', help='Compare sampling modes too, for baselines that support them')
 parser.add_argument('--baseline-disabled', action='store_true', help='Also run a tracing-disabled control with the baseline plugin directory')
+parser.add_argument('--baseline-hooks', action='store_true', help='Also compare empty hooks, for private GStreamer build comparisons')
+parser.add_argument('--gst-library-path', type=Path, help='Private directory containing libgstreamer-1.0.so.0 for candidate runs')
+parser.add_argument('--baseline-gst-library-path', type=Path, help='Private libgstreamer directory for baseline runs')
 parser.add_argument('--drain-ms', type=int, default=2000, help='Use 0 when both plugins flush on pipeline NULL')
 parser.add_argument('--output', default='results.json')
 parser.add_argument('--batch-size', type=int, default=512)
@@ -98,6 +101,8 @@ base.update(GST_DEBUG='0',
 results = []
 configs = list(args.modes)
 if args.baseline:
+    if args.baseline_hooks and 'hooks' in configs:
+        configs.insert(configs.index('hooks'), 'baseline-hooks')
     if args.baseline_disabled and 'none' in configs:
         configs.insert(configs.index('none'), 'baseline-none')
     if 'sampled' in configs:
@@ -132,6 +137,10 @@ try:
                            OTEL_BENCH_DRAIN_MS=str(args.drain_ms),
                            OTEL_BENCH_CHURN_EVERY=str(args.churn_every),
                            OTEL_EXPORTER_OTLP_TRACES_TIMEOUT='200')
+                libraries = args.baseline_gst_library_path if baseline else args.gst_library_path
+                if libraries:
+                    env['LD_LIBRARY_PATH'] = str(libraries.resolve()) + (
+                        os.pathsep + base['LD_LIBRARY_PATH'] if base.get('LD_LIBRARY_PATH') else '')
                 if mode in ('slow', 'absent'):
                     env['GST_OTEL_BATCH_SIZE'] = '64'
                 if mode == 'absent':
@@ -154,6 +163,7 @@ try:
                               http_client=args.http_client,
                               keep_alive=args.keep_alive,
                               churn_every=args.churn_every, tee_queues=args.tee_queues,
+                              gst_library_path=str(libraries.resolve()) if libraries else 'default',
                               exit=process.returncode, received_spans=received - before)
                 if match:
                     result.update({k.decode(): int(v) for k, v in re.findall(rb'(\w+)=(\d+)', match[1])})

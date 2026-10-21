@@ -86,7 +86,14 @@ struct ThreadState {
     overflow: usize,
     info: Option<Arc<ThreadInfo>>,
 }
-thread_local! { static LOCAL: RefCell<ThreadState> = RefCell::new(ThreadState::default()); }
+thread_local! {
+    static LOCAL: RefCell<ThreadState> = const { RefCell::new(ThreadState {
+        frames: Vec::new(),
+        sampled: Vec::new(),
+        overflow: 0,
+        info: None,
+    }) };
+}
 
 fn root(ratio: f64) -> Token {
     // External unsampled contexts must remain unsampled, including at sources.
@@ -124,7 +131,19 @@ pub(crate) fn current_context() -> Option<SpanContext> {
 }
 
 pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-    let (overflow, inherited) = LOCAL.with(|local| {
+    LOCAL.with(|local| begin_local(local, runtime, ts, pad, buffer));
+}
+
+fn begin_local(
+    local: &RefCell<ThreadState>,
+    runtime: &Runtime,
+    ts: u64,
+    pad: &gst::Pad,
+    buffer: &gst::Buffer,
+) {
+    // Resolve TLS once. Individual borrows still end before GStreamer calls,
+    // allowing callbacks and the optional log bridge to inspect the context.
+    let (overflow, inherited) = {
         let mut state = local.borrow_mut();
         if state.overflow > 0 || state.frames.len() == MAX_DEPTH {
             state.overflow += 1;
@@ -132,7 +151,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
         } else {
             (false, state.frames.last().map(|frame| frame.token.clone()))
         }
-    });
+    };
     if overflow {
         runtime.stats.local().dropped_depth.fetch_add(1, Relaxed);
         return;
@@ -162,7 +181,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
         token.is_remote = false;
         runtime.anchor(ts);
         runtime.stats.local().started_spans.fetch_add(1, Relaxed);
-        let thread = LOCAL.with(|local| {
+        let thread = {
             let mut state = local.borrow_mut();
             state
                 .info
@@ -181,7 +200,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
                     })
                 })
                 .clone()
-        });
+        };
         Some(Record {
             site,
             token: token.clone(),
@@ -203,7 +222,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
         None
     };
     crate::propagation::write(buffer, &token, is_root, &runtime.stats);
-    LOCAL.with(|local| {
+    {
         let mut state = local.borrow_mut();
         let recording = record.is_some();
         if let Some(record) = record {
@@ -214,7 +233,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
             token,
             recording,
         })
-    });
+    }
 }
 
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) {

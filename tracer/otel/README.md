@@ -57,6 +57,8 @@ records use a separate stack. Unchanged rejected metadata tokens are not rewritt
 while external identity and recycled-root decisions remain intact.
 Partial sampling generates a trace ID once per root using the SDK 0.33 ratio
 algorithm; descendants inherit the result.
+Each begin hook resolves the capture thread-local state once. Its borrows end
+before calling GStreamer, preserving reentrant callbacks and log correlation.
 
 Sampled pushes capture IDs, monotonic timestamps, buffer identity/size, thread
 identity, a descriptor reference, and the flow result. Post hooks use a bounded
@@ -220,3 +222,9 @@ uses HTTP/1.0; `--keep-alive` tests persistent HTTP/1.1 connections.
 iteration against direct export, including disabled controls, the empty-hook
 diagnostic, and isolated rejected-capture timings. The `hooks` mode registers
 benchmark-only empty C callbacks; it does not run the OTel tracer.
+[Rejected-path measurements](bench/REJECTED_RESULTS.md) cover the subsequent
+TLS improvement and an optional GStreamer 1.24.2 dispatcher patch. The larger
+dispatcher gains require a rebuilt GStreamer; they are separate from improvements
+in this plugin. `--gst-library-path` and `--baseline-gst-library-path` select
+private core libraries for that experiment; `--baseline-hooks` also compares
+empty callbacks.

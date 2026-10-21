@@ -174,3 +174,25 @@ qdata fallback. The identity-pipeline comparison reduces source CPU by 2–3% at
 one stream and 6–9% at four/sixteen streams; tee/queue differences are smaller
 and noisy. See [capture results](tracer/otel/bench/CAPTURE_RESULTS.md) for all 422
 runs, the empty-hook diagnostic, and unchanged workspace check failures.
+
+## 7. Reduce rejected-push overhead
+
+Authorized by the user: "ok see if it can be improved". Baseline: `8e0f524`.
+
+- [x] Evaluate sharing rejected context across compact nested frames; discard
+  the prototype because pipeline results do not establish a consistent gain.
+- [x] Resolve capture TLS once per begin hook while retaining short borrows for
+  reentrant GStreamer callbacks and native log correlation.
+- [x] Prototype GStreamer filtering of unobserved tracepoints before timestamps
+  and hook-table lookups, preserving specific and wildcard callbacks.
+- [x] Complete final paired measurements and validation, with plugin-only gains
+  separated from gains requiring the optional GStreamer patch.
+
+The GStreamer experiment uses two private 1.24.2 builds with the same tracer
+plugin. The optional patch and its callback regression check are retained as
+reviewable artifacts. See [rejected-path results](tracer/otel/bench/REJECTED_RESULTS.md).
+The final plugin comparison lowers single-stream 0% source CPU by 4.6%. The
+private core comparison lowers it by 25.6%, with the same plugin on both sides.
+Core baseline and candidate share three threaded-test failures, documented with
+the optional patch's validation limits. All 598 pipeline runs preserve delivery
+or account for loss explicitly.
