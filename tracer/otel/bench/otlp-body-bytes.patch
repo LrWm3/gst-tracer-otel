@@ -1,0 +1,11 @@
+--- a/src/exporter/http/mod.rs
++++ b/src/exporter/http/mod.rs
+@@ -91 +91 @@
+-    pub body: Vec<u8>,
++    pub body: Bytes,
+@@ -445 +445 @@
+-            body,
++            body: body.into(),
+@@ -500 +500 @@
+-            .body(retry_data.body.clone().into())
++            .body(retry_data.body.clone())

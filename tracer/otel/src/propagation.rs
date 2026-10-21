@@ -137,7 +137,11 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
             } else {
                 // No outstanding borrowed token escapes read(); buffer writability
                 // excludes concurrent access to its metadata.
-                *(*meta).token = token.clone();
+                // Rejected descendants carry the same decision and identity.
+                // Compare the owned token, never just the recyclable buffer address.
+                if is_root || token.sampled() || *(*meta).token != *token {
+                    *(*meta).token = token.clone();
+                }
             }
         } else {
             counters.local().propagation_fallbacks.fetch_add(1, Relaxed);
@@ -221,6 +225,31 @@ mod tests {
         // Sidecars cannot survive a copy of a buffer that had no writable meta.
         assert!(read(&buffer.copy()).is_none());
         assert_eq!(stats.snapshot().propagation_fallbacks, 2);
+    }
+
+    #[test]
+    fn rejected_tokens_preserve_external_identity_across_reuse_and_copies() {
+        gst::init().unwrap();
+        let stats = Counters::default();
+        let buffer = gst::Buffer::new();
+        let mut rejected = token(1);
+        rejected.flags = TraceFlags::default();
+        rejected.is_remote = true;
+        write(&buffer, &rejected, true, &stats);
+        for _ in 0..100 {
+            write(&buffer, &rejected, false, &stats);
+        }
+        assert_eq!(read(&buffer).unwrap(), rejected);
+        let copy = buffer.copy();
+        assert_eq!(read(&copy).unwrap(), rejected);
+        rejected.trace_id = TraceId::from(2);
+        write(&buffer, &rejected, true, &stats);
+        assert_eq!(read(&buffer).unwrap(), rejected);
+        assert_ne!(read(&copy).unwrap(), rejected);
+        // A descendant with a different inherited identity still replaces it.
+        rejected.span_id = SpanId::from(99);
+        write(&copy, &rejected, false, &stats);
+        assert_eq!(read(&copy).unwrap(), rejected);
     }
 }
 

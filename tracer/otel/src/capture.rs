@@ -12,7 +12,7 @@ use crate::export::{text_value, Runtime};
 const MAX_DEPTH: usize = 256;
 static IDS: LazyLock<RandomIdGenerator> = LazyLock::new(RandomIdGenerator::default);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Token {
     pub trace_id: TraceId,
     pub span_id: SpanId,
@@ -57,9 +57,11 @@ impl Token {
 pub(crate) use crate::metadata::Site;
 
 pub(crate) struct ThreadInfo {
+    pub encoded: std::sync::OnceLock<crate::wire::EncodedAttributes>,
     pub id: Arc<str>,
     pub name: Arc<str>,
 }
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct Record {
     pub site: Arc<Site>,
     pub token: Token,
@@ -75,11 +77,12 @@ pub(crate) struct Record {
 struct Frame {
     pad: usize,
     token: Token,
-    record: Option<Record>,
+    recording: bool,
 }
 #[derive(Default)]
 struct ThreadState {
     frames: Vec<Frame>,
+    sampled: Vec<Record>,
     overflow: usize,
     info: Option<Arc<ThreadInfo>>,
 }
@@ -166,6 +169,7 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
                 .get_or_insert_with(|| {
                     let thread = std::thread::current();
                     Arc::new(ThreadInfo {
+                        encoded: Default::default(),
                         id: text_value(
                             &format!("{:?}", thread.id()),
                             runtime.config.value_length_limit,
@@ -200,16 +204,21 @@ pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Bu
     };
     crate::propagation::write(buffer, &token, is_root, &runtime.stats);
     LOCAL.with(|local| {
-        local.borrow_mut().frames.push(Frame {
+        let mut state = local.borrow_mut();
+        let recording = record.is_some();
+        if let Some(record) = record {
+            state.sampled.push(record);
+        }
+        state.frames.push(Frame {
             pad: pad.as_ptr() as usize,
             token,
-            record,
+            recording,
         })
     });
 }
 
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) {
-    let frame = LOCAL.with(|local| {
+    let record = LOCAL.with(|local| {
         let mut state = local.borrow_mut();
         if state.overflow > 0 {
             state.overflow -= 1;
@@ -223,9 +232,13 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
             runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
             return None;
         }
-        state.frames.pop()
+        if state.frames.pop().unwrap().recording {
+            state.sampled.pop()
+        } else {
+            None
+        }
     });
-    if let Some(mut record) = frame.and_then(|f| f.record) {
+    if let Some(mut record) = record {
         record.end = ts;
         record.flow_return = flow_return;
         runtime.submit(record);
@@ -369,6 +382,42 @@ mod tests {
         assert_eq!(runtime.stats.snapshot().dropped_depth, 10);
         assert_eq!(runtime.stats.snapshot().mismatched_hooks, 0);
         runtime.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn sampled_stack_recovers_from_overflow_and_closed_nested_pushes() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let buffer = gst::Buffer::new();
+        let runtime = runtime(Config::default(), Collector::default());
+        for ts in 0..MAX_DEPTH + 3 {
+            begin(&runtime, ts as u64, &pad, &buffer);
+        }
+        for ts in MAX_DEPTH + 3..2 * (MAX_DEPTH + 3) {
+            end(&runtime, ts as u64, &pad, 0);
+        }
+        assert!(current_context().is_none());
+        assert_eq!(runtime.stats.snapshot().dropped_depth, 3);
+        assert_eq!(
+            runtime
+                .flush(Duration::from_secs(2))
+                .unwrap()
+                .exported_spans,
+            MAX_DEPTH as u64
+        );
+        begin(&runtime, 1000, &pad, &buffer);
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        begin(&runtime, 1001, &pad, &buffer); // sampled token, no recording after close
+        end(&runtime, 1002, &pad, 0);
+        assert!(current_context().unwrap().is_sampled());
+        end(&runtime, 1003, &pad, 0);
+        assert!(current_context().is_none());
+        let stats = runtime.stats.snapshot();
+        assert_eq!(stats.started_spans, stats.completed_spans);
+        assert_eq!(stats.dropped_closed, 1);
+        assert_eq!(stats.skipped_closed, 1);
+        assert_eq!(stats.mismatched_hooks, 0);
     }
 }
 

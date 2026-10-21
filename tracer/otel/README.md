@@ -17,11 +17,18 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 gst-launch-1.0 videotestsrc num-buffers=100 ! videoconvert ! fakesink
 ```
 
-The exporter uses OpenTelemetry Rust 0.33.1, including its endpoint, headers,
-request timeout, and resource environment configuration. HTTPS uses Rustls with
-the platform's native trust roots through reqwest 0.13. This build supports HTTP
-protobuf, not gRPC. `OTEL_SERVICE_NAME`
+The tracer uses OpenTelemetry Rust 0.33.1 for context, IDs, resource detection,
+and the optional log exporter. Traces use a dedicated OTLP/HTTP protobuf encoder
+and reqwest 0.13 transport. HTTPS uses Rustls with the platform's native trust
+roots. This build supports HTTP protobuf without compression. `OTEL_SERVICE_NAME`
 and `OTEL_RESOURCE_ATTRIBUTES` are read by the SDK's resource detectors.
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used exactly; otherwise `/v1/traces` is
+appended to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` and `_TIMEOUT` override their general OTLP
+counterparts. Headers use comma-separated, percent-encoded key/value pairs;
+timeouts are milliseconds and default to 10000. Unsupported protocol or
+compression settings disable tracing with an initialization error.
 
 ## Capture and export
 
@@ -45,18 +52,27 @@ Rejected traces propagate a rejection token without loading descriptions,
 reading buffer sizes, creating attributes, or enqueuing records. Source
 classification is cached separately; rejected synchronous descendants do not
 consult the pad cache at all. Roots with a zero sampling ratio need no random
-IDs. Partial sampling generates a trace ID once per root using the SDK 0.33 ratio
+IDs. Rejected frames store just pad identity and the correlation token; sampled
+records use a separate stack. Unchanged rejected metadata tokens are not rewritten,
+while external identity and recycled-root decisions remain intact.
+Partial sampling generates a trace ID once per root using the SDK 0.33 ratio
 algorithm; descendants inherit the result.
 
 Sampled pushes capture IDs, monotonic timestamps, buffer identity/size, thread
 identity, a descriptor reference, and the flow result. Post hooks use a bounded
-nonblocking queue. One worker enriches records into public `SpanData` batches,
-sets the resource on the OTLP exporter, and serializes/exports them directly.
-The worker drains up to 64 records between clock checks, preserves FIFO flush
-markers, and preallocates each replacement batch. Upstream OpenTelemetry 0.33.1
-consumes `SpanData` during protobuf conversion instead of cloning every span;
-the local vendored patch has been removed. The normal OTLP exporter and HTTP
-transport remain in use.
+nonblocking queue. One worker drains compact records into reusable batches and
+encodes them directly into OTLP protobuf. Static site and thread attributes are
+encoded once on the worker and cached with their descriptions. Resource and scope
+headers are encoded once per exporter. Dynamic integers, IDs, timestamps, status,
+and flags are written directly, without `SpanData` or per-span protobuf objects.
+The SDK conversion remains a test oracle for decoded message equivalence.
+
+The worker reuses its encoding buffers and sends reference-counted `Bytes`
+bodies, without cloning the encoded payload. A single request is in flight at a
+time. Both blocking and worker-owned asynchronous reqwest adapters are available;
+neither depends on an application Tokio runtime. Logs retain the upstream SDK
+exporter. Producer handoffs remain individual records: a measured batching
+experiment increased streaming CPU and was removed.
 The first sampled hook anchors GStreamer's monotonic clock to wall time; later
 wall-clock adjustments do not change recorded durations.
 
@@ -74,6 +90,7 @@ exclusive element processing time or end-to-end buffer latency.
 | `OTEL_TRACES_SAMPLER_ARG` | Required for ratio sampler | Finite number between 0 and 1 |
 | `GST_OTEL_QUEUE_CAPACITY` | 8192 | Pending compact records, 1–1048576 |
 | `GST_OTEL_BATCH_SIZE` | 512, capped by queue size | Worker batch, 1–queue capacity |
+| `GST_OTEL_HTTP_CLIENT` | blocking | `blocking` or `async`; both send one batch at a time |
 | `GST_OTEL_EXPORT_INTERVAL_MS` | 200 | Partial batch export interval, 1–60000 ms |
 | `GST_OTEL_FLUSH_TIMEOUT_MS` | 10000 | Pipeline-stop drain deadline, 1–60000 ms |
 | `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` | 128 | 0–4096; omitted attributes increment OTLP's dropped count |
@@ -90,14 +107,16 @@ The memory bound is a queue plus one export batch, up to 256 nested frames per
 streaming thread, and metadata for live pads/buffers. Counters and in-progress
 submission counts use 64 fixed, cache-aligned shards selected per thread;
 additional threads share shards safely, and retired threads leave their totals
-available without an accumulating registry. OTLP encoding temporarily
-allocates proportional to the bounded batch. Thread and pipeline counts remain
+available without an accumulating registry. The worker's reusable OTLP buffers
+are bounded by the batch and a 64 MiB encoded request limit. Cached encoded
+attributes live with their descriptors; invalidation creates a new descriptor
+while pending records retain the old one. Thread and pipeline counts remain
 application-controlled. Overflow drops the new record; it never waits for the
 receiver. A failed export counts the entire attempted batch as failed, with no
-additional retry queue. Exporter retries are explicitly disabled for traces and
-logs, preserving one attempt per batch despite the new 0.33 default. The HTTP
-exporter also rejects encoded request bodies larger than its default 64 MiB
-limit; rejected trace batches count as failed exports. A timeout can leave
+additional retry queue. Trace transport makes one export attempt per batch; SDK log-exporter retries
+are explicitly disabled. Responses are consumed for connection reuse and capped
+at 4 MiB. Non-success HTTP status, request timeout, oversized responses, and
+encoded bodies over 64 MiB count the attempted trace batch as failed. A timeout can leave
 delivery uncertain, and exporter
 success does not guarantee durable storage or detect collector partial rejection.
 
@@ -186,5 +205,9 @@ source buffers; `--tee-queues` substitutes tee/queue stages to exercise shared
 buffers and asynchronous propagation (source CPU then excludes queue threads).
 Results and logs go under `target/otel-bench`. See the
 [follow-up measurements](bench/FOLLOWUP_RESULTS.md) for results and limitations.
-The [0.33.1 upgrade results](bench/UPGRADE_RESULTS.md) cover the current dependency
-stack, changed transport defaults, and its measured exporter cost.
+The [0.33.1 upgrade results](bench/UPGRADE_RESULTS.md) cover the previous SDK
+export path. [Direct export measurements](bench/DIRECT_RESULTS.md) compare the
+current encoder and transport, rejected producer batching, adapter/batch-size
+experiments, and isolated encoding cost. Use `--http-client`, `--batch-size`, and
+`--keep-alive` to reproduce transport comparisons. The default benchmark collector
+uses HTTP/1.0; `--keep-alive` tests persistent HTTP/1.1 connections.

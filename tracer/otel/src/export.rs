@@ -1,4 +1,4 @@
-//! Bounded capture handoff and direct OTLP export. Only the worker owns SpanData.
+//! Bounded capture handoff and batched direct OTLP export.
 use std::fmt;
 use std::sync::atomic::{
     AtomicBool, AtomicU64, AtomicUsize,
@@ -9,12 +9,17 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+#[cfg(test)]
 use opentelemetry::trace::{SpanContext, SpanKind, Status};
+#[cfg(test)]
 use opentelemetry::{InstrumentationScope, KeyValue};
+#[cfg(test)]
 use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
 
-use crate::capture::{Record, Token};
+use crate::capture::Record;
+#[cfg(test)]
+use crate::capture::Token;
 
 // Fixed storage bounds memory even when applications create many short-lived
 // threads. Threads share a shard only after the index wraps; no registry grows.
@@ -193,11 +198,17 @@ pub(crate) fn text_value(value: &str, limit: usize) -> Arc<str> {
     Arc::from(&value[..end])
 }
 
-struct Anchor {
-    hook_ts: u64,
-    wall: SystemTime,
+pub(crate) struct Anchor {
+    pub hook_ts: u64,
+    pub wall: SystemTime,
 }
 impl Anchor {
+    pub fn nanos(&self, ts: u64) -> u64 {
+        self.at(ts)
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    }
     fn at(&self, ts: u64) -> SystemTime {
         if ts >= self.hook_ts {
             self.wall
@@ -208,6 +219,19 @@ impl Anchor {
                 .checked_sub(Duration::from_nanos(self.hook_ts - ts))
                 .unwrap_or(self.wall)
         }
+    }
+}
+
+pub(crate) trait RecordExporter: Send + 'static {
+    fn set_resource(&mut self, _resource: &Resource) {}
+    fn export(
+        &mut self,
+        records: &[Record],
+        anchor: &Anchor,
+        config: &Config,
+    ) -> Result<(), FlushError>;
+    fn shutdown(&mut self, _timeout: Duration) -> Result<(), FlushError> {
+        Ok(())
     }
 }
 
@@ -228,7 +252,7 @@ pub(crate) struct Runtime {
     stopped: Arc<OnceLock<Result<(), FlushError>>>,
 }
 impl Runtime {
-    pub fn new<E: SpanExporter + 'static>(
+    pub fn new<E: RecordExporter>(
         config: Config,
         mut exporter: E,
         resource: Resource,
@@ -368,7 +392,8 @@ impl Runtime {
     }
 }
 
-fn span_data(
+#[cfg(test)]
+pub(crate) fn span_data(
     record: Record,
     anchor: &Anchor,
     config: &Config,
@@ -421,7 +446,7 @@ fn span_data(
     }
 }
 
-fn worker_loop<E: SpanExporter>(
+fn worker_loop<E: RecordExporter>(
     mut exporter: E,
     receiver: Receiver<Message>,
     config: &Config,
@@ -431,9 +456,6 @@ fn worker_loop<E: SpanExporter>(
 ) {
     // Exporter instrumentation must not recursively trace exporter work.
     let _suppression = opentelemetry::Context::enter_telemetry_suppressed_scope();
-    let scope = InstrumentationScope::builder("gst-otel-tracer")
-        .with_version(env!("CARGO_PKG_VERSION"))
-        .build();
     let stats = stats.local();
     let mut batch = Vec::with_capacity(config.batch_size);
     let mut failed_since_flush = false;
@@ -446,12 +468,7 @@ fn worker_loop<E: SpanExporter>(
         });
         match message {
             Ok(Message::Span(record)) => {
-                batch.push(span_data(
-                    record,
-                    anchor.get().expect("capture sets clock anchor"),
-                    config,
-                    &scope,
-                ));
+                batch.push(record);
                 drained += 1;
                 if batch.len() < config.batch_size {
                     if drained < 64 {
@@ -467,7 +484,8 @@ fn worker_loop<E: SpanExporter>(
                 }
             }
             Ok(Message::Flush(reply)) => {
-                failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
+                failed_since_flush |=
+                    export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
                 let result = if failed_since_flush {
                     Err(FlushError::ExportFailed)
                 } else {
@@ -479,10 +497,9 @@ fn worker_loop<E: SpanExporter>(
                 continue;
             }
             Ok(Message::Shutdown(reply)) => {
-                failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
-                failed_since_flush |= exporter
-                    .shutdown_with_timeout(config.flush_timeout)
-                    .is_err();
+                failed_since_flush |=
+                    export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
+                failed_since_flush |= exporter.shutdown(config.flush_timeout).is_err();
                 let result = if failed_since_flush {
                     Err(FlushError::ExportFailed)
                 } else {
@@ -493,38 +510,73 @@ fn worker_loop<E: SpanExporter>(
                 break;
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                let _ = export_batch(&mut exporter, &mut batch, stats);
-                let _ = exporter.shutdown_with_timeout(config.flush_timeout);
+                let _ = export_batch(&mut exporter, &mut batch, stats, anchor, config);
+                let _ = exporter.shutdown(config.flush_timeout);
                 break;
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
         }
-        failed_since_flush |= export_batch(&mut exporter, &mut batch, stats).is_err();
+        failed_since_flush |=
+            export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
         deadline = Instant::now() + config.interval;
         drained = 0;
     }
 }
 
-fn export_batch<E: SpanExporter>(
+fn export_batch<E: RecordExporter>(
     exporter: &mut E,
-    batch: &mut Vec<SpanData>,
+    batch: &mut Vec<Record>,
     stats: &LocalCounters,
+    anchor: &OnceLock<Anchor>,
+    config: &Config,
 ) -> Result<(), FlushError> {
     if batch.is_empty() {
         return Ok(());
     }
     let count = batch.len() as u64;
-    let result = futures_executor::block_on(exporter.export(std::mem::replace(
+    let result = exporter.export(
         batch,
-        Vec::with_capacity(batch.capacity()),
-    )));
+        anchor.get().expect("capture sets clock anchor"),
+        config,
+    );
+    batch.clear();
     if result.is_ok() {
         stats.exported_spans.fetch_add(count, Relaxed);
     } else {
         stats.failed_exports.fetch_add(1, Relaxed);
         stats.failed_export_spans.fetch_add(count, Relaxed);
     }
-    result.map_err(|_| FlushError::ExportFailed)
+    result
+}
+
+#[cfg(test)]
+impl<E: SpanExporter + 'static> RecordExporter for E {
+    fn set_resource(&mut self, resource: &Resource) {
+        SpanExporter::set_resource(self, resource);
+    }
+    fn export(
+        &mut self,
+        records: &[Record],
+        anchor: &Anchor,
+        config: &Config,
+    ) -> Result<(), FlushError> {
+        let scope = InstrumentationScope::builder("gst-otel-tracer")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .build();
+        futures_executor::block_on(SpanExporter::export(
+            self,
+            records
+                .iter()
+                .cloned()
+                .map(|r| span_data(r, anchor, config, &scope))
+                .collect(),
+        ))
+        .map_err(|_| FlushError::ExportFailed)
+    }
+    fn shutdown(&mut self, timeout: Duration) -> Result<(), FlushError> {
+        self.shutdown_with_timeout(timeout)
+            .map_err(|_| FlushError::ExportFailed)
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +597,7 @@ pub(crate) mod tests {
     pub fn record(index: u64) -> Record {
         Record {
             site: Arc::new(Site {
+                encoded: Default::default(),
                 attributes: vec![KeyValue::new("src_pad.name", "src")],
                 epoch: 0,
             }),
@@ -564,6 +617,7 @@ pub(crate) mod tests {
             buffer_id: 123,
             buffer_size: 256,
             thread: Arc::new(ThreadInfo {
+                encoded: Default::default(),
                 id: "thread1".into(),
                 name: "stream".into(),
             }),

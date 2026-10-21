@@ -1,0 +1,459 @@
+--- a/tracer/otel/src/export.rs
++++ b/tracer/otel/src/export.rs
+@@ -1 +1 @@
+-//! Bounded capture handoff and batched direct OTLP export.
++//! Bounded batched capture handoff and direct OTLP export.
+@@ -7 +7 @@
+-use std::sync::{Arc, Mutex, OnceLock};
++use std::sync::{Arc, Mutex, OnceLock, Weak};
+@@ -239 +239 @@
+-    Span(Record),
++    Spans(Vec<Record>),
+@@ -241,0 +242,5 @@
++}
++struct WorkerQueue {
++    receiver: Receiver<Message>,
++    queued: Arc<AtomicUsize>,
++    recycle: Sender<Vec<Record>>,
+@@ -246,0 +252,10 @@
++    pub ingress: Arc<Ingress>,
++    worker: Mutex<Option<JoinHandle<()>>>,
++    anchor: Arc<OnceLock<Anchor>>,
++    stopped: Arc<OnceLock<Result<(), FlushError>>>,
++}
++
++// Producer batches amortize queue admission and shutdown coordination. The
++// additional record budget keeps queue_capacity a span bound, not a batch bound.
++pub(crate) const PRODUCER_BATCH: usize = 32;
++pub(crate) struct Ingress {
+@@ -250,3 +265,5 @@
+-    worker: Mutex<Option<JoinHandle<()>>>,
+-    anchor: Arc<OnceLock<Anchor>>,
+-    stopped: Arc<OnceLock<Result<(), FlushError>>>,
++    queued: Arc<AtomicUsize>,
++    capacity: usize,
++    stats: Arc<Counters>,
++    recycled: Receiver<Vec<Record>>,
++    recycle: Sender<Vec<Record>>,
+@@ -261,0 +279,4 @@
++        let (recycle, recycled) = bounded(SHARDS);
++        let queued = Arc::new(AtomicUsize::new(0));
++        let worker_queued = queued.clone();
++        let worker_recycle = recycle.clone();
+@@ -274 +295 @@
+-                    receiver,
++                    WorkerQueue { receiver, queued: worker_queued, recycle: worker_recycle },
+@@ -281,0 +303,10 @@
++            ingress: Arc::new(Ingress {
++                sender,
++                accepting: AtomicBool::new(true),
++                submissions: std::array::from_fn(|_| SubmissionCount::default()),
++                queued,
++                capacity: config.queue_capacity,
++                stats: stats.clone(),
++                recycled,
++                recycle,
++            }),
+@@ -284,3 +314,0 @@
+-            sender,
+-            accepting: AtomicBool::new(true),
+-            submissions: std::array::from_fn(|_| SubmissionCount::default()),
+@@ -294 +322 @@
+-        self.accepting.load(Relaxed)
++        self.ingress.accepting.load(Relaxed)
+@@ -303,0 +332 @@
++    #[cfg(test)]
+@@ -305,26 +334 @@
+-        let index = shard_index();
+-        let stats = &self.stats.shards[index];
+-        let active = &self.submissions[index].0;
+-        stats.completed_spans.fetch_add(1, Relaxed);
+-        // SeqCst orders registration, the closed check, and shutdown's scan.
+-        // Any producer that sees open is registered before closure; any producer
+-        // registering after the shutdown scan must see closed and cannot enqueue.
+-        active.fetch_add(1, SeqCst);
+-        if !self.accepting.load(SeqCst) {
+-            active.fetch_sub(1, Release);
+-            stats.dropped_closed.fetch_add(1, Relaxed);
+-            return;
+-        }
+-        match self.sender.try_send(Message::Span(record)) {
+-            Ok(()) => {
+-                stats.enqueued_spans.fetch_add(1, Relaxed);
+-            }
+-            Err(error) => {
+-                let counter = match error {
+-                    TrySendError::Full(_) => &stats.dropped_queue_full,
+-                    TrySendError::Disconnected(_) => &stats.dropped_closed,
+-                };
+-                counter.fetch_add(1, Relaxed);
+-            }
+-        }
+-        active.fetch_sub(1, Release);
++        self.ingress.submit(vec![record]);
+@@ -341,7 +345,10 @@
+-        self.sender.send_timeout(message, timeout).map_err(|e| {
+-            if e.is_timeout() {
+-                FlushError::Timeout
+-            } else {
+-                FlushError::Closed
+-            }
+-        })?;
++        self.ingress
++            .sender
++            .send_timeout(message, timeout)
++            .map_err(|e| {
++                if e.is_timeout() {
++                    FlushError::Timeout
++                } else {
++                    FlushError::Closed
++                }
++            })?;
+@@ -365 +372 @@
+-        self.accepting.store(false, SeqCst);
++        self.ingress.accepting.store(false, SeqCst);
+@@ -366,0 +374 @@
++            .ingress
+@@ -391,0 +400,118 @@
++    }
++}
++impl Drop for Runtime {
++    fn drop(&mut self) {
++        self.ingress.accepting.store(false, SeqCst);
++    }
++}
++
++impl Ingress {
++    pub fn batch_capacity(&self) -> usize {
++        PRODUCER_BATCH.min(self.capacity)
++    }
++    pub fn batch(&self) -> Vec<Record> {
++        self.recycled
++            .try_recv()
++            .unwrap_or_else(|_| Vec::with_capacity(self.batch_capacity()))
++    }
++    pub fn submit(&self, mut records: Vec<Record>) {
++        let count = records.len();
++        if count == 0 {
++            return;
++        }
++        let index = shard_index();
++        let stats = &self.stats.shards[index];
++        let active = &self.submissions[index].0;
++        stats.completed_spans.fetch_add(count as u64, Relaxed);
++        // SeqCst orders registration, the closed check, and shutdown's scan.
++        // Any producer that sees open is registered before closure; any producer
++        // registering after the shutdown scan must see closed and cannot enqueue.
++        active.fetch_add(1, SeqCst);
++        if !self.accepting.load(SeqCst) {
++            active.fetch_sub(1, Release);
++            stats.dropped_closed.fetch_add(count as u64, Relaxed);
++            return;
++        }
++        if self
++            .queued
++            .fetch_update(Relaxed, Relaxed, |queued| {
++                (count <= self.capacity.saturating_sub(queued)).then_some(queued + count)
++            })
++            .is_err()
++        {
++            stats.dropped_queue_full.fetch_add(count as u64, Relaxed);
++            records.clear();
++            let _ = self.recycle.try_send(records);
++            active.fetch_sub(1, Release);
++            return;
++        }
++        match self.sender.try_send(Message::Spans(records)) {
++            Ok(()) => {
++                stats.enqueued_spans.fetch_add(count as u64, Relaxed);
++            }
++            Err(error) => {
++                let counter = match error {
++                    TrySendError::Full(_) => &stats.dropped_queue_full,
++                    TrySendError::Disconnected(_) => &stats.dropped_closed,
++                };
++                counter.fetch_add(count as u64, Relaxed);
++                self.queued.fetch_sub(count, Relaxed);
++            }
++        }
++        active.fetch_sub(1, Release);
++    }
++}
++
++// A live streaming thread owns at most one partial batch. Weak ownership lets
++// runtime destruction disconnect the worker even if that thread remains idle.
++pub(crate) struct ProducerBatch {
++    owner: Weak<Ingress>,
++    stats: Arc<Counters>,
++    records: Vec<Record>,
++    limit: usize,
++}
++impl ProducerBatch {
++    pub fn new(runtime: &Runtime) -> Self {
++        Self {
++            owner: Arc::downgrade(&runtime.ingress),
++            stats: runtime.stats.clone(),
++            records: runtime.ingress.batch(),
++            limit: runtime.ingress.batch_capacity(),
++        }
++    }
++    pub fn belongs_to(&self, runtime: &Runtime) -> bool {
++        std::ptr::eq(self.owner.as_ptr(), Arc::as_ptr(&runtime.ingress))
++    }
++    pub fn push(&mut self, record: Record, outer_finished: bool) {
++        if self.records.capacity() == 0 {
++            self.records = self
++                .owner
++                .upgrade()
++                .map_or_else(|| Vec::with_capacity(self.limit), |owner| owner.batch());
++        }
++        self.records.push(record);
++        if outer_finished || self.records.len() == self.limit {
++            self.publish();
++        }
++    }
++    pub fn publish(&mut self) {
++        if self.records.is_empty() {
++            return;
++        }
++        let records = std::mem::take(&mut self.records);
++        if let Some(owner) = self.owner.upgrade() {
++            owner.submit(records);
++        } else {
++            let stats = self.stats.local();
++            stats
++                .completed_spans
++                .fetch_add(records.len() as u64, Relaxed);
++            stats
++                .dropped_closed
++                .fetch_add(records.len() as u64, Relaxed);
++        }
++    }
++}
++impl Drop for ProducerBatch {
++    fn drop(&mut self) {
++        self.publish();
+@@ -451 +577 @@
+-    receiver: Receiver<Message>,
++    queue: WorkerQueue,
+@@ -456,0 +583 @@
++    let WorkerQueue { receiver, queued, recycle } = queue;
+@@ -470,3 +597,18 @@
+-            Ok(Message::Span(record)) => {
+-                batch.push(record);
+-                drained += 1;
++            Ok(Message::Spans(mut records)) => {
++                drained += records.len();
++                let mut consumed = 0;
++                for record in records.drain(..) {
++                    batch.push(record);
++                    consumed += 1;
++                    if batch.len() == config.batch_size {
++                        queued.fetch_sub(consumed, Relaxed);
++                        consumed = 0;
++                        failed_since_flush |=
++                            export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
++                        deadline = Instant::now() + config.interval;
++                    }
++                }
++                if consumed != 0 {
++                    queued.fetch_sub(consumed, Relaxed);
++                }
++                let _ = recycle.try_send(records);
+@@ -772,2 +914,4 @@
+-                    for i in 0..2000 {
+-                        runtime.submit(record(i));
++                    for i in 0..500 {
++                        runtime
++                            .ingress
++                            .submit((i * 4..i * 4 + 4).map(record).collect());
+@@ -791 +935,49 @@
+-}
++
++    #[test]
++    fn producer_batches_keep_a_record_bound_when_split_across_exports() {
++        let (entered_tx, entered_rx) = bounded(10);
++        let (release_tx, release_rx) = bounded(10);
++        let runtime = Runtime::new(
++            Config {
++                queue_capacity: 7,
++                batch_size: 2,
++                ..Config::default()
++            },
++            GatedExporter {
++                entered: entered_tx,
++                release: release_rx,
++                fail: false,
++            },
++            Resource::builder_empty().build(),
++        )
++        .unwrap();
++        runtime.anchor(100);
++        runtime.ingress.submit((0..4).map(record).collect());
++        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
++        runtime.ingress.submit((4..9).map(record).collect());
++        runtime.ingress.submit((9..12).map(record).collect());
++        assert_eq!(runtime.ingress.queued.load(Relaxed), 7);
++        assert_eq!(runtime.stats.snapshot().pending_spans, 9);
++        assert_eq!(runtime.stats.snapshot().dropped_queue_full, 3);
++        for _ in 0..5 {
++            release_tx.send(()).unwrap();
++        }
++        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
++        assert_eq!(stats.exported_spans, 9);
++        assert_eq!(stats.completed_spans, 12);
++        assert_eq!(stats.pending_spans, 0);
++        assert_eq!(runtime.ingress.queued.load(Relaxed), 0);
++    }
++
++    #[test]
++    fn abandoned_partial_batches_account_for_a_destroyed_runtime() {
++        let runtime = runtime(Config::default(), Collector::default());
++        let stats = runtime.stats.clone();
++        let mut batch = ProducerBatch::new(&runtime);
++        batch.push(record(0), false);
++        drop(runtime);
++        drop(batch);
++        assert_eq!(stats.snapshot().completed_spans, 1);
++        assert_eq!(stats.snapshot().dropped_closed, 1);
++    }
++}
+--- a/tracer/otel/src/capture.rs
++++ b/tracer/otel/src/capture.rs
+@@ -10 +10 @@
+-use crate::export::{text_value, Runtime};
++use crate::export::{text_value, ProducerBatch, Runtime};
+@@ -85,0 +86 @@
++    completed: Option<ProducerBatch>,
+@@ -221 +222 @@
+-    let record = LOCAL.with(|local| {
++    LOCAL.with(|local| {
+@@ -225 +226 @@
+-            return None;
++            return;
+@@ -233,6 +234,24 @@
+-            return None;
+-        }
+-        if state.frames.pop().unwrap().recording {
+-            state.sampled.pop()
+-        } else {
+-            None
++            return;
++        }
++        let frame = state.frames.pop().unwrap();
++        let outer_finished = state.frames.is_empty();
++        if frame.recording {
++            let mut record = state.sampled.pop().expect("sampled frame owns a record");
++            record.end = ts;
++            record.flow_return = flow_return;
++            if state
++                .completed
++                .as_ref()
++                .is_none_or(|batch| !batch.belongs_to(runtime))
++            {
++                state.completed = Some(ProducerBatch::new(runtime));
++            }
++            state
++                .completed
++                .as_mut()
++                .unwrap()
++                .push(record, outer_finished);
++        } else if outer_finished {
++            if let Some(batch) = &mut state.completed {
++                batch.publish();
++            }
+@@ -241,5 +259,0 @@
+-    if let Some(mut record) = record {
+-        record.end = ts;
+-        record.flow_return = flow_return;
+-        runtime.submit(record);
+-    }
+@@ -388 +402,45 @@
+-    fn sampled_stack_recovers_from_overflow_and_closed_nested_pushes() {
++    fn nested_partial_batches_publish_at_outer_completion_or_thread_exit() {
++        gst::init().unwrap();
++        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
++        let pad = source.static_pad("src").unwrap();
++        let collector = Collector::default();
++        let runtime = Arc::new(runtime(Config::default(), collector.clone()));
++        let buffer = gst::Buffer::new();
++        begin(&runtime, 100, &pad, &buffer);
++        begin(&runtime, 110, &pad, &buffer);
++        end(&runtime, 120, &pad, 0);
++        // Flush excludes the still-open outer push and its unpublished children.
++        assert_eq!(
++            runtime
++                .flush(Duration::from_secs(2))
++                .unwrap()
++                .exported_spans,
++            0
++        );
++        end(&runtime, 130, &pad, 0);
++        assert_eq!(
++            runtime
++                .flush(Duration::from_secs(2))
++                .unwrap()
++                .exported_spans,
++            2
++        );
++        let producer = runtime.clone();
++        std::thread::spawn(move || {
++            let buffer = gst::Buffer::new();
++            begin(&producer, 200, &pad, &buffer);
++            begin(&producer, 210, &pad, &buffer);
++            end(&producer, 220, &pad, 0);
++            // An interrupted outer push must not strand completed children.
++        })
++        .join()
++        .unwrap();
++        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
++        assert_eq!(stats.started_spans, 4);
++        assert_eq!(stats.completed_spans, 3);
++        assert_eq!(stats.exported_spans, 3);
++        assert_eq!(collector.0.lock().unwrap().len(), 3);
++    }
++
++    #[test]
++    fn deep_sampled_pushes_publish_full_chunks_and_account_after_shutdown() {
+@@ -394,6 +452,14 @@
+-        for ts in 0..MAX_DEPTH + 3 {
+-            begin(&runtime, ts as u64, &pad, &buffer);
+-        }
+-        for ts in MAX_DEPTH + 3..2 * (MAX_DEPTH + 3) {
+-            end(&runtime, ts as u64, &pad, 0);
+-        }
++        for ts in 0..40 {
++            begin(&runtime, ts, &pad, &buffer);
++        }
++        for ts in 40..75 {
++            end(&runtime, ts, &pad, 0);
++        }
++        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
++        assert_eq!(stats.exported_spans, 32);
++        for ts in 75..80 {
++            end(&runtime, ts, &pad, 0);
++        }
++        let stats = runtime.stats.snapshot();
++        assert_eq!(stats.completed_spans, 40);
++        assert_eq!(stats.dropped_closed, 8);
+@@ -401,20 +466,0 @@
+-        assert_eq!(runtime.stats.snapshot().dropped_depth, 3);
+-        assert_eq!(
+-            runtime
+-                .flush(Duration::from_secs(2))
+-                .unwrap()
+-                .exported_spans,
+-            MAX_DEPTH as u64
+-        );
+-        begin(&runtime, 1000, &pad, &buffer);
+-        runtime.shutdown(Duration::from_secs(2)).unwrap();
+-        begin(&runtime, 1001, &pad, &buffer); // sampled token, no recording after close
+-        end(&runtime, 1002, &pad, 0);
+-        assert!(current_context().unwrap().is_sampled());
+-        end(&runtime, 1003, &pad, 0);
+-        assert!(current_context().is_none());
+-        let stats = runtime.stats.snapshot();
+-        assert_eq!(stats.started_spans, stats.completed_spans);
+-        assert_eq!(stats.dropped_closed, 1);
+-        assert_eq!(stats.skipped_closed, 1);
+-        assert_eq!(stats.mismatched_hooks, 0);

@@ -29,7 +29,7 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
     let resource = resource_seen.clone();
     let stopping = stop.clone();
     let slow = mode == "slow";
-    let fail = mode == "fail";
+    let fail = mode.ends_with("fail");
     let receiver = std::thread::spawn(move || {
         while !stopping.load(Ordering::Relaxed) {
             if let Some(mut request) = server.recv_timeout(Duration::from_millis(20)).unwrap() {
@@ -45,6 +45,16 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                     request.respond(tiny_http::Response::empty(200)).unwrap();
                     continue;
                 }
+                assert_eq!(request.url(), "/custom-traces");
+                assert!(request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("x-test") && h.value.as_str() == "encoded value"));
+                assert!(request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("content-type")
+                        && h.value.as_str() == "application/x-protobuf"));
                 let decoded = ExportTraceServiceRequest::decode(data.as_slice()).unwrap();
                 for rs in decoded.resource_spans {
                     if rs.resource.unwrap().attributes.iter().any(|a| {
@@ -84,6 +94,22 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
         )
         .env("OTEL_SERVICE_NAME", "otel-test")
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", format!("http://{address}"))
+        .env(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            format!("http://{address}/custom-traces"),
+        )
+        .env(
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            "x-test=encoded%20value",
+        )
+        .env(
+            "GST_OTEL_HTTP_CLIENT",
+            if mode.starts_with("async") {
+                "async"
+            } else {
+                "blocking"
+            },
+        )
         .env("OTEL_TRACES_SAMPLER", sampler)
         .env("OTEL_TRACES_SAMPLER_ARG", ratio)
         .env("GST_OTEL_QUEUE_CAPACITY", if slow { "16" } else { "65536" })
@@ -144,6 +170,15 @@ fn complete_traces(spans: &[Span], size: usize) -> usize {
 fn exports_complete_traces_and_keeps_pad_references_stable() {
     let spans = collect(LINEAR, "parentbased_always_on", "1", "normal");
     assert_eq!(complete_traces(&spans, 5), 100);
+}
+#[test]
+fn async_transport_delivers_equivalent_traces_and_does_not_retry_failures() {
+    for mode in ["async", "async-fail"] {
+        assert_eq!(
+            complete_traces(&collect(LINEAR, "parentbased_always_on", "1", mode), 5),
+            100
+        );
+    }
 }
 #[test]
 fn sampling_is_preserved_across_queue_boundaries() {
@@ -292,7 +327,7 @@ fn pipeline_child() {
             assert_eq!(stats.unsampled_pushes, 2000);
         }
         "slow" => assert!(stats.dropped_queue_full > 0),
-        "fail" => {
+        "fail" | "async-fail" => {
             assert_eq!(stats.failed_export_spans, 500);
             assert_eq!(stats.exported_spans, 0);
         }

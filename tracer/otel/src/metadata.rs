@@ -5,13 +5,14 @@ use gstreamer::{self as gst, prelude::*};
 use opentelemetry::KeyValue;
 use std::sync::{
     atomic::{AtomicU64, Ordering::Relaxed},
-    Arc, LazyLock, Mutex, Weak,
+    Arc, LazyLock, Mutex, OnceLock, Weak,
 };
 
 use crate::export::text_value;
 
 pub(crate) struct Site {
     pub attributes: Vec<KeyValue>,
+    pub encoded: OnceLock<crate::wire::EncodedAttributes>,
     pub(crate) epoch: u64,
 }
 struct PadState {
@@ -205,6 +206,7 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
         ),
     ];
     let descriptor = Arc::new(Site {
+        encoded: OnceLock::new(),
         attributes: values
             .into_iter()
             .map(|(key, value)| KeyValue::new(key, text_value(&value, limit)))

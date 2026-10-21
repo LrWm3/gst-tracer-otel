@@ -20,6 +20,9 @@ parser.add_argument('--modes', nargs='+', default=['none', 'sampled', 'unsampled
 parser.add_argument('--baseline-sampling', action='store_true', help='Compare sampling modes too, for baselines that support them')
 parser.add_argument('--drain-ms', type=int, default=2000, help='Use 0 when both plugins flush on pipeline NULL')
 parser.add_argument('--output', default='results.json')
+parser.add_argument('--batch-size', type=int, default=512)
+parser.add_argument('--http-client', choices=['blocking', 'async'], default='blocking')
+parser.add_argument('--keep-alive', action='store_true', help='Use a persistent HTTP/1.1 collector connection')
 parser.add_argument('--churn-every', type=int, default=0, help='Rename an unrelated element every N source buffers')
 parser.add_argument('--tee-queues', action='store_true', help='Use tee and queue stages to exercise shared buffers')
 args = parser.parse_args()
@@ -62,6 +65,7 @@ def messages(data, field):
 
 
 class Receiver(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1' if args.keep_alive else 'HTTP/1.0'
     def do_POST(self):
         global received
         body = self.rfile.read(int(self.headers['Content-Length']))
@@ -115,7 +119,8 @@ try:
                 env = dict(base, GST_PLUGIN_PATH=str(directory),
                            GST_REGISTRY=str(OUT / f'registry-{name}.bin'),
                            GST_TRACERS='' if mode == 'none' else 'otel-tracer',
-                           GST_OTEL_LOGS='false', GST_OTEL_BATCH_SIZE='512',
+                           GST_OTEL_LOGS='false', GST_OTEL_BATCH_SIZE=str(args.batch_size),
+                           GST_OTEL_HTTP_CLIENT=args.http_client,
                            GST_OTEL_EXPORT_INTERVAL_MS='10',
                            GST_OTEL_QUEUE_CAPACITY='128' if mode in ('slow', 'absent') else '65536',
                            OTEL_TRACES_SAMPLER='parentbased_traceidratio',
@@ -141,6 +146,9 @@ try:
                 (OUT / f'compare-{name}-{streams}-{count}-{repeat}.log').write_bytes(output)
                 match = re.search(rb'RESULT ([^\n]+)', output)
                 result = dict(mode=name, streams=streams, buffers=args.buffers, repeat=repeat,
+                              batch_size=int(env['GST_OTEL_BATCH_SIZE']),
+                              http_client=args.http_client,
+                              keep_alive=args.keep_alive,
                               churn_every=args.churn_every, tee_queues=args.tee_queues,
                               exit=process.returncode, received_spans=received - before)
                 if match:

@@ -82,8 +82,9 @@ accounting explicitly. Preserve OTel IDs, timestamps, parentage, and trace state
 
 ## Completion evidence
 
-Both items are implemented in this branch. The selected direct-`SpanData`
-export design is in use; there are no live SDK spans in the capture path.
+Both items were implemented in this branch using direct `SpanData` export.
+Section 5 subsequently replaces that conversion path with direct OTLP encoding;
+there are no live SDK spans in the capture path.
 
 See [implementation results](tracer/otel/bench/RESULTS.md) for delivered-span
 benchmarks, failure accounting, correctness coverage, and the results of every
@@ -131,3 +132,25 @@ See [upgrade results](tracer/otel/bench/UPGRADE_RESULTS.md) for migration detail
 86 measured runs, tests, and the unchanged workspace audit/dependency findings.
 The controlled sampled comparison retained streaming performance but increased
 total process CPU by about 8–15%; the upgrade is not claimed as a speedup.
+
+## 5. Reduce export allocation and producer synchronization
+
+Authorized by the user: "ok work through these things". Baseline: `21e0b7a`.
+
+- [x] Measure a reference-counted HTTP body in isolation.
+- [x] Compare batch sizes and blocking/async HTTP adapters; retain 512/blocking defaults.
+- [x] Encode compact records directly, caching static protobuf attributes.
+- [x] Evaluate batched producer submissions with bounded records and lifecycle tests.
+  The prototype increased streaming CPU and was removed; retain individual submissions.
+- [x] Specialize rejected capture and avoid redundant token rewrites.
+- [x] Validate equivalent OTLP, sampling, failure accounting, lifecycle, and performance.
+
+Completed with direct OTLP encoding, descriptor-owned encoded attributes, reused
+worker buffers, reference-counted HTTP bodies, selectable blocking/async transport,
+and separate compact rejected frames. Producer batching was tested and rejected
+because it increased streaming CPU by 19–33% in the isolated comparison. Keeping
+individual submissions preserves the previous flush and pending-record semantics.
+
+See [direct export results](tracer/otel/bench/DIRECT_RESULTS.md) for 445 pipeline
+runs, the isolated encoding benchmark, reproducible experiment patches, unchanged
+workspace check failures, and the limits of these shared-machine measurements.

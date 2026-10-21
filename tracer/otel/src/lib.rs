@@ -22,6 +22,8 @@ mod metadata;
 mod otellogbridge;
 mod oteltracer;
 mod propagation;
+mod transport;
+mod wire;
 
 pub use export::{ExportStats, FlushError};
 pub use oteltracer::TelemetryTracer;
