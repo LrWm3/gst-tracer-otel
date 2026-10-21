@@ -95,8 +95,7 @@ do not collapse into one millisecond bucket.
 
 ### Element Selection
 
-Metric updates dominate tracer overhead in buffer-heavy pipelines. Restrict
-synchronous metrics to useful downstream element names with comma-separated
+Restrict synchronous metrics to useful downstream element names with comma-separated
 exact names or simple `*` wildcards:
 
 ```bash
@@ -261,6 +260,10 @@ actual scraping. Short processor runs showed no material throughput penalty;
 the buffer-only loop did reveal additional instrumentation cost. The report
 separates build versions, startup fixes and an off-run shutdown failure.
 Long-soak and rare-tail qualification remain outstanding.
+
+Profiling on GStreamer 1.24.2 found significant overhead from its tracing
+hook-table lookups and wall-clock timestamp reads, even at tracing points with
+no registered callbacks. This is a GStreamer limitation outside the plugin.
 
 See the [benchmark report](BENCHMARK.md) for local comparisons of the cache
 changes, I/O counts, and graph cleanup, with raw results and reproduction commands.
