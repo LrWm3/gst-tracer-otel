@@ -19,10 +19,10 @@ license = "LGPL"
 
 [workspace.dependencies]
 # ── GStreamer stack ───────────────────────────────────────────────
-glib = "0.20"
-gobject-sys = "0.20"
-gstreamer         = { version = "0.23.6" }
-gstreamer-sys     = "0.23.6"  # raw FFI for hook registration
+glib = "0.21"
+gobject-sys = "0.21"
+gstreamer         = { version = "0.24.5" }
+gstreamer-sys     = "0.24.5"  # raw FFI for hook registration
 
 [profile.profiling]
 inherits = "release"

@@ -7,6 +7,7 @@ mod imp {
     use super::*;
     use gst::subclass::prelude::*;
     use std::{
+        ops::ControlFlow,
         str::FromStr,
         sync::{OnceLock, RwLock},
     };
@@ -84,7 +85,7 @@ mod imp {
                 vec![glib::subclass::Signal::builder("metrics")
                     .flags(glib::SignalFlags::ACTION)
                     .return_type::<Option<String>>()
-                    .class_handler(|_, _args| {
+                    .class_handler(|_args| {
                         let ret = PromLatencyTracerImp::request_metrics();
                         gst::info!(
                             CAT,
@@ -93,10 +94,7 @@ mod imp {
                         );
                         Some(ret.to_value())
                     })
-                    .accumulator(|_hint, ret, value| {
-                        *ret = value.clone();
-                        true
-                    })
+                    .accumulator(|_hint, _ret, value| ControlFlow::Continue(value.clone()))
                     .build()]
             })
         }

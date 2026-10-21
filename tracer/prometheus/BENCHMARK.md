@@ -351,3 +351,38 @@ replace the child command after `taskset -c 2` with
   eliminate the earlier advisories and old `rustix` nightly build failure.
 - The required nightly `cargo udeps` command for all three tracer packages and
   all targets passed with no unused dependencies.
+
+## GStreamer binding upgrade — 2026-10-20
+
+Updated the Rust bindings to GStreamer 0.24.5 and GLib 0.21.5. Their dependencies
+use `pastey`, removing the remaining `paste` maintenance advisory. The metrics
+signal uses GLib's new callback API; buffer callbacks are unchanged.
+
+Compared with `8445cda`, using Rust 1.89.0 and native GStreamer 1.24.2 on the same
+i5-1345U host, pinned to logical CPU 2. Each case has one warm-up and seven
+measured rounds, alternating variant order, with separate registries, verified
+plugin paths and one scrape per second. No builds or tests ran concurrently.
+Values are median child-process CPU microseconds per source buffer, including
+GStreamer, startup, teardown and scrapes.
+
+| Workload | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| One identity, sample 16 | 1.863 | 1.897 | +1.8% |
+| Eight identities, sample 16 | 5.714 | 5.757 | +0.8% |
+| One identity, sample 1 | 2.174 | 2.150 | -1.1% |
+| 96 identities, sample 16 | 81.510 | 80.812 | -0.9% |
+| Eight identities, sample 16, I/O enabled | 6.005 | 5.926 | -1.3% |
+
+All median changes were within 2%; these small differences on a shared desktop
+do not establish a speedup or regression. Commands, buffer counts, binary hashes
+and every run are in
+[`benchmarks/2026-10-20-bindings.json`](benchmarks/2026-10-20-bindings.json).
+
+Formatting, workspace Clippy with all features/targets, `cargo test`, the full
+Prometheus ASan suite and the required nightly dependency check passed.
+`cargo audit` reports no vulnerabilities or warnings.
+
+A wider `cargo test --workspace` run timed out in OpenTelemetry after 120 seconds.
+Its serial basic-pipeline test also timed out with a 90-second command limit on
+both this build and a separate checkout of `8445cda`. A standalone one-buffer
+OpenTelemetry pipeline completed with the upgraded bindings.
