@@ -1,240 +1,100 @@
 # Mars GStreamer Tracers
 
-A collection of GStreamer `Tracer` plugins for Prometheus latency metrics,
-OpenTelemetry push-call traces and correlated logs, and Pyroscope profiles.
-The experimental `mars-instrument` entry point combines metrics, traces, logs,
-and CPU profiles through shared push capture.
+Find where your GStreamer pipeline spends time and CPU. Mars adds metrics,
+traces, and CPU profiles through `GST_TRACERS`, without changing your pipeline
+code.
 
-A rust reimagination of [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c) written by [Stefan Sauer](mailto:ensonic@users.sf.net), with additional features for Prometheus & Otel compatibility.
+## Choose a tracer
 
-## Plugins available
+| I want to… | Use | Send data to |
+| --- | --- | --- |
+| Measure element cost, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus |
+| Connect metrics to traces and optional CPU profiles and logs | [mars-instrument](tracer/otel/INSTRUMENT.md) | An OTLP/HTTP collector, plus Pyroscope for profiles |
+| Trace buffer pushes, with optional correlated logs and profiles | [mars-otel](tracer/otel/README.md) | An OTLP/HTTP collector, plus Pyroscope for profiles |
+| See CPU call stacks without collecting traces | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope |
 
-The table below contains the plugins available in this repository.
+Start with **mars-metrics** if you are unsure. It is the most mature option,
+currently alpha. `mars-otel` is pre-alpha; `mars-instrument` and `mars-profiles`
+are experimental. See the [performance reports](reports/README.md) for measured
+CPU and memory costs on the tested pipelines.
 
-| plugin name                                 | description                                                                                                               | performance | stability |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
-| [mars-metrics](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | [measured overhead](tracer/prometheus/METRICS_RESULTS.md) | alpha     |
-| [mars-instrument](tracer/otel/INSTRUMENT.md) | shared push metrics with exemplars, traces, optional logs and CPU profiles | [measured overhead](tracer/otel/bench/INSTRUMENT_RESULTS.md) | experimental |
-| [mars-otel](tracer/otel/README.md)        | exports inclusive push-call spans over OTLP/HTTP, with optional correlated GStreamer logs | [measured overhead](tracer/otel/README.md#performance-and-sampling-cost) | pre-alpha |
-| [mars-profiles](tracer/pyroscope/README.md)     | captures Pyroscope profiles for the Gstreamer pipeline, requires debug symbols for best results | optimized   | alpha |
-| [mars-noop](tracer/noop/README.md)       | a test plugin, likely not useful for any real purpose                                                                     | slow        | none      |
+## Get your first metrics
 
-In general `mars-metrics` is recommended for now, and `mars-otel` is still a work in progress.
+You need Rust/Cargo, a C compiler, `pkg-config`, GStreamer and GLib development
+headers, GStreamer command-line tools and base plugins, and `curl`. See
+[environment setup](CONTRIBUTING.md#environment) for the provided development
+container and setup helpers. `just` is optional.
 
-### Migrating tracer names
+From the repository root, build the metrics plugin and run a live test pipeline:
 
-Set `GST_TRACERS` to the Mars entry points below. The previous entry-point names
-are no longer registered by these plugins.
+```sh
+cargo build --release -p gst-prometheus-tracer
 
-| Previous entry point | Current entry point |
-| --- | --- |
-| `gst-instrument` | `mars-instrument` |
-| `prom-latency` | `mars-metrics` |
-| `otel-tracer` | `mars-otel` |
-| `pyroscope` | `mars-profiles` |
-| `noop-latency` | `mars-noop` |
-
-Cargo package names, shared-library filenames, and configuration variables
-(`GST_INSTRUMENT_*`, `GST_PROM_LATENCY_*`, `GST_OTEL_*`, and `OTEL_*`) retain their
-existing names. For example, build `gst-otel-tracer` and set
-`GST_TRACERS=mars-instrument`. Metric names and the Pyroscope protocol attribute
-`pyroscope.profile.id` are also unchanged.
-
-Debug categories now use the Mars entry-point names (`mars-instrument` shares
-`mars-otel`'s debug category). The GObject type names are `MarsInstrumentTracer`,
-`MarsMetricsTracer`, `MarsOtelTracer`, `MarsProfilesTracer`, and `MarsNoopTracer`.
-OTLP trace/log scopes are named `mars-otel`; the metric scope is
-`mars-instrument`. Update any scope/type/debug-category filters accordingly.
-The standalone profiler's default application name is now `mars-profiles`;
-set its `tracer-name` parameter explicitly to keep an existing application name.
-
-`mars-otel` caches descriptive metadata, captures compact records, and encodes
-and exports traces on a worker through a bounded queue with explicit loss
-accounting. It uses OpenTelemetry Rust 0.33.1 without creating live SDK spans.
-Parent-based sampling preserves decisions across synchronous pushes, queues,
-and buffer copies. These improvements work with stock GStreamer.
-`mars-instrument` adds cumulative push metrics with trace exemplars using the
-same capture stack. An opt-in embedded sampler provides experimental Pyroscope
-trace correlation on Linux x86-64; see the
-[profile setup and limitations](tracer/otel/README.md#experimental-correlated-cpu-profiles).
-
-See the [trace/profile integration investigation](TRACE_PROFILE_INTEGRATION.md)
-for the design rationale, backend constraints, and remaining validation work.
-
-> Currently, the way per element latency is calculated using the `mars-metrics` element does not cleanly handle
-> thread-boundaries introduced by the `threadshare` plugin.
->
-> However, it should work fine for most pipelines that do not use async runtime powered elements; additionally it works fine across regular thread boundaries introduced by elements like `queue` and `multiqueue`.
->
-> A future change will address this issue to more precisely measure latency across elements even in the presence of
-> async runtime elements.
-
-## Setup
-
-### Prerequisites
-
-- GStreamer 1.0 libraries and development headers
-- GLib development headers
-- Rust toolchain (tested with 1.89)
-- C compiler and `pkg-config`
-- `just` task runner
-
-### Setup options
-
-#### Using the `.setup.sh` script
-
-Run the provided setup script to install dependencies and set up the environment:
-
-```bash
-./.devcontainer/setup.sh
+GST_PLUGIN_PATH="$PWD/target/release" \
+GST_TRACERS='mars-metrics(port=9092)' \
+  gst-launch-1.0 videotestsrc is-live=true ! videoconvert ! fakesink
 ```
 
-This will install the necessary GStreamer and GLib development packages, Rust toolchain, just and other dependencies.
+Leave the pipeline running. In a **second terminal**, fetch its metrics:
 
-However, it is only tested on Ubuntu 24.04, so you may need to adapt it for your system.
-
-#### Using `just`
-
-Install [just](https://github.com/casey/just) task runner, and then run the following command to set up the project:
-
-```bash
-just setup
-```
-
-#### Using DevContainer
-
-Alternatively, you can use the provided DevContainer setup. This requires Docker and VSCode with the Remote - Containers extension.
-
-## Quickstart
-
-### Prometheus metrics
-
-Build
-
-```bash
-just build-package gst-prometheus-tracer
-export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-export GST_TRACERS='mars-metrics(port=9092)'
-export GST_DEBUG=GST_TRACER:5
-
-# Run a GStreamer pipeline to test the tracer
-gst-launch-1.0 fakesrc ! identity ! fakesink
-
-# While its running, you can check the metrics at http://localhost:9092/metrics
+```sh
 curl http://localhost:9092/metrics
-
-# Output:
-# HELP gst_element_latency_count_count Count of latency measurements per element
-# TYPE gst_element_latency_count_count counter
-gst_element_latency_count_count{element="fakesink0",path="/GstPipeline:pipeline0",sink_pad="sink",src_pad="src"} 591573
-gst_element_latency_count_count{element="identity0",path="/GstPipeline:pipeline0",sink_pad="sink",src_pad="src"} 591573
-# HELP gst_element_latency_last_gauge Last latency in nanoseconds per element
-# TYPE gst_element_latency_last_gauge gauge
-gst_element_latency_last_gauge{element="fakesink0",path="/GstPipeline:pipeline0",sink_pad="sink",src_pad="src"} 5104
-.. etc. ..
 ```
 
-### Correlated telemetry with `mars-instrument`
+Look for `gst_element_latency_count_count` and
+`gst_element_sync_wall_seconds_bucket`, with labels identifying pipeline elements.
+No Prometheus server is needed to try this; to retain measurements, configure
+Prometheus to scrape this endpoint. The metrics server listens on all interfaces
+on the chosen port. Stop the test pipeline with **Ctrl+C**.
 
-Enable the metrics and traces pipelines on an OTLP/HTTP collector listening on
-port 4318, then run:
+To instrument your application, set the same `GST_PLUGIN_PATH` and `GST_TRACERS`
+when launching it. Replace the example pipeline with your own, or see the
+[metrics guide](tracer/prometheus/README.md) for element filters, sampling,
+queue metrics, and PromQL examples.
 
-```bash
-cargo build --release -p gst-otel-tracer
-export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-export GST_TRACERS=mars-instrument
-export OTEL_SERVICE_NAME=gstreamer-pipeline
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-gst-launch-1.0 videotestsrc num-buffers=300 ! videoconvert ! fakesink sync=false
+If the tracer does not load, check that GStreamer can find it:
+
+```sh
+GST_PLUGIN_PATH="$PWD/target/release" gst-inspect-1.0 mars-metrics
 ```
 
-Metrics and traces are enabled by default. Histogram exemplars carry trace/span
-IDs, allowing a metric observation to link to its trace. Metric collection
-continues when traces are sampled out or the trace export queue is full.
-Set `GST_INSTRUMENT_TRACES=false` for metrics-only operation.
+## Add traces or profiles
 
-For CPU profiles on Linux x86-64, rebuild with
-`cargo build --release -p gst-otel-tracer --features profiles` and set
-`GST_OTEL_PROFILE_URL=http://localhost:4040` before starting the pipeline.
-Profiles use the same service identity and label samples with active span IDs.
-Enable correlated GStreamer logs with `GST_INSTRUMENT_LOGS=true` and select
-categories using `GST_DEBUG`.
+Each guide includes its build command, backend requirements, and configuration:
 
-Select one of `mars-instrument` or `mars-otel` per process. This first version
-covers ordinary push calls; pull mode, buffer lists, and the remaining
-`mars-metrics` diagnostics are still separate. See the
-[configuration and correlation guide](tracer/otel/INSTRUMENT.md) for signal
-controls, metric semantics, memory bounds, backend links, and shutdown behavior,
-and the [benchmark results](tracer/otel/bench/INSTRUMENT_RESULTS.md) for measured
-overhead and limitations.
+- [Combined instrumentation](tracer/otel/INSTRUMENT.md): metrics and traces
+  together, with optional correlated logs and CPU profiles.
+- [OpenTelemetry traces](tracer/otel/README.md): push-call spans, trace sampling,
+  and optional correlated logs and profiles.
+- [CPU profiles](tracer/otel/PROFILES.md): profiling alone, including frame
+  pointers and debug symbols for useful call stacks.
 
-### OpenTelemetry traces
+Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
+they share one configuration. Profiling requires the `profiles` build feature.
 
-With an OTLP/HTTP collector listening on port 4318:
+## Know what you are measuring
 
-```bash
-cargo build --release -p gst-otel-tracer
-export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
-export GST_TRACERS=mars-otel
-export OTEL_SERVICE_NAME=gstreamer-pipeline
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-# Sample 10% of new root traces; children inherit their parent's decision.
-export OTEL_TRACES_SAMPLER=parentbased_traceidratio
-export OTEL_TRACES_SAMPLER_ARG=0.1
-gst-launch-1.0 videotestsrc num-buffers=1000 ! videoconvert ! fakesink
-```
+- **Timing measures synchronous calls.** It does not measure per-buffer queue
+  residence, GPU completion, or end-to-end latency. The metrics guide explains
+  [what each measurement means](tracer/prometheus/README.md#metric-semantics).
+- **Pipeline structure matters.** `mars-metrics` supports push, pull, and buffer
+  lists; combined instrumentation currently covers ordinary pushes. Regular
+  `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
+  asynchronous boundaries are not handled correctly by the element timings.
+- **CPU profiling currently requires Linux x86-64.** It samples participating
+  streaming threads, with [stack and shutdown limitations](tracer/otel/PROFILES.md#sampling-and-shutdown).
 
-The default sampler records all new roots. A 0% root ratio still runs tracing
-hooks and propagates decisions, and sampled external parents are still honored.
-To remove the OTel tracing hooks, omit `mars-otel` from `GST_TRACERS` before
-starting the process. See the [OTel README](tracer/otel/README.md) for sampling,
-limits, delivery counters, shutdown, and performance measurements.
+## Further reading
 
-## Usage
+- [Performance reports](reports/README.md): measured overhead and reproduction instructions.
+- [Migration guide](MIGRATING.md): renamed tracers and the replacement for the standalone profiler.
+- [Contributing](CONTRIBUTING.md): development setup, tests, benchmarks, and remaining work.
 
-See the individual plugin README files for usage instructions:
+## License and credits
 
-- [mars-metrics](tracer/prometheus/README.md)
-- [mars-instrument](tracer/otel/INSTRUMENT.md)
-- [mars-otel](tracer/otel/README.md)
-- [mars-profiles](tracer/pyroscope/README.md)
+Distributed under the GNU Library General Public License (LGPL), version 2 or
+later. See [LICENSE](LICENSE).
 
-## Testing
-
-Run the tests using `just` or `cargo`:
-
-```bash
-just test
-# or
-cargo test
-# The default member is Prometheus; also run the OTel tests explicitly.
-cargo test -p gst-otel-tracer
-# Include the embedded profiler and metrics → trace → profile correlation tests.
-cargo test -p gst-otel-tracer --features profiles
-```
-
-## Roadmap
-
-- [x] Implement a working version of `mars-metrics`, for measuring latency across elements.
-- [x] Implement a working version of `mars-otel`, for spans & traces as buffers flow through the pipeline & log traceid correlation.
-- [x] Implement a working version of `mars-profiles`, for collecting profiles from gstreamer pipelines.
-- [x] Have `mars-metrics` cache pad relationships and metric labels, refreshing them on topology changes to keep per-buffer lookups cheap.
-- [x] Have `mars-metrics` latency across elements individually rather than cumulatively across all following elements until next thread boundary or sink element.
-- ~~Have `mars-metrics` measure whole-bin elapsed latency across queues and parallel branches.~~ Won't do: input/output matching and completion are ambiguous.
-- [x] In `mars-metrics`, add opt-in per-pad input/output buffer counts for muxers and demuxers.
-- [x] In `mars-metrics`, distinguish multiple sink/src pads and test branching, merging, and ghost forwarding.
-- [x] In `mars-metrics`, measure exclusive pull-mode latency at the upstream element.
-- [x] In `mars-metrics`, implement `pad_push_list_pre` and `pad_push_list_post` hooks to capture latency.
-- [x] In `mars-otel`, cache descriptions, preserve sampling decisions, and move compact records through bounded queues to worker-side OTLP encoding and export.
-- [ ] Further reduce `mars-otel` capture overhead on stock GStreamer; see the [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
-- [x] Implement experimental opt-in Pyroscope trace correlation separately from span capture (Linux x86-64).
-- [x] Add push metrics with trace/span exemplars through the `mars-instrument` entry point.
-- [x] In `mars-profiles`, determine how to get debug symbols for all of gstreamers dependencies.
-- [x] Create an experimental `mars-instrument` tracer with shared push capture for correlated metrics, traces, logs and CPU profiles. See [scope and setup](tracer/otel/INSTRUMENT.md).
-- [ ] Extend unified capture to pull mode and buffer lists, bring over remaining Prometheus diagnostics, and complete production soak/platform validation.
-
-## License
-
-> This library is distributed under the GNU Library General Public License (LGPL) version 2 or later. See the [LICENSE](LICENSE) file for full details.
+Inspired by GStreamer's [gstlatency.c](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/main/subprojects/gstreamer/plugins/tracers/gstlatency.c),
+written by [Stefan Sauer](mailto:ensonic@users.sf.net), with Rust implementations
+and Prometheus, OpenTelemetry, and Pyroscope integration.

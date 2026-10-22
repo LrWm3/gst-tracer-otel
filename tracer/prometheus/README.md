@@ -252,14 +252,14 @@ retired on scrape or within one second. Stopped pipelines retain series for
 pads and elements that remain alive.
 
 For current metrics-only CPU and memory measurements against tracer-off and
-`mars-instrument`, see [measured overhead](METRICS_RESULTS.md). The comparison
+`mars-instrument`, see [measured overhead](../../reports/prometheus/METRICS_RESULTS.md). The comparison
 uses identical push pipelines, actual HTTP scrapes/exports, and exact output
 count checks; raw data and reproduction commands are included.
 
 An earlier exploratory microbenchmark on an integrated memory nvidia device measured 2.857 s versus 3.043 s,
 but used different element-selection configurations. It does not establish
 matched per-edge overhead or a CPU-percentage estimate. Subsequent
-[matched benchmarks on an integrated memory nvidia device](BENCHMARK.md) compare tracer-off, original,
+[matched benchmarks on an integrated memory nvidia device](../../reports/prometheus/BENCHMARK.md) compare tracer-off, original,
 pre-review and reviewed builds with identical instrumentation settings and
 actual scraping. Short processor runs showed no material throughput penalty;
 the buffer-only loop did reveal additional instrumentation cost. The report
@@ -270,10 +270,10 @@ Profiling on GStreamer 1.24.2 found significant overhead from its tracing
 hook-table lookups and wall-clock timestamp reads, even at tracing points with
 no registered callbacks. This is a GStreamer limitation outside the plugin.
 
-See the [benchmark report](BENCHMARK.md) for local comparisons of the cache
+See the [benchmark report](../../reports/prometheus/BENCHMARK.md) for local comparisons of the cache
 changes, I/O counts, and graph cleanup, with raw results and reproduction commands.
 
-See [Rust review and cleanup plan](REVIEW.md) for fixes and remaining limitations.
+See [Rust review and cleanup plan](../../reports/prometheus/REVIEW.md) for fixes and remaining limitations.
 
 ### Example Output
 

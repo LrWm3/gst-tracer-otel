@@ -24,7 +24,7 @@ Each run sends **1,000,000 buffers through four identities and a fakesink**:
 or four independent source chains process 250,000 buffers each. There are five
 pad groups per chain. Sinks use `sync=false async=false`; buffers have no useful
 processing work. This is the same pipeline shape as the earlier
-[combined-capture comparison](../otel/bench/INSTRUMENT_RESULTS.md), with 100
+[combined-capture comparison](../otel/INSTRUMENT_RESULTS.md), with 100
 times as many buffers to reduce short-run noise. Absolute times from the two
 reports should not be compared directly.
 
@@ -129,11 +129,11 @@ revisions; they were not rerun for this report.
 ```sh
 cargo build --release -p gst-otel-tracer -p gst-prometheus-tracer
 python3 tracer/otel/bench/metrics.py --repeats 7 --buffers 1000000 \
-  --output tracer/prometheus/benchmarks/2026-10-22-metrics.csv
+  --output reports/prometheus/benchmarks/2026-10-22-metrics.csv
 ```
 
-The [harness](../otel/bench/metrics.py) uses the shared
-[pipeline driver](../otel/bench/pipeline.c). It accepts `--streams`,
+The [harness](../../tracer/otel/bench/metrics.py) uses the shared
+[pipeline driver](../../tracer/otel/bench/pipeline.c). It accepts `--streams`,
 `--sample-rate`, `--plugin-dir`, and optional `--cpus` for controlled affinity
 experiments. Warmups and every measured run undergo the same count checks;
 timeouts or missing output fail the benchmark.

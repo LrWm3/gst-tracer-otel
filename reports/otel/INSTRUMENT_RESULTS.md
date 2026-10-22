@@ -53,10 +53,10 @@ and a series-capacity limit; these are not included in the timing table.
 ```sh
 cargo build --release -p gst-otel-tracer
 python3 tracer/otel/bench/instrument.py --repeats 5 --buffers 10000 \
-  --output tracer/otel/bench/INSTRUMENT_RESULTS.csv
+  --output reports/otel/INSTRUMENT_RESULTS.csv
 ```
 
-The benchmark uses the existing [pipeline driver](pipeline.c). Raw measurements
+The benchmark uses the existing [pipeline driver](../../tracer/otel/bench/pipeline.c). Raw measurements
 are in [INSTRUMENT_RESULTS.csv](INSTRUMENT_RESULTS.csv). More buffers may require
 a larger trace queue or a faster receiver; the harness rejects missing spans
 instead of presenting a reduced export workload as a performance improvement.
@@ -64,4 +64,4 @@ instead of presenting a reduced export workload as a performance improvement.
 The metrics path uses fixed counter shards to avoid a global accounting cache
 line shared by every source. Metrics-only mode allocates no trace queue. Series
 registration, retirement, export chunking, and exemplars are bounded as described
-in the [implementation guide](../INSTRUMENT.md).
+in the [implementation guide](../../tracer/otel/INSTRUMENT.md).

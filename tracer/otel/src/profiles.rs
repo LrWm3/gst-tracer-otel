@@ -44,8 +44,8 @@ use linux as platform;
 #[cfg(not(all(feature = "profiles", target_os = "linux", target_arch = "x86_64")))]
 mod platform {
     use super::*;
-    pub fn initialize(_: &opentelemetry_sdk::Resource) -> Result<(), String> {
-        if std::env::var_os("GST_OTEL_PROFILE_URL").is_some() {
+    pub fn initialize(_: &opentelemetry_sdk::Resource, required: bool) -> Result<(), String> {
+        if required || std::env::var_os("GST_OTEL_PROFILE_URL").is_some() {
             Err("requires the profiles Cargo feature on Linux x86-64".into())
         } else {
             Ok(())
@@ -55,6 +55,8 @@ mod platform {
         false
     }
     pub fn clear() {}
+    #[cfg(feature = "profiles")]
+    pub fn register_thread() {}
     pub fn shutdown(_: Duration) -> Result<(), FlushError> {
         Ok(())
     }
@@ -63,6 +65,8 @@ mod platform {
     }
 }
 
+#[cfg(feature = "profiles")]
+pub(crate) use platform::register_thread;
 pub(crate) use platform::{clear, initialize, publish, shutdown};
 
 pub fn profile_stats() -> ProfileStats {
@@ -935,6 +939,14 @@ mod linux {
             .unwrap_or(false)
     }
 
+    // Profiles-only hooks need just one registration per native thread. Avoid
+    // context writes, stack bookkeeping, and repeated registration attempts.
+    pub fn register_thread() {
+        if ACTIVE.load(Relaxed) && ATTEMPTED.try_with(|v| !v.get()).unwrap_or(false) {
+            publish(None);
+        }
+    }
+
     // Only reads the bounded snapshot, never follows pointers in application
     // memory. A bad/truncated chain retains its interrupted leaf PC.
     fn unwind(sample: &mut Sample, stack: &[u8], sp: usize, mut fp: usize) -> bool {
@@ -1079,8 +1091,13 @@ mod linux {
         }
     }
 
-    pub fn initialize(resource: &opentelemetry_sdk::Resource) -> Result<(), String> {
-        let Some(url) = std::env::var_os("GST_OTEL_PROFILE_URL") else {
+    pub fn initialize(
+        resource: &opentelemetry_sdk::Resource,
+        required: bool,
+    ) -> Result<(), String> {
+        let Some(url) = std::env::var_os("GST_OTEL_PROFILE_URL")
+            .or_else(|| required.then(|| "http://localhost:4040".into()))
+        else {
             return Ok(());
         };
         let url = url
@@ -1387,7 +1404,7 @@ mod linux {
                 }
             });
             gst::init().unwrap();
-            initialize(&opentelemetry_sdk::Resource::builder_empty().build()).unwrap();
+            initialize(&opentelemetry_sdk::Resource::builder_empty().build(), false).unwrap();
             let published = || {
                 REGISTRATION.with(|r| {
                     r.borrow()

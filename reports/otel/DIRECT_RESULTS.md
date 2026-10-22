@@ -152,7 +152,7 @@ producer batching, source CPU medians were:
 The experiment measured the whole batching design, not each internal cost.
 Extra ownership, buffer recycling, and record movement are plausible causes,
 not separately established measurements. The prototype is preserved as
-[producer-batching.patch](producer-batching.patch), but is not in the compiled
+[producer-batching.patch](../../tracer/otel/bench/producer-batching.patch), but is not in the compiled
 implementation. Individual handoffs retain the existing flush contract and
 record bounds. Per-producer queues remain a separate design question.
 
@@ -176,7 +176,7 @@ configuration, and platform-root HTTPS through reqwest/Rustls. It keeps the
 existing explicit no-retry policy. A 64 MiB request limit and 4 MiB response limit
 bound transport buffers. Failed requests count the entire batch; timeout
 delivery remains uncertain, and successful HTTP status does not account for
-collector partial rejection. See the [tracer README](../README.md) for the full
+collector partial rejection. See the [tracer README](../../tracer/otel/README.md) for the full
 supported behavior and propagation boundaries.
 
 All slow/absent receiver runs satisfy
@@ -226,7 +226,7 @@ taskset -c 4-11 cargo test --release -p gst-otel-tracer --lib \
 
 For the body-only experiment, use baseline `21e0b7a`, copy the published
 `opentelemetry-otlp 0.33.1` source to a temporary directory, apply
-[otlp-body-bytes.patch](otlp-body-bytes.patch) there with `git apply --unidiff-zero`,
+[otlp-body-bytes.patch](../../tracer/otel/bench/otlp-body-bytes.patch) there with `git apply --unidiff-zero`,
 and point a temporary
 `[patch.crates-io]` entry at it. Compare that build with the untouched baseline;
 do not include any other implementation changes.

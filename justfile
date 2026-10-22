@@ -15,7 +15,7 @@ clean:
 build profile="release":
   cargo build --profile "{{profile}}"
 
-# Build a specific package; accepts: gst-otel-tracer, gst-prometheus-tracer, or gst-pyroscope-tracer.
+# Build a specific package; accepts: gst-otel-tracer, gst-prometheus-tracer, or gst-noop-tracer.
 [group('build')]
 build-package package="gst-prometheus-tracer" profile="release":
   cargo build  --package "{{package}}" --profile "{{profile}}"
@@ -34,7 +34,7 @@ audit:
 # Check for unused dependencies.
 [group('udeps')]
 udeps:
-  cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer -p gst-pyroscope-tracer --all-targets
+  cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets --all-features
 
 # Run tests with coverage analysis.
 [group('lint')]

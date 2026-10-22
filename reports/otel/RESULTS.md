@@ -84,7 +84,7 @@ concurrent shutdown accounting.
 
 ## Remaining boundaries
 
-The [tracer documentation](../README.md) describes the supported semantics.
+The [tracer documentation](../../tracer/otel/README.md) describes the supported semantics.
 Capture covers pad pushes, with inclusive durations. Arbitrary async buffer
 replacement, exact shared-buffer branch parentage, fan-in links, buffer lists,
 and pull-mode tracing need further designs. Missing async context is counted

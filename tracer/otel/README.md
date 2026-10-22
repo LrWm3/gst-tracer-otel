@@ -3,7 +3,8 @@
 `mars-otel` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
 It does not create live SDK spans or install a global tracer provider. An
 optional `profiles` feature adds an experimental embedded CPU sampler and
-Pyroscope delivery backend. The standalone `mars-profiles` tracer uses its own sampler.
+Pyroscope delivery backend. It also registers `mars-profiles`, a
+[profiles-only entry point](PROFILES.md) using that same sampler.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
 `mars-instrument` is an additional entry point in the same plugin, with shared
@@ -86,7 +87,9 @@ Feature compilation alone does not start profiling. Missing feature/platform,
 invalid settings, or an occupied signal log an initialization warning and leave
 tracing operational. A thread that blocks the signal or cannot create a timer
 is skipped and increments `registration_failures`; it is not retried. Profiling
-initialization and shutdown are process-wide and cannot be restarted. Configure
+initialization and shutdown are process-wide and cannot be restarted. Choose one
+of `mars-otel`, `mars-instrument`, or `mars-profiles`; the first constructed tracer
+selects the signal configuration and later instances install no hooks. Configure
 credentials/authentication at a local forwarding proxy for this prototype;
 it does not map OTLP headers to Pyroscope requests.
 
@@ -99,6 +102,10 @@ snapshot. Storage is allocated on first registration: about 146 KiB per used
 slot, rather than allocating about 9 MiB for all 64 slots at startup. Retiring
 threads release their timers and slots; their buffers remain available for
 reuse and safe handling of pending signals. Full rings drop samples.
+
+The `mars-profiles` entry point also registers buffer-list and pull-range
+threads, without a capture stack or span correlation. See its
+[configuration and migration guide](PROFILES.md).
 
 A dedicated report worker drains rings every second, aggregates raw stacks,
 reuses a bounded symbol cache, and interns frames directly into pprof. The SDK
@@ -315,7 +322,7 @@ spans in the measured follow-up runs arrived without trace export losses, and
 every received correlated sample matched an exported span and profile marker.
 The final build also passed the separate Pyroscope 2.4.0 ingestion/query check.
 
-[Follow-up raw measurements](bench/PROFILE_OPTIMIZATION_RESULTS.csv) retain every
+[Follow-up raw measurements](../../reports/otel/PROFILE_OPTIMIZATION_RESULTS.csv) retain every
 run, including warm-ups. The `previous` mode is the original enabled prototype;
 `enabled` is the optimized build. Reproduce with the existing benchmark arguments
 plus `--previous /path/to/original-profiles --modes previous enabled`. Keep the
@@ -376,7 +383,7 @@ each worker finished before its first timer tick. Its rows remain in the raw
 data, but the table uses a longer run with samples. At 100 Hz, very short pushes
 and short-lived threads can have no profile despite having a link attribute.
 
-[Raw per-run measurements](bench/PROFILE_RESULTS.csv) include warm-ups with
+[Raw per-run measurements](../../reports/otel/PROFILE_RESULTS.csv) include warm-ups with
 `repeat=-1`. [profiles.py](bench/profiles.py) compares three prebuilt plugin
 directories: the pre-change baseline, the current default build, and the current
 `--features profiles` build. Build each with the same flags and copy its shared
@@ -423,7 +430,7 @@ and are a small synthetic workload, not a production overhead guarantee. All
 healthy fully sampled runs delivered 50000 spans without drops or pending
 records. The final TLS optimization reduced 0% source CPU from 44.95 to 42.87 ms
 (4.6%); at 16 streams the smaller difference was comparable to control variation.
-See [rejected-path measurements](bench/REJECTED_RESULTS.md) for paired results,
+See [rejected-path measurements](../../reports/otel/REJECTED_RESULTS.md) for paired results,
 parallel streams, tee/queue workloads, failure accounting, and raw data.
 
 Zero sampling still costs roughly twice the disabled source CPU in this case.
@@ -524,18 +531,18 @@ queue to compare full delivery; slow/absent cases deliberately use a queue of
 source buffers; `--tee-queues` substitutes tee/queue stages to exercise shared
 buffers and asynchronous propagation (source CPU then excludes queue threads).
 Results and logs go under `target/otel-bench`. See the
-[follow-up measurements](bench/FOLLOWUP_RESULTS.md) for results and limitations.
-The [0.33.1 upgrade results](bench/UPGRADE_RESULTS.md) cover the previous SDK
-export path. [Direct export measurements](bench/DIRECT_RESULTS.md) compare the
+[follow-up measurements](../../reports/otel/FOLLOWUP_RESULTS.md) for results and limitations.
+The [0.33.1 upgrade results](../../reports/otel/UPGRADE_RESULTS.md) cover the previous SDK
+export path. [Direct export measurements](../../reports/otel/DIRECT_RESULTS.md) compare the
 current encoder and transport, rejected producer batching, adapter/batch-size
 experiments, and isolated encoding cost. Use `--http-client`, `--batch-size`, and
 `--keep-alive` to reproduce transport comparisons. The default benchmark collector
 uses HTTP/1.0; `--keep-alive` tests persistent HTTP/1.1 connections.
-[Capture propagation measurements](bench/CAPTURE_RESULTS.md) compare the next
+[Capture propagation measurements](../../reports/otel/CAPTURE_RESULTS.md) compare the next
 iteration against direct export, including disabled controls, the empty-hook
 diagnostic, and isolated rejected-capture timings. The `hooks` mode registers
 benchmark-only empty C callbacks; it does not run the OTel tracer.
-[Rejected-path measurements](bench/REJECTED_RESULTS.md) cover the subsequent
+[Rejected-path measurements](../../reports/otel/REJECTED_RESULTS.md) cover the subsequent
 TLS improvement and the deferred GStreamer 1.24.2 dispatcher prototype. The larger
 dispatcher gains require a rebuilt GStreamer; they are separate from improvements
 in this plugin. `--gst-library-path` and `--baseline-gst-library-path` select

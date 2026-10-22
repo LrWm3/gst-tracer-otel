@@ -33,8 +33,26 @@ fn enabled(key: &str, default: bool) -> Result<bool, String> {
     }
 }
 
-fn initialize(instrument: bool) -> Result<Runtime, String> {
-    let mut config = Config::from_env()?;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Traces,
+    Instrument,
+    Profiles,
+}
+
+fn initialize(mode: Mode) -> Result<Runtime, String> {
+    let profiles_only = mode == Mode::Profiles;
+    let instrument = mode == Mode::Instrument;
+    // Profiles-only operation must not depend on trace/metric/log settings or
+    // allocate their exporters, queues, capture stack, or metadata caches.
+    let mut config = if profiles_only {
+        Config {
+            traces: false,
+            ..Config::default()
+        }
+    } else {
+        Config::from_env()?
+    };
     let metrics = instrument && enabled("GST_INSTRUMENT_METRICS", true)?;
     let profiles = !instrument || enabled("GST_INSTRUMENT_PROFILES", true)?;
     if instrument {
@@ -62,7 +80,10 @@ fn initialize(instrument: bool) -> Result<Runtime, String> {
         .map_err(|e| e.to_string())?;
     runtime.metrics = metrics;
     if profiles {
-        if let Err(error) = crate::profiles::initialize(&resource) {
+        if let Err(error) = crate::profiles::initialize(&resource, profiles_only) {
+            if profiles_only {
+                return Err(error);
+            }
             gst::warning!(CAT, "Embedded profiles disabled: {error}");
         }
     }
@@ -71,158 +92,184 @@ fn initialize(instrument: bool) -> Result<Runtime, String> {
 
 static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-// Both entry points use exactly the same hooks and capture stack. The first
-// constructed tracer selects the process-wide signal configuration.
+pub(crate) fn activate(mode: Mode) -> bool {
+    // Claim ownership before initialization: another mode must not win hook
+    // registration while this mode is still creating its runtime.
+    if REGISTERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        gst::warning!(
+            CAT,
+            "A telemetry tracer is already active; retaining its signal configuration"
+        );
+        return false;
+    }
+    if let Err(error) = RUNTIME.get_or_init(|| initialize(mode)) {
+        gst::error!(CAT, "Telemetry tracer disabled: {error}");
+        return false;
+    }
+    true
+}
+
+// The tracing entry points share hooks and the capture stack. Profiles-only
+// hooks live in profiletracer.rs and never enter span capture.
 macro_rules! tracer_impl {
-($module:ident, $wrapper:ident, $name:literal, $instrument:literal) => {
-mod $module {
-    use super::*;
+    ($module:ident, $wrapper:ident, $name:literal, $mode:expr) => {
+        mod $module {
+            use super::*;
 
-    #[derive(Default)]
-    pub struct OtelTracerImpl;
+            #[derive(Default)]
+            pub struct OtelTracerImpl;
 
-    #[glib::object_subclass]
-    impl ObjectSubclass for OtelTracerImpl {
-        const NAME: &'static str = $name;
-        type Type = super::$wrapper;
-        type ParentType = gst::Tracer;
-    }
+            #[glib::object_subclass]
+            impl ObjectSubclass for OtelTracerImpl {
+                const NAME: &'static str = $name;
+                type Type = super::$wrapper;
+                type ParentType = gst::Tracer;
+            }
 
-    impl ObjectImpl for OtelTracerImpl {
-        fn properties() -> &'static [glib::ParamSpec] {
-            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
-                vec![glib::ParamSpecBoxed::builder::<gst::Structure>("stats")
-                    .read_only()
-                    .build(), glib::ParamSpecBoxed::builder::<gst::Structure>("metric-stats").read_only().build()]
-            });
-            PROPERTIES.as_ref()
-        }
-        fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
-            match pspec.name() {
-                "stats" => runtime()
-                    .ok()
-                    .map(|r| r.stats.snapshot().to_structure())
-                    .to_value(),
-                "metric-stats" => runtime().ok().map(|r| r.metrics.as_ref().map_or_else(crate::metrics::MetricStats::default, |m| m.stats()).to_structure()).to_value(),
-                _ => unreachable!(),
-            }
-        }
-
-        fn constructed(&self) {
-            self.parent_constructed();
-            if let Err(error) = RUNTIME.get_or_init(|| initialize($instrument)) {
-                gst::error!(CAT, "OTel tracer disabled: {error}");
-                return;
-            }
-            // Multiple tracer instances would otherwise duplicate hooks and TLS frames.
-            if REGISTERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                gst::warning!(CAT, "A telemetry tracer is already active; retaining its signal configuration");
-                return;
-            }
-            for hook in [
-                TracerHook::PadPushPre,
-                TracerHook::PadPushPost,
-                TracerHook::PadLinkPost,
-                TracerHook::PadUnlinkPost,
-                TracerHook::ElementAddPad,
-                TracerHook::ElementRemovePad,
-                TracerHook::BinAddPost,
-                TracerHook::BinRemovePost,
-                TracerHook::ElementChangeStatePost,
-            ] {
-                self.register_hook(hook);
-            }
-        }
-    }
-    impl GstObjectImpl for OtelTracerImpl {}
-    impl TracerImpl for OtelTracerImpl {
-        fn pad_push_pre(&self, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-            if let Ok(runtime) = runtime() {
-                capture::begin(runtime, ts, pad, buffer);
-            }
-        }
-        fn pad_push_post(
-            &self,
-            ts: u64,
-            pad: &gst::Pad,
-            result: Result<gst::FlowSuccess, gst::FlowError>,
-        ) {
-            let flow = match result {
-                Ok(v) => v.into_glib(),
-                Err(v) => v.into_glib(),
-            };
-            if let Ok(runtime) = runtime() {
-                capture::end(runtime, ts, pad, flow);
-            }
-        }
-        fn pad_link_post(
-            &self,
-            _: u64,
-            src: &gst::Pad,
-            sink: &gst::Pad,
-            _: Result<gst::PadLinkSuccess, gst::PadLinkError>,
-        ) {
-            metadata::invalidate(src);
-            metadata::invalidate(sink);
-        }
-        fn pad_unlink_post(&self, _: u64, src: &gst::Pad, sink: &gst::Pad, _: bool) {
-            metadata::invalidate(src);
-            metadata::invalidate(sink);
-        }
-        fn element_add_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
-            metadata::invalidate(element);
-            metadata::invalidate(pad);
-        }
-        fn element_remove_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
-            metadata::invalidate(element);
-            metadata::invalidate(pad);
-        }
-        fn bin_add_post(&self, _: u64, _: &gst::Bin, element: &gst::Element, _: bool) {
-            metadata::invalidate(element);
-        }
-        fn bin_remove_post(&self, _: u64, bin: &gst::Bin, _: bool) {
-            // Old weak subscriptions also cover the subtree just removed.
-            metadata::invalidate(bin);
-        }
-        fn element_change_state_post(
-            &self,
-            _: u64,
-            element: &gst::Element,
-            change: gst::StateChange,
-            result: Result<gst::StateChangeSuccess, gst::StateChangeError>,
-        ) {
-            if element.is::<gst::Pipeline>()
-                && change == gst::StateChange::ReadyToNull
-                && result.is_ok()
-            {
-                if let Ok(runtime) = runtime() {
-                    if let Err(error) = runtime.flush(runtime.config.flush_timeout) {
-                        gst::warning!(
-                            CAT,
-                            "Telemetry drain failed: {error}; counters: {:?}",
-                            runtime.stats.snapshot()
-                        );
+            impl ObjectImpl for OtelTracerImpl {
+                fn properties() -> &'static [glib::ParamSpec] {
+                    static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                        vec![
+                            glib::ParamSpecBoxed::builder::<gst::Structure>("stats")
+                                .read_only()
+                                .build(),
+                            glib::ParamSpecBoxed::builder::<gst::Structure>("metric-stats")
+                                .read_only()
+                                .build(),
+                        ]
+                    });
+                    PROPERTIES.as_ref()
+                }
+                fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
+                    match pspec.name() {
+                        "stats" => runtime()
+                            .ok()
+                            .map(|r| r.stats.snapshot().to_structure())
+                            .to_value(),
+                        "metric-stats" => runtime()
+                            .ok()
+                            .map(|r| {
+                                r.metrics
+                                    .as_ref()
+                                    .map_or_else(crate::metrics::MetricStats::default, |m| {
+                                        m.stats()
+                                    })
+                                    .to_structure()
+                            })
+                            .to_value(),
+                        _ => unreachable!(),
                     }
-                    crate::otellogbridge::flush();
+                }
+
+                fn constructed(&self) {
+                    self.parent_constructed();
+                    if !activate($mode) {
+                        return;
+                    }
+                    for hook in [
+                        TracerHook::PadPushPre,
+                        TracerHook::PadPushPost,
+                        TracerHook::PadLinkPost,
+                        TracerHook::PadUnlinkPost,
+                        TracerHook::ElementAddPad,
+                        TracerHook::ElementRemovePad,
+                        TracerHook::BinAddPost,
+                        TracerHook::BinRemovePost,
+                        TracerHook::ElementChangeStatePost,
+                    ] {
+                        self.register_hook(hook);
+                    }
+                }
+            }
+            impl GstObjectImpl for OtelTracerImpl {}
+            impl TracerImpl for OtelTracerImpl {
+                fn pad_push_pre(&self, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
+                    if let Ok(runtime) = runtime() {
+                        capture::begin(runtime, ts, pad, buffer);
+                    }
+                }
+                fn pad_push_post(
+                    &self,
+                    ts: u64,
+                    pad: &gst::Pad,
+                    result: Result<gst::FlowSuccess, gst::FlowError>,
+                ) {
+                    let flow = match result {
+                        Ok(v) => v.into_glib(),
+                        Err(v) => v.into_glib(),
+                    };
+                    if let Ok(runtime) = runtime() {
+                        capture::end(runtime, ts, pad, flow);
+                    }
+                }
+                fn pad_link_post(
+                    &self,
+                    _: u64,
+                    src: &gst::Pad,
+                    sink: &gst::Pad,
+                    _: Result<gst::PadLinkSuccess, gst::PadLinkError>,
+                ) {
+                    metadata::invalidate(src);
+                    metadata::invalidate(sink);
+                }
+                fn pad_unlink_post(&self, _: u64, src: &gst::Pad, sink: &gst::Pad, _: bool) {
+                    metadata::invalidate(src);
+                    metadata::invalidate(sink);
+                }
+                fn element_add_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+                    metadata::invalidate(element);
+                    metadata::invalidate(pad);
+                }
+                fn element_remove_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+                    metadata::invalidate(element);
+                    metadata::invalidate(pad);
+                }
+                fn bin_add_post(&self, _: u64, _: &gst::Bin, element: &gst::Element, _: bool) {
+                    metadata::invalidate(element);
+                }
+                fn bin_remove_post(&self, _: u64, bin: &gst::Bin, _: bool) {
+                    // Old weak subscriptions also cover the subtree just removed.
+                    metadata::invalidate(bin);
+                }
+                fn element_change_state_post(
+                    &self,
+                    _: u64,
+                    element: &gst::Element,
+                    change: gst::StateChange,
+                    result: Result<gst::StateChangeSuccess, gst::StateChangeError>,
+                ) {
+                    if element.is::<gst::Pipeline>()
+                        && change == gst::StateChange::ReadyToNull
+                        && result.is_ok()
+                    {
+                        if let Ok(runtime) = runtime() {
+                            if let Err(error) = runtime.flush(runtime.config.flush_timeout) {
+                                gst::warning!(
+                                    CAT,
+                                    "Telemetry drain failed: {error}; counters: {:?}",
+                                    runtime.stats.snapshot()
+                                );
+                            }
+                            crate::otellogbridge::flush();
+                        }
+                    }
                 }
             }
         }
-    }
-}
 
-glib::wrapper! {
-    /// Process-wide telemetry tracer. The first instance selects signal settings.
-    pub struct $wrapper(ObjectSubclass<$module::OtelTracerImpl>)
-        @extends gst::Tracer, gst::Object;
+        glib::wrapper! {
+            /// Process-wide telemetry tracer. The first instance selects signal settings.
+            pub struct $wrapper(ObjectSubclass<$module::OtelTracerImpl>)
+                @extends gst::Tracer, gst::Object;
+        }
+    };
 }
-};
-}
-tracer_impl!(imp, TelemetryTracer, "MarsOtelTracer", false);
+tracer_impl!(imp, TelemetryTracer, "MarsOtelTracer", Mode::Traces);
 tracer_impl!(
     instrument_imp,
     InstrumentTracer,
     "MarsInstrumentTracer",
-    true
+    Mode::Instrument
 );
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {

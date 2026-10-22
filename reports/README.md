@@ -1,0 +1,26 @@
+# Performance reports
+
+Reviews, measured results, and supporting data are grouped by implementation.
+Run reproduction commands from the repository root.
+
+## Metrics
+
+- [Metrics-only CPU and memory comparison](prometheus/METRICS_RESULTS.md)
+- [Benchmarks on an integrated memory nvidia device and lifecycle checks](prometheus/BENCHMARK.md)
+- [Rust review and cleanup findings](prometheus/REVIEW.md)
+
+## OpenTelemetry and combined instrumentation
+
+- [Original OpenTelemetry performance review](otel/OTEL_PERFORMANCE_REVIEW.md)
+- [Compact tracing implementation](otel/RESULTS.md)
+- [Compact capture follow-up](otel/FOLLOWUP_RESULTS.md)
+- [OpenTelemetry SDK upgrade](otel/UPGRADE_RESULTS.md)
+- [Direct OTLP encoding](otel/DIRECT_RESULTS.md)
+- [Capture propagation](otel/CAPTURE_RESULTS.md)
+- [Rejected-push overhead](otel/REJECTED_RESULTS.md)
+- [Combined instrumentation measurements](otel/INSTRUMENT_RESULTS.md)
+
+Correlated-profile measurements are described in the
+[tracer guide](../tracer/otel/README.md#performance-and-sampling-cost), with
+[initial raw measurements](otel/PROFILE_RESULTS.csv) and
+[worker-optimization measurements](otel/PROFILE_OPTIMIZATION_RESULTS.csv).

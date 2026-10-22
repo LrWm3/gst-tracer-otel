@@ -27,6 +27,7 @@ use std::{
 
 #[derive(Default)]
 struct Received {
+    requests: Vec<String>,
     spans: Vec<Span>,
     profiles: Vec<Profile>,
     exemplars: Vec<Exemplar>,
@@ -40,7 +41,7 @@ fn collect(mode: &str) -> (Received, String) {
     let output = received.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
-    let fail = mode == "slow";
+    let fail = mode.ends_with("slow");
     let worker = std::thread::spawn(move || {
         while !stopping.load(Ordering::Relaxed) {
             let Some(mut request) = server.recv_timeout(Duration::from_millis(10)).unwrap() else {
@@ -48,6 +49,11 @@ fn collect(mode: &str) -> (Received, String) {
             };
             let mut bytes = Vec::new();
             request.as_reader().read_to_end(&mut bytes).unwrap();
+            output
+                .lock()
+                .unwrap()
+                .requests
+                .push(request.url().to_owned());
             if request.url() == "/v1/traces" {
                 let decoded = ExportTraceServiceRequest::decode(bytes.as_slice()).unwrap();
                 for resource in decoded.resource_spans {
@@ -136,10 +142,24 @@ fn collect(mode: &str) -> (Received, String) {
             .env("GST_INSTRUMENT_LOGS", "true")
             .env("GST_DEBUG", "instrument-test:4");
     }
+    if mode.starts_with("profiles-only") {
+        // Profiles-only selection must ignore unrelated telemetry settings,
+        // including enabled signals and malformed trace/metric configuration.
+        command
+            .env("GST_OTEL_LOGS", "true")
+            .env("GST_INSTRUMENT_LOGS", "true")
+            .env("GST_INSTRUMENT_TRACES", "true")
+            .env("GST_INSTRUMENT_METRICS", "true")
+            .env("GST_INSTRUMENT_PROFILES", "false")
+            .env("OTEL_TRACES_SAMPLER", "not-a-sampler")
+            .env("GST_OTEL_QUEUE_CAPACITY", "0")
+            .env("GST_OTEL_METRIC_MAX_SERIES", "0")
+            .env("GST_DEBUG", "instrument-test:4");
+    }
     if mode != "disabled" {
         command.env("GST_OTEL_PROFILE_URL", format!("http://{address}"));
     }
-    if mode == "invalid-rate" {
+    if mode.ends_with("invalid-rate") {
         command.env("GST_OTEL_PROFILE_HZ", "0");
     }
     let mut child = command
@@ -288,6 +308,64 @@ fn slow_profile_receiver_does_not_extend_shutdown_deadline() {
     collect("slow");
 }
 
+#[test]
+fn profiles_only_uploads_cpu_samples_without_any_otlp_requests() {
+    for mode in ["profiles-only", "profiles-only-list", "profiles-only-pull"] {
+        let (received, _) = collect(mode);
+        assert!(!received.requests.is_empty(), "{mode}");
+        assert!(
+            received
+                .requests
+                .iter()
+                .all(|path| path == "/push.v1.PusherService/Push"),
+            "{mode}: {:?}",
+            received.requests
+        );
+        assert!(
+            received.profiles.iter().any(|p| !p.sample.is_empty()),
+            "{mode}"
+        );
+        let mut tids = HashSet::new();
+        for profile in &received.profiles {
+            assert_eq!(profile.period, 10_000_000);
+            for sample in &profile.sample {
+                assert!(!sample.location_id.is_empty());
+                for label in &sample.label {
+                    let key = profile.string_table[label.key as usize].as_str();
+                    assert!(!matches!(key, "span_id" | "trace_id"));
+                    if key == "thread_id" {
+                        tids.insert(profile.string_table[label.str as usize].clone());
+                    }
+                }
+            }
+        }
+        assert!(!tids.is_empty());
+        if mode == "profiles-only" {
+            assert!(
+                tids.len() >= 2,
+                "source and queue threads must both be profiled"
+            );
+        }
+    }
+}
+
+#[test]
+fn profiles_only_rejects_invalid_configuration_without_starting_other_signals() {
+    for mode in [
+        "profiles-only-invalid-rate",
+        "profiles-only-signal-conflict",
+        "profiles-only-legacy-params",
+    ] {
+        let (received, _) = collect(mode);
+        assert!(received.requests.is_empty());
+    }
+}
+
+#[test]
+fn profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver() {
+    collect("profiles-only-slow");
+}
+
 #[inline(never)]
 fn busy(phase: &str) {
     static CAT: std::sync::LazyLock<gst::DebugCategory> = std::sync::LazyLock::new(|| {
@@ -315,18 +393,143 @@ fn busy(phase: &str) {
 #[ignore = "subprocess with isolated signal disposition, GStreamer and profiler globals"]
 fn profile_child() {
     let mode = std::env::var("OTEL_PROFILE_TEST").unwrap();
-    if mode == "signal-conflict" {
+    let profiles_only = mode.starts_with("profiles-only");
+    let slow = mode.ends_with("slow");
+    if mode.ends_with("signal-conflict") {
         // SAFETY: isolated child reserves the default profiling signal first.
         unsafe {
             libc::signal(libc::SIGRTMIN() + 6, libc::SIG_IGN);
         }
     }
     gst::init().unwrap();
-    let _tracer: gst::Tracer = if mode == "instrument" {
+    let _tracer: gst::Tracer = if profiles_only {
+        if mode.ends_with("legacy-params") {
+            glib::Object::builder::<gstoteltracer::ProfilesTracer>()
+                .property("params", "sample-rate=100")
+                .build()
+                .upcast()
+        } else {
+            glib::Object::new::<gstoteltracer::ProfilesTracer>().upcast()
+        }
+    } else if mode == "instrument" {
         glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()
     } else {
         glib::Object::new::<gstoteltracer::TelemetryTracer>().upcast()
     };
+    if profiles_only
+        && (mode.ends_with("invalid-rate")
+            || mode.ends_with("signal-conflict")
+            || mode.ends_with("legacy-params"))
+    {
+        assert_eq!(
+            gstoteltracer::stats(),
+            Err(gstoteltracer::FlushError::NotInitialized)
+        );
+        assert_eq!(
+            gstoteltracer::profile_stats(),
+            gstoteltracer::ProfileStats::default()
+        );
+        return;
+    }
+    // All entries share one process configuration. Later tracer instances must
+    // neither enable OTLP nor install duplicate hooks that clear active IDs.
+    let _duplicate_profiles = glib::Object::new::<gstoteltracer::ProfilesTracer>();
+    let _duplicate_traces = glib::Object::new::<gstoteltracer::TelemetryTracer>();
+    let _duplicate_instrument = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+
+    if mode.ends_with("-list") || mode.ends_with("-pull") {
+        profile_non_push_work(&mode);
+    } else {
+        profile_push_work();
+    }
+    if profiles_only {
+        assert!(gstoteltracer::current_span_context().is_none());
+        assert_eq!(
+            gstoteltracer::stats().unwrap(),
+            gstoteltracer::ExportStats::default()
+        );
+        let metrics = gstoteltracer::metric_stats().unwrap();
+        assert_eq!(metrics.recorded_pushes, 0);
+        assert_eq!(metrics.active_series, 0);
+        assert_eq!(metrics.exported_batches, 0);
+        assert_eq!(metrics.failed_exports, 0);
+        assert_eq!(gstoteltracer::profile_stats().correlated_samples, 0);
+    }
+    // Drain trace export before testing the independent profile deadline.
+    gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+    let start = Instant::now();
+    let shutdown = gstoteltracer::shutdown(Duration::from_millis(if slow { 30 } else { 5000 }));
+    if slow {
+        assert_eq!(shutdown, Err(gstoteltracer::FlushError::Timeout));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Cleanup is asynchronous after timeout; a retry must finish it.
+        gstoteltracer::shutdown(Duration::from_secs(10)).unwrap();
+    } else {
+        shutdown.unwrap();
+    }
+    let stats = gstoteltracer::profile_stats();
+    println!("STATS {stats:?}");
+    assert_eq!(stats.active_threads, 0);
+    if profiles_only || matches!(mode.as_str(), "sampled" | "unsampled") {
+        assert!(stats.samples > 0, "{stats:?}");
+        assert_eq!(stats.dropped_full, 0, "{stats:?}");
+        assert_eq!(stats.dropped_processing, 0, "{stats:?}");
+        assert_eq!(stats.dropped_upload, 0, "{stats:?}");
+        assert_eq!(stats.registration_failures, 0, "{stats:?}");
+        assert_eq!(
+            stats.reported_samples, stats.samples,
+            "final report must drain samples"
+        );
+    }
+    gstoteltracer::shutdown(Duration::from_secs(1)).unwrap();
+}
+
+fn profile_non_push_work(mode: &str) {
+    let src = gst::Pad::builder(gst::PadDirection::Src)
+        .name("profile-source")
+        .getrange_function(|_, _, _, _, size| {
+            assert!(gstoteltracer::current_span_context().is_none());
+            busy("pull");
+            Ok(gst::PadGetRangeSuccess::NewBuffer(
+                gst::Buffer::with_size(size as usize).unwrap(),
+            ))
+        })
+        .build();
+    let sink = gst::Pad::builder(gst::PadDirection::Sink)
+        .name("profile-sink")
+        .chain_list_function(|_, _, _| {
+            assert!(gstoteltracer::current_span_context().is_none());
+            busy("list");
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .build();
+    src.link(&sink).unwrap();
+    if mode.ends_with("-pull") {
+        src.activate_mode(gst::PadMode::Pull, true).unwrap();
+        sink.activate_mode(gst::PadMode::Pull, true).unwrap();
+        for offset in 0..8 {
+            sink.pull_range(offset, 1).unwrap();
+        }
+        sink.activate_mode(gst::PadMode::Pull, false).unwrap();
+        src.activate_mode(gst::PadMode::Pull, false).unwrap();
+    } else {
+        src.set_active(true).unwrap();
+        sink.set_active(true).unwrap();
+        src.push_event(gst::event::StreamStart::new("list"));
+        src.push_event(gst::event::Segment::new(&gst::FormattedSegment::<
+            gst::format::Bytes,
+        >::new()));
+        for _ in 0..8 {
+            let mut list = gst::BufferList::new();
+            list.get_mut().unwrap().add(gst::Buffer::new());
+            src.push_list(list).unwrap();
+        }
+        src.set_active(false).unwrap();
+        sink.set_active(false).unwrap();
+    }
+}
+
+fn profile_push_work() {
     let source = gst::Pad::builder(gst::PadDirection::Src)
         .name("nested-source")
         .build();
@@ -384,34 +587,6 @@ fn profile_child() {
     pipeline.set_state(gst::State::Null).unwrap();
     source.set_active(false).unwrap();
     sink.set_active(false).unwrap();
-    // Drain trace export before testing the independent profile deadline.
-    gstoteltracer::flush(Duration::from_secs(5)).unwrap();
-    let start = Instant::now();
-    let shutdown = gstoteltracer::shutdown(Duration::from_millis(if mode == "slow" {
-        30
-    } else {
-        5000
-    }));
-    if mode == "slow" {
-        assert_eq!(shutdown, Err(gstoteltracer::FlushError::Timeout));
-        assert!(start.elapsed() < Duration::from_secs(1));
-    } else {
-        shutdown.unwrap();
-    }
-    let stats = gstoteltracer::profile_stats();
-    println!("STATS {stats:?}");
-    assert_eq!(stats.active_threads, 0);
-    if matches!(mode.as_str(), "sampled" | "unsampled") {
-        assert!(stats.samples > 0, "{stats:?}");
-        assert_eq!(stats.dropped_full, 0, "{stats:?}");
-        assert_eq!(stats.dropped_processing, 0, "{stats:?}");
-        assert_eq!(stats.dropped_upload, 0, "{stats:?}");
-        assert_eq!(stats.registration_failures, 0, "{stats:?}");
-        assert_eq!(
-            stats.reported_samples, stats.samples,
-            "final report must drain samples"
-        );
-    }
 }
 
 #[test]

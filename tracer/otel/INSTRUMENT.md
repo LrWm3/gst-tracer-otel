@@ -4,6 +4,8 @@
 uses one set of push hooks, one nested call stack, and cached pad descriptions
 for OTLP metrics and traces, optional correlated GStreamer logs, and optional
 Pyroscope CPU profiles. `mars-otel` retains its existing defaults.
+For CPU profiles alone, use the [mars-profiles entry point](PROFILES.md) in the
+same plugin, built with `--features profiles`.
 
 This first version covers ordinary `gst_pad_push` calls, including nested
 pushes and propagation across queues. It does not replace the full
@@ -175,8 +177,8 @@ python3 tracer/otel/bench/instrument.py --repeats 5 --buffers 10000
 It compares no tracer, `mars-otel`, metrics-only, combined metrics/traces, and
 combined capture with traces unsampled. Profiles and logs are disabled for this
 comparison. It decodes exports and checks every expected trace and metric count.
-See [measured results](bench/INSTRUMENT_RESULTS.md).
+See [measured results](../../reports/otel/INSTRUMENT_RESULTS.md).
 
-A separate [metrics-only comparison](../prometheus/METRICS_RESULTS.md) measures
+A separate [metrics-only comparison](../../reports/prometheus/METRICS_RESULTS.md) measures
 `GST_INSTRUMENT_TRACES=false` against `mars-metrics` and no tracer, including
 HTTP delivery, CPU cost per push, and peak memory on longer runs.

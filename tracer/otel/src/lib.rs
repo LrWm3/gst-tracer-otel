@@ -22,6 +22,8 @@ mod metadata;
 mod metrics;
 mod otellogbridge;
 mod profiles;
+#[cfg(feature = "profiles")]
+mod profiletracer;
 mod propagation;
 mod tracer;
 mod transport;
@@ -30,6 +32,8 @@ mod wire;
 pub use export::{ExportStats, FlushError};
 pub use metrics::MetricStats;
 pub use profiles::{profile_stats, ProfileStats};
+#[cfg(feature = "profiles")]
+pub use profiletracer::ProfilesTracer;
 pub use tracer::{InstrumentTracer, TelemetryTracer};
 
 /// Drain traces and snapshot cumulative metrics, bounded by `timeout`.
@@ -71,12 +75,14 @@ pub fn metric_stats() -> Result<MetricStats, FlushError> {
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     tracer::register(plugin)?;
+    #[cfg(feature = "profiles")]
+    profiletracer::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
     oteltracer, // → libgstoteltracer.so
-    "Mars OTLP tracing and correlated instrumentation",
+    "Mars OTLP instrumentation and CPU profiling",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",
@@ -105,15 +111,15 @@ mod registration_tests {
             })
             .collect::<Vec<_>>();
         factories.sort();
-        assert_eq!(
-            factories,
-            vec![
-                (
-                    "mars-instrument".to_owned(),
-                    "MarsInstrumentTracer".to_owned()
-                ),
-                ("mars-otel".to_owned(), "MarsOtelTracer".to_owned())
-            ]
-        );
+        let expected = vec![
+            (
+                "mars-instrument".to_owned(),
+                "MarsInstrumentTracer".to_owned(),
+            ),
+            ("mars-otel".to_owned(), "MarsOtelTracer".to_owned()),
+            #[cfg(feature = "profiles")]
+            ("mars-profiles".to_owned(), "MarsProfilesTracer".to_owned()),
+        ];
+        assert_eq!(factories, expected);
     }
 }

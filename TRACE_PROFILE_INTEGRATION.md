@@ -80,9 +80,10 @@ to this integration.
 Tests also exercise a full/disconnected upload channel, 1000 Hz sampling during
 allocation and mutex/loader activity, more thread retirements than available
 slots, and a stalled registration lock. Child processes have watchdog deadlines.
-The standalone `mars-profiles` tracer (`gst-pyroscope-tracer`) still uses its original dependencies and
-does **not** receive these embedded-worker changes. Do not treat this work as a
-fix for that separate plugin's runtime.
+The standalone `gst-pyroscope-tracer` implementation has since been removed.
+The [mars-profiles entry point](tracer/otel/PROFILES.md) now lives in the OTel
+plugin and uses this same sampler and worker without trace capture. Its
+thread coverage and configuration differ from the removed pprof backend.
 
 Validation after the follow-up: formatting, all-feature workspace Clippy,
 default workspace tests, OTel tests with and without `profiles`, `cargo audit`,
@@ -111,7 +112,7 @@ performance/server checks were repeated with those final dependencies.
   live SDK spans and no `SpanProcessor` callbacks to extend. Both this encoder
   and the reference `SpanData` conversion in [export.rs](tracer/otel/src/export.rs)
   would need any new profile-link attribute, with equivalence tests.
-- [The standalone profiler](tracer/pyroscope/src/profiles.rs) starts a
+- [The former standalone profiler](https://github.com/LrWm3/gst-tracer-otel/blob/37845b7a8e090eaa759ab048f4141e8758f8b1ec/tracer/pyroscope/src/profiles.rs) starts a
   process-wide CPU profiler on the first successful addition to a pipeline.
   It currently has no trace-context connection. Its `pipeline` tag comes from
   that first pipeline even though it profiles the process, including other
@@ -119,7 +120,7 @@ performance/server checks were repeated with those final dependencies.
 
 **Why the previous approach cannot be repaired by moving work to a worker**
 
-The lockfile resolves `pyroscope` 0.5.8, `pyroscope_pprofrs` 0.2.10 and `pprof2`
+The baseline lockfile resolved `pyroscope` 0.5.8, `pyroscope_pprofrs` 0.2.10 and `pprof2`
 0.13.1. Inspection of those downloaded crate sources confirms:
 
 1. `Pprof::add_rule` and `remove_rule` call `dump_report` while the profiler is
@@ -137,7 +138,7 @@ The lockfile resolves `pyroscope` 0.5.8, `pyroscope_pprofrs` 0.2.10 and `pprof2`
    A local span under a remote parent can acquire a label without removing it.
    Root-only labeling also did not activate context on downstream queue threads.
 
-The [previous performance review](OTEL_PERFORMANCE_REVIEW.md) records the measured
+The [previous performance review](reports/otel/OTEL_PERFORMANCE_REVIEW.md) records the measured
 costs. The [removed processor](https://github.com/LrWm3/gst-tracer-otel/blob/c5c45815bc24b256b97bb7c24b0ea21e278da1ef/tracer/otel/src/pyroscopespanprocessor.rs)
 is useful historical evidence, not an implementation to revive.
 

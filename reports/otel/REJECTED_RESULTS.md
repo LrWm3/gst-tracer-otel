@@ -52,7 +52,7 @@ tracepoint take a timestamp and perform hook-table lookups, including tracepoint
 without listeners. See the
 [upstream dispatcher](https://raw.githubusercontent.com/GStreamer/gstreamer/1.24.2/subprojects/gstreamer/gst/gsttracerutils.h).
 
-[The prototype patch](gstreamer-1.24.2-hook-interest.patch) records registered
+[The prototype patch](../../tracer/otel/bench/gstreamer-1.24.2-hook-interest.patch) records registered
 hook IDs in a 64-bit interest mask. A tracepoint checks its bit before obtaining
 a timestamp or looking up callbacks. A wildcard registration sets all bits;
 specific and wildcard callbacks retain the existing dispatch loops. Teardown
@@ -127,7 +127,7 @@ All finish with zero pending records and exact completed-span accounting.
 
 ## Rejected alternative
 
-[The compact-frame prototype](rejected-frames.patch), applicable to `8e0f524`,
+[The compact-frame prototype](../../tracer/otel/bench/rejected-frames.patch), applicable to `8e0f524`,
 stores an unchanged rejected context once for a nested run. Its isolated warm
 capture benchmark improved, but the 90-run pipeline comparison did not show a
 consistent gain: single-stream rejected CPU changed from 43.96 to 44.34 ms, and
@@ -142,7 +142,7 @@ was removed. The retained TLS change keeps the existing frame/token ownership.
 - The same 31 OTel tests pass with the private patched core, including sampling,
   external parent decisions, metadata copies, queue/tee propagation, native log
   correlation, both HTTP adapters, and failure accounting.
-- [The standalone callback check](gst-dispatch-check.c) passes against both core
+- [The standalone callback check](../../tracer/otel/bench/gst-dispatch-check.c) passes against both core
   builds, compiled with `-Wall -Wextra -Werror`. It checks specific listeners,
   multiple listeners, wildcard delivery on otherwise unobserved events, and
   nonzero timestamps.

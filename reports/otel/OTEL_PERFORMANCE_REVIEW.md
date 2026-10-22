@@ -9,7 +9,7 @@ source snapshots and binaries remain under `target/perf-review/`.
 
 The queued implementation is now on `impl/otel-compact-capture`; see
 [implementation results](https://github.com/LrWm3/gst-tracer-otel/blob/c5c45815bc24b256b97bb7c24b0ea21e278da1ef/tracer/otel/bench/RESULTS.md) and the
-[implementation queue](IMPL_QUEUE.md). The measurements below describe the
+[implementation queue](https://github.com/LrWm3/gst-tracer-otel/blob/8b519d80eee10f9184b1f049a8194943af0ca677/IMPL_QUEUE.md). The measurements below describe the
 original code, before that implementation.
 
 The broken Pyroscope span correlation is the first cost to remove. The pinned
@@ -254,7 +254,7 @@ logging, so they should not be treated as performance benchmarks.
 ## Baseline recommendations
 
 The agreed implementation scope and acceptance checks are recorded in
-[IMPL_QUEUE.md](IMPL_QUEUE.md). These were the broader baseline recommendations.
+[IMPL_QUEUE.md](https://github.com/LrWm3/gst-tracer-otel/blob/8b519d80eee10f9184b1f049a8194943af0ca677/IMPL_QUEUE.md). These were the broader baseline recommendations.
 
 1. Fix metadata ownership, attachment failure, pad references, and active-state
    ownership. Add regressions for buffer copies/pools, non-writable buffers,
@@ -283,7 +283,7 @@ memory before accepting a speed improvement. There is no justified universal
 ## Baseline reproduction artifacts and validation
 
 These checks describe the original review; current checks are recorded in the
-[implementation results](tracer/otel/bench/RESULTS.md).
+[implementation results](RESULTS.md).
 
 Local artifacts in `target/perf-review/` include `pipeline.c`, `compare.py`,
 `comparison.json`, `no-pyroscope.patch`, original/experimental build logs, smoke

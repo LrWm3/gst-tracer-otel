@@ -34,5 +34,8 @@ jobs:
       - name: Cargo test
         run: just test
 
+      - name: Test OTel and embedded profiles
+        run: cargo test -p gst-otel-tracer --features profiles
+
       - name: Run tests with address sanitizer
         run: just test-address-sanitizer

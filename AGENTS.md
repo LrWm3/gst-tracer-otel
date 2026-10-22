@@ -8,7 +8,7 @@ Before submitting changes, run the following commands or the appropriate `just` 
 - `cargo clippy --workspace --all-features -- -D warnings`
 - `cargo test`
 - `cargo audit`
-- `cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer -p gst-pyroscope-tracer --all-targets`
+- `cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets --all-features`
 
 These commands keep the code formatted, linted, tested, and check for security and dependency issues.
 
@@ -23,4 +23,3 @@ These commands keep the code formatted, linted, tested, and check for security a
 - Reference any relevant issues.
 - Keep pull requests focused; prefer small, clear changes.
 - Ensure documentation is updated alongside code when needed.
-
