@@ -18,6 +18,8 @@ def main():
     env.pop("CARGO_ENCODED_RUSTFLAGS", None)
     env["RUSTFLAGS"] = env.get("RUSTFLAGS", "") + " -Zsanitizer=address -C link-arg=-Wl,--export-dynamic"
     env["GST_REGISTRY_FORK"] = "no"
+    # Preserve startup warnings when a test cannot reach the metrics server.
+    env.setdefault("GST_DEBUG", "mars-metrics:3")
     env.setdefault("LSAN_OPTIONS", f"suppressions={root / '.github/sanitizer/lsan.supp'}")
     common = ["-p", "gst-prometheus-tracer", "--target", args.target]
     build = subprocess.run(

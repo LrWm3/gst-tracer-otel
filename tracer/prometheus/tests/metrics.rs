@@ -131,7 +131,7 @@ fn metrics() -> String {
             .send()
         {
             Ok(response) => return response.error_for_status().unwrap().text().unwrap(),
-            Err(error) if Instant::now() >= deadline => panic!("metrics server: {error}"),
+            Err(error) if Instant::now() >= deadline => panic!("metrics server: {error:?}"),
             Err(_) => thread::sleep(Duration::from_millis(10)),
         }
     }

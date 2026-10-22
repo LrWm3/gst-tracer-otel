@@ -1312,16 +1312,18 @@ impl MetricsTracerImp {
     fn maybe_start_metrics_server(port: u16) {
         thread::spawn(move || {
             let addr = ("0.0.0.0", port);
-            let server_r = Server::http(addr);
-            if server_r.is_err() {
-                gst::warning!(
-                    CAT,
-                    "Failed to start Prometheus metrics server on 0.0.0.0:{}",
-                    port
-                );
-                return;
+            let server = match Server::http(addr) {
+                Ok(server) => server,
+                Err(error) => {
+                    gst::warning!(
+                        CAT,
+                        "Failed to start Prometheus metrics server on 0.0.0.0:{}: {}",
+                        port,
+                        error
+                    );
+                    return;
+                }
             };
-            let server = server_r.unwrap();
 
             gst::info!(CAT, "Prometheus metrics server listening on {}", port);
 
