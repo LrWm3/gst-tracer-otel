@@ -2,6 +2,7 @@
  * Drain is outside pipeline timing. Every push is counted by the OTLP receiver. */
 #include <gst/gst.h>
 #include <dirent.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -125,6 +126,17 @@ int main(int argc, char **argv) {
   /* Also give the old SDK batch processor time to drain for baseline comparisons. */
   const char *drain = g_getenv("OTEL_BENCH_DRAIN_MS");
   g_usleep(drain ? g_ascii_strtoull(drain, NULL, 10) * 1000 : 2000000);
+  /* Keep the graph alive for a final Prometheus HTTP scrape. The parent
+   * acknowledges completion on stdin; include server CPU/RSS in RESULT,
+   * while keeping this rendezvous outside pipeline wall time. */
+  if (g_strcmp0(g_getenv("OTEL_BENCH_WAIT_FOR_SCRAPE"), "1") == 0) {
+    puts("READY_FOR_SCRAPE");
+    fflush(stdout);
+    struct pollfd input = { .fd = STDIN_FILENO, .events = POLLIN };
+    char ack;
+    if (poll(&input, 1, 20000) <= 0 || read(STDIN_FILENO, &ack, 1) != 1 || ack != '\n')
+      return 6;
+  }
   guint64 stream_cpu = 0;
   for (int i = 0; i < stream_count; i++) {
     stream_cpu += streams[i].cpu;

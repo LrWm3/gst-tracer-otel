@@ -251,6 +251,11 @@ records each real sink once. Series for destroyed objects or old paths are
 retired on scrape or within one second. Stopped pipelines retain series for
 pads and elements that remain alive.
 
+For current metrics-only CPU and memory measurements against tracer-off and
+`gst-instrument`, see [measured overhead](METRICS_RESULTS.md). The comparison
+uses identical push pipelines, actual HTTP scrapes/exports, and exact output
+count checks; raw data and reproduction commands are included.
+
 An earlier exploratory microbenchmark on an integrated memory nvidia device measured 2.857 s versus 3.043 s,
 but used different element-selection configurations. It does not establish
 matched per-edge overhead or a CPU-percentage estimate. Subsequent

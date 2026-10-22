@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-22T14:47:19.511018+00:00",
+  "revision": "6ffb0626196e1ce612ed5e0de7c942a507e033c2",
+  "command": [
+    "tracer/otel/bench/metrics.py",
+    "--repeats",
+    "7",
+    "--buffers",
+    "1000000",
+    "--output",
+    "tracer/prometheus/benchmarks/2026-10-22-metrics.csv"
+  ],
+  "host": "Linux-7.0.0-38-generic-x86_64-with-glibc2.39",
+  "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
+  "cpus": null,
+  "governors": {
+    "cpu11": "powersave",
+    "cpu9": "powersave",
+    "cpu7": "powersave",
+    "cpu5": "powersave",
+    "cpu3": "powersave",
+    "cpu1": "powersave",
+    "cpu10": "powersave",
+    "cpu8": "powersave",
+    "cpu6": "powersave",
+    "cpu4": "powersave",
+    "cpu2": "powersave",
+    "cpu0": "powersave"
+  },
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "gstreamer": "1.24.2",
+  "plugin_sha256": {
+    "libgstoteltracer.so": "8c95f79a8c6af162e2ef63b156772b8afeb5e191e5e174b052771abe9cbd8078",
+    "libgstprometheustracer.so": "731964a32c56383bf56f5e5af94f693cc3d4db211b4cc486df3779e26a1fea23"
+  },
+  "harness_sha256": {
+    "metrics.py": "cf348f2a6d4825997e59c037f4a17307981e0c393fe4faab051db42f71938a31",
+    "pipeline.c": "db7fd2d37743c8c795a438c9a0b4bcb91b7001119add2f8c12cde67f4575891d"
+  }
+}

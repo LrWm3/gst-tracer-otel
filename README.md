@@ -13,7 +13,7 @@ The table below contains the plugins available in this repository.
 
 | plugin name                                 | description                                                                                                               | performance | stability |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------- | --------- |
-| [prom-latency](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | optimized   | alpha     |
+| [prom-latency](tracer/prometheus/README.md) | captures per element latencies as prometheus metrics                                                                      | [measured overhead](tracer/prometheus/METRICS_RESULTS.md) | alpha     |
 | [gst-instrument](tracer/otel/INSTRUMENT.md) | shared push metrics with exemplars, traces, optional logs and CPU profiles | [measured overhead](tracer/otel/bench/INSTRUMENT_RESULTS.md) | experimental |
 | [otel-tracer](tracer/otel/README.md)        | exports inclusive push-call spans over OTLP/HTTP, with optional correlated GStreamer logs | [measured overhead](tracer/otel/README.md#performance-and-sampling-cost) | pre-alpha |
 | [pyroscope](tracer/pyroscope/README.md)     | captures pyroscope profiles for the Gstreamer pipeline, requires debug symbols for best results | optimized   | alpha |

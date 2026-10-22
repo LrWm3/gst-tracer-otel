@@ -176,3 +176,7 @@ It compares no tracer, `otel-tracer`, metrics-only, combined metrics/traces, and
 combined capture with traces unsampled. Profiles and logs are disabled for this
 comparison. It decodes exports and checks every expected trace and metric count.
 See [measured results](bench/INSTRUMENT_RESULTS.md).
+
+A separate [metrics-only comparison](../prometheus/METRICS_RESULTS.md) measures
+`GST_INSTRUMENT_TRACES=false` against `prom-latency` and no tracer, including
+HTTP delivery, CPU cost per push, and peak memory on longer runs.
