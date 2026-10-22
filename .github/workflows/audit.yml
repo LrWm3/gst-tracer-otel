@@ -28,6 +28,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-target-
 
+      # Debug symbols are already installed in the CI image. Tool prerequisites
+      # do not need the separate ddebs mirror, which can fail during mirror sync.
+      - name: Disable debug-symbol package source
+        run: rm -f /etc/apt/sources.list.d/ddebs.list
+
       - name: Install audit and coverage tools
         uses: taiki-e/install-action@v2
         with:
