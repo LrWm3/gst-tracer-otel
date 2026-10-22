@@ -948,7 +948,7 @@ mod linux {
             else {
                 return true;
             };
-            if fp % 8 != 0 || sample.len == MAX_FRAMES {
+            if !fp.is_multiple_of(8) || sample.len == MAX_FRAMES {
                 return true;
             }
             let next = usize::from_ne_bytes(pair[..8].try_into().unwrap());
