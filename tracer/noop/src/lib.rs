@@ -16,17 +16,17 @@
  * Boston, MA 02110-1301, USA.
  */
 use gstreamer as gst;
-mod nooplatency;
+mod noop;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    nooplatency::register(plugin)?;
+    noop::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
     nooptracer, // → libgstnooptracer.so
-    "GStreamer Noop tracer",
+    "Mars no-op tracer",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",
@@ -34,3 +34,30 @@ gst::plugin_define!(
     "gst_noop_tracer",
     "https://github.com/LrWm3/gst-tracer-otel"
 );
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use gst::prelude::*;
+
+    #[test]
+    fn registers_mars_entry_points() {
+        gst::init().unwrap();
+        plugin_register_static().unwrap();
+        let mut factories = gst::TracerFactory::factories()
+            .into_iter()
+            .filter(|factory| factory.plugin_name().as_deref() == Some("nooptracer"))
+            .map(|factory| {
+                (
+                    factory.name().to_string(),
+                    factory.tracer_type().name().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        factories.sort();
+        assert_eq!(
+            factories,
+            vec![("mars-noop".to_owned(), "MarsNoopTracer".to_owned())]
+        );
+    }
+}

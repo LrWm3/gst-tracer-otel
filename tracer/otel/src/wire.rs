@@ -112,7 +112,7 @@ impl Encoder {
             &mut scope_header,
             1,
             &InstrumentationScope {
-                name: "gst-otel-tracer".into(),
+                name: "mars-otel".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             }
@@ -260,7 +260,7 @@ mod tests {
             hook_ts: 100,
             wall: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000),
         };
-        let scope = opentelemetry::InstrumentationScope::builder("gst-otel-tracer")
+        let scope = opentelemetry::InstrumentationScope::builder("mars-otel")
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let mut encoder = Encoder::new(&resource);
@@ -334,7 +334,7 @@ mod tests {
             hook_ts: 100,
             wall: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
         };
-        let scope = opentelemetry::InstrumentationScope::builder("gst-otel-tracer")
+        let scope = opentelemetry::InstrumentationScope::builder("mars-otel")
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let mut records: Vec<_> = (0..4).map(record).collect();
@@ -405,7 +405,7 @@ mod tests {
             hook_ts: 100,
             wall: SystemTime::UNIX_EPOCH + Duration::from_secs(1000),
         };
-        let scope = opentelemetry::InstrumentationScope::builder("gst-otel-tracer")
+        let scope = opentelemetry::InstrumentationScope::builder("mars-otel")
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let site = std::sync::Arc::new(crate::capture::Site {

@@ -23,7 +23,7 @@ use gstreamer as gst;
 use std::sync::LazyLock;
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "noop-latency",
+        "mars-noop",
         gst::DebugColorFlags::empty(),
         Some("Noop tracer"),
     )
@@ -39,7 +39,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for NoopTracer {
-        const NAME: &'static str = "nooptracer";
+        const NAME: &'static str = "MarsNoopTracer";
         type Type = super::NoopTracer;
         type ParentType = gst::Tracer;
     }
@@ -160,7 +160,7 @@ glib::wrapper! {
 // Register the plugin with GStreamer
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
-    gst::Tracer::register(Some(plugin), "noop-latency", NoopTracer::static_type())?;
+    gst::Tracer::register(Some(plugin), "mars-noop", NoopTracer::static_type())?;
 
     Ok(())
 }

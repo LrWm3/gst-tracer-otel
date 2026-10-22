@@ -12,7 +12,7 @@ import time
 import gi
 
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst
+from gi.repository import GObject, Gst
 
 
 def main():
@@ -63,7 +63,9 @@ def main():
     if failures:
         raise RuntimeError(failures)
     tracers = Gst.tracing_get_active_tracers()
-    metrics = next((tracer.emit("metrics") for tracer in tracers if tracer.__gtype__.name == "promlatencytracer"), "")
+    # The action signal also identifies metrics tracers in historical binaries.
+    metrics = next((tracer.emit("metrics") for tracer in tracers
+                    if GObject.signal_lookup("metrics", tracer.__gtype__)), "")
     print(json.dumps(dict(
         buffers=args.buffers, graph_changes=args.changes, stream_wall_s=elapsed,
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,

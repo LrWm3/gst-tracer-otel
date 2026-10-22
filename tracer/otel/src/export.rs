@@ -42,7 +42,7 @@ macro_rules! counters {
         pub struct ExportStats { $(pub $name: u64,)* pub pending_spans: u64 }
         impl ExportStats {
             pub fn to_structure(&self) -> gstreamer::Structure {
-                gstreamer::Structure::builder("otel-tracer-stats")
+                gstreamer::Structure::builder("mars-otel-stats")
                     $(.field(stringify!($name), self.$name))*
                     .field("pending_spans", self.pending_spans).build()
             }
@@ -291,7 +291,7 @@ impl Runtime {
         let worker = if config.traces {
             Some(
                 thread::Builder::new()
-                    .name("gst-otel-export".into())
+                    .name("mars-otel-tx".into())
                     .spawn(move || {
                         worker_loop(
                             exporter,
@@ -618,7 +618,7 @@ impl<E: SpanExporter + 'static> RecordExporter for E {
         anchor: &Anchor,
         config: &Config,
     ) -> Result<(), FlushError> {
-        let scope = InstrumentationScope::builder("gst-otel-tracer")
+        let scope = InstrumentationScope::builder("mars-otel")
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         futures_executor::block_on(SpanExporter::export(

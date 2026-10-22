@@ -7,6 +7,7 @@ import subprocess
 import argparse
 import time
 import threading
+from plugins import otel_tracer
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / 'target/otel-bench'
@@ -99,6 +100,7 @@ base.update(GST_DEBUG='0',
             OTEL_BSP_SCHEDULE_DELAY='10',
             OTEL_BSP_MAX_QUEUE_SIZE='65536')
 results = []
+tracer_names = {}
 configs = list(args.modes)
 if args.baseline:
     if args.baseline_hooks and 'hooks' in configs:
@@ -126,7 +128,7 @@ try:
                 directory = args.baseline.resolve() if baseline else ROOT / 'target/release'
                 env = dict(base, GST_PLUGIN_PATH=str(directory),
                            GST_REGISTRY=str(OUT / f'registry-{name}.bin'),
-                           GST_TRACERS='' if mode in ('none', 'hooks') else 'otel-tracer',
+                           GST_TRACERS='' if mode in ('none', 'hooks') else 'mars-otel',
                            OTEL_BENCH_EMPTY_HOOKS='1' if mode == 'hooks' else '0',
                            GST_OTEL_LOGS='false', GST_OTEL_BATCH_SIZE=str(args.batch_size),
                            GST_OTEL_HTTP_CLIENT=args.http_client,
@@ -141,6 +143,11 @@ try:
                 if libraries:
                     env['LD_LIBRARY_PATH'] = str(libraries.resolve()) + (
                         os.pathsep + base['LD_LIBRARY_PATH'] if base.get('LD_LIBRARY_PATH') else '')
+                if env['GST_TRACERS']:
+                    key = (directory, libraries)
+                    if key not in tracer_names:
+                        tracer_names[key] = otel_tracer(directory, env)
+                    env['GST_TRACERS'] = tracer_names[key]
                 if mode in ('slow', 'absent'):
                     env['GST_OTEL_BATCH_SIZE'] = '64'
                 if mode == 'absent':

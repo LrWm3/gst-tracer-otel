@@ -57,7 +57,7 @@ fn collect(mode: &str, pipeline: &str) -> Received {
                         .any(|a| a.key == "service.name"
                             && format!("{:?}", a.value).contains("instrument-test")));
                     for scope in resource.scope_metrics {
-                        assert_eq!(scope.scope.unwrap().name, "gst-instrument");
+                        assert_eq!(scope.scope.unwrap().name, "mars-instrument");
                         for metric in scope.metrics {
                             let Data::Histogram(histogram) = metric.data.unwrap() else {
                                 panic!("histogram expected")

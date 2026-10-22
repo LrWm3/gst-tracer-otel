@@ -11,7 +11,7 @@ use crate::{
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "otel-tracer",
+        "mars-otel",
         gst::DebugColorFlags::empty(),
         Some("Bounded OTLP push tracing"),
     )
@@ -217,19 +217,19 @@ glib::wrapper! {
 }
 };
 }
-tracer_impl!(imp, TelemetryTracer, "GstTelemetryTracer", false);
+tracer_impl!(imp, TelemetryTracer, "MarsOtelTracer", false);
 tracer_impl!(
     instrument_imp,
     InstrumentTracer,
-    "GstInstrumentTracer",
+    "MarsInstrumentTracer",
     true
 );
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    gst::Tracer::register(Some(plugin), "otel-tracer", TelemetryTracer::static_type())?;
+    gst::Tracer::register(Some(plugin), "mars-otel", TelemetryTracer::static_type())?;
     gst::Tracer::register(
         Some(plugin),
-        "gst-instrument",
+        "mars-instrument",
         InstrumentTracer::static_type(),
     )
 }

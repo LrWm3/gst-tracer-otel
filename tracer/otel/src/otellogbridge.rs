@@ -20,7 +20,7 @@ pub(crate) fn initialize(resource: Resource) -> Result<(), String> {
         .with_resource(resource)
         .with_batch_exporter(exporter)
         .build();
-    let logger = provider.logger("gst-otel-tracer");
+    let logger = provider.logger("mars-otel");
     let _ = PROVIDER.set(provider);
     gst::log::add_log_function(
         move |category, level, file, function, line, _object, message| {

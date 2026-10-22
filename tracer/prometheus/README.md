@@ -1,6 +1,6 @@
-# Prometheus Tracer Plugin for GStreamer
+# mars-metrics: Prometheus metrics for GStreamer
 
-This folder contains `prom-latency`, a GStreamer tracer plugin that exports
+This folder contains `mars-metrics`, a GStreamer tracer plugin that exports
 synchronous push/pull cost, queue pressure, and optional I/O counts in Prometheus format.
 
 The synchronous metrics time `gst_pad_push()` from an upstream source pad until
@@ -47,7 +47,7 @@ export GST_PLUGIN_PATH="$PWD/target/release/:$GST_PLUGIN_PATH"
 Enable the tracer by setting the following environment variables before running your pipeline:
 
 ```bash
-export GST_TRACERS='prom-latency(port=9092)'
+export GST_TRACERS='mars-metrics(port=9092)'
 export GST_DEBUG=GST_TRACER:5
 ```
 
@@ -62,7 +62,7 @@ gst-launch-1.0 fakesrc ! identity ! fakesink
 If you wish to have Prometheus scrape metrics over HTTP, configure the tracer with a `port`:
 
 ```bash
-export GST_TRACERS='prom-latency(port=9092)'
+export GST_TRACERS='mars-metrics(port=9092)'
 ```
 
 The plugin will spawn an HTTP server on `0.0.0.0:9092`. To retrieve metrics:
@@ -252,7 +252,7 @@ retired on scrape or within one second. Stopped pipelines retain series for
 pads and elements that remain alive.
 
 For current metrics-only CPU and memory measurements against tracer-off and
-`gst-instrument`, see [measured overhead](METRICS_RESULTS.md). The comparison
+`mars-instrument`, see [measured overhead](METRICS_RESULTS.md). The comparison
 uses identical push pipelines, actual HTTP scrapes/exports, and exact output
 count checks; raw data and reproduction commands are included.
 
@@ -356,7 +356,7 @@ fn main() {
     ).expect("pipeline timed out");
 
     for tracer in gst::active_tracers() {
-        if tracer.type_().name() == "promlatencytracer" {
+        if tracer.type_().name() == "MarsMetricsTracer" {
             if let Some(metrics) = tracer.emit_by_name::<Option<String>>("metrics", &[]) {
                 print!("{metrics}");
             }
@@ -382,7 +382,7 @@ pipeline.set_state(Gst.State.PLAYING)
 
 time.sleep(3)
 
-latency_tracer = next((t for t in Gst.tracing_get_active_tracers() if t.get_name().startswith('promlatency')), None)
-metrics = latency_tracer.emit("metrics")
+metrics_tracer = next(t for t in Gst.tracing_get_active_tracers() if t.__gtype__.name == 'MarsMetricsTracer')
+metrics = metrics_tracer.emit("metrics")
 print(metrics)
 ```

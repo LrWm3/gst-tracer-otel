@@ -80,7 +80,7 @@ to this integration.
 Tests also exercise a full/disconnected upload channel, 1000 Hz sampling during
 allocation and mutex/loader activity, more thread retirements than available
 slots, and a stalled registration lock. Child processes have watchdog deadlines.
-The standalone `gst-pyroscope-tracer` still uses its original dependencies and
+The standalone `mars-profiles` tracer (`gst-pyroscope-tracer`) still uses its original dependencies and
 does **not** receive these embedded-worker changes. Do not treat this work as a
 fix for that separate plugin's runtime.
 
@@ -111,7 +111,7 @@ performance/server checks were repeated with those final dependencies.
   live SDK spans and no `SpanProcessor` callbacks to extend. Both this encoder
   and the reference `SpanData` conversion in [export.rs](tracer/otel/src/export.rs)
   would need any new profile-link attribute, with equivalence tests.
-- [The standalone profiler](tracer/pyroscope/src/pyroscope.rs) starts a
+- [The standalone profiler](tracer/pyroscope/src/profiles.rs) starts a
   process-wide CPU profiler on the first successful addition to a pipeline.
   It currently has no trace-context connection. Its `pipeline` tag comes from
   that first pipeline even though it profiles the process, including other

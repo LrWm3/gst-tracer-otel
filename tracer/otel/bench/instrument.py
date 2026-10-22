@@ -84,7 +84,7 @@ def main():
                 offset = repeat % len(modes)
                 for mode in modes[offset:] + modes[:offset]:
                     payloads.clear()
-                    env = dict(base, GST_TRACERS='' if mode == 'none' else 'otel-tracer' if mode == 'otel' else 'gst-instrument',
+                    env = dict(base, GST_TRACERS='' if mode == 'none' else 'mars-otel' if mode == 'otel' else 'mars-instrument',
                                GST_INSTRUMENT_TRACES='false' if mode == 'metrics' else 'true',
                                OTEL_TRACES_SAMPLER='parentbased_always_off' if mode == 'instrument-unsampled' else 'parentbased_always_on')
                     result = subprocess.run([str(binary), pipeline, str(streams)], env=env, capture_output=True, timeout=45, check=True)

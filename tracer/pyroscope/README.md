@@ -1,6 +1,6 @@
-# Pyroscope Tracer for GStreamer
+# mars-profiles: Pyroscope CPU profiles for GStreamer
 
-This crate provides a GStreamer tracer that sends profiling data to a Pyroscope server.
+`mars-profiles` is a GStreamer tracer that sends profiling data to a Pyroscope server.
 
 ## Kinda works
 
@@ -42,7 +42,7 @@ export GST_PLUGIN_PATH="$GST_PLUGIN_PATH:$(pwd)/target/release"
 The tracer exposes the following properties, mirroring the previous environment variables:
 
 - `server-url` – URL of the Pyroscope server (**default:** `http://localhost:4040`)
-- `tracer-name` – name used to identify the tracer in Pyroscope (**default:** `gst.pyroscope`)
+- `tracer-name` – name used to identify the tracer in Pyroscope (**default:** `mars-profiles`)
 - `sample-rate` – sampling rate in Hz (**default:** `100`)
 - `stop-agent-on-dispose` – whether to stop the Pyroscope agent on dispose (**default:** `true`)
 - `tags` – additional tags in the form `k1=v1,k2=v2` (**default:** empty)
@@ -50,7 +50,7 @@ The tracer exposes the following properties, mirroring the previous environment 
 Enable the tracer with custom properties via `GST_TRACERS`:
 
 ```bash
-GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=gst.pyroscope,sample-rate=100,stop-agent-on-dispose=true,tags="k1=v1")'
+GST_TRACERS='mars-profiles(server-url=http://localhost:4040,tracer-name=mars-profiles,sample-rate=100,stop-agent-on-dispose=true,tags="k1=v1")'
 ```
 
 ## Test locally
@@ -68,7 +68,7 @@ docker run -p 3000:3000 -p 4040:4040 -p 4317:4317 -p 4318:4318 -d grafana/otel-l
 Finally, run the following command to start the tracer:
 
 ```bash
-GST_PLUGIN_PATH=target/release:target/debug/ GST_TRACERS='pyroscope' GST_DEBUG=GST_TRACER:5,pyroscope:6 \
+GST_PLUGIN_PATH=target/release:target/debug/ GST_TRACERS='mars-profiles' GST_DEBUG=GST_TRACER:5,mars-profiles:6 \
 gst-launch-1.0 videotestsrc ! videoconvert ! autovideosink
 ```
 

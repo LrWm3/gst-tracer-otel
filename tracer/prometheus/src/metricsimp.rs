@@ -328,12 +328,12 @@ struct QueueMetrics {
 }
 
 static PAD_CACHE_QUARK: LazyLock<glib::ffi::GQuark> =
-    LazyLock::new(|| Quark::from_str("promlatency.pad_cache").into_glib());
+    LazyLock::new(|| Quark::from_str("mars-metrics.pad-cache").into_glib());
 
 static METRICS_SERVER_ONCE: OnceLock<()> = OnceLock::new();
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "prom-latency",
+        "mars-metrics",
         gst::DebugColorFlags::empty(),
         Some("Prometheus tracer"),
     )
@@ -392,9 +392,9 @@ struct PadMetrics {
 }
 
 #[derive(Default)]
-pub struct PromLatencyTracerImp;
+pub struct MetricsTracerImp;
 
-impl PromLatencyTracerImp {
+impl MetricsTracerImp {
     /// Register all tracing hooks on construction
     pub fn constructed(&self, tracer_obj: &gst::Tracer) {
         // Hook callbacks
@@ -404,7 +404,7 @@ impl PromLatencyTracerImp {
             pad: *mut gst::ffi::GstPad,
             buf_ptr: *mut gst::ffi::GstBuffer,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts::<false, IO>(ts, pad, buf_ptr, 1);
+            MetricsTracerImp::do_send_latency_ts::<false, IO>(ts, pad, buf_ptr, 1);
         }
 
         unsafe extern "C" fn do_push_buffer_post<const IO: bool>(
@@ -413,7 +413,7 @@ impl PromLatencyTracerImp {
             pad: *mut gst::ffi::GstPad,
             _result: gst::ffi::GstFlowReturn,
         ) {
-            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
+            MetricsTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
         }
 
         unsafe extern "C" fn do_push_list_pre<const IO: bool>(
@@ -427,7 +427,7 @@ impl PromLatencyTracerImp {
             } else {
                 0
             };
-            PromLatencyTracerImp::do_send_latency_ts::<false, IO>(
+            MetricsTracerImp::do_send_latency_ts::<false, IO>(
                 ts,
                 pad,
                 std::ptr::null_mut(),
@@ -441,7 +441,7 @@ impl PromLatencyTracerImp {
             pad: *mut gst::ffi::GstPad,
             _result: gst::ffi::GstFlowReturn,
         ) {
-            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
+            MetricsTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
         }
 
         unsafe extern "C" fn do_pull_range_pre<const IO: bool>(
@@ -451,7 +451,7 @@ impl PromLatencyTracerImp {
             _offset: u64,
             _size: libc::c_uint,
         ) {
-            PromLatencyTracerImp::do_send_latency_ts::<true, IO>(ts, pad, std::ptr::null_mut(), 0);
+            MetricsTracerImp::do_send_latency_ts::<true, IO>(ts, pad, std::ptr::null_mut(), 0);
         }
         unsafe extern "C" fn do_pull_range_post<const IO: bool>(
             _tracer: *mut gst::Tracer,
@@ -460,7 +460,7 @@ impl PromLatencyTracerImp {
             buffer: *mut gst::ffi::GstBuffer,
             result: gst::ffi::GstFlowReturn,
         ) {
-            PromLatencyTracerImp::do_receive_and_record_latency_ts::<true, IO>(
+            MetricsTracerImp::do_receive_and_record_latency_ts::<true, IO>(
                 ts,
                 pad,
                 result >= ffi::GST_FLOW_OK && !buffer.is_null(),
@@ -475,7 +475,7 @@ impl PromLatencyTracerImp {
             res: gst::ffi::GstPadLinkReturn,
         ) {
             if res == ffi::GST_PAD_LINK_OK {
-                PromLatencyTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_topology();
                 // Defer label creation until data flows, after graph assembly.
                 glib::gobject_ffi::g_object_set_qdata_full(
                     src_pad.cast(),
@@ -494,12 +494,12 @@ impl PromLatencyTracerImp {
             res: gboolean,
         ) {
             if res == GTRUE {
-                PromLatencyTracerImp::invalidate_topology();
-                if let Some(cache) = PromLatencyTracerImp::pad_cache(src_pad) {
+                MetricsTracerImp::invalidate_topology();
+                if let Some(cache) = MetricsTracerImp::pad_cache(src_pad) {
                     if cache.peer == sink_pad as usize {
                         // A concurrent relink may already have installed a new
                         // cache. Only remove the exact snapshot we inspected.
-                        PromLatencyTracerImp::replace_pad_cache(src_pad, Some(&cache), None);
+                        MetricsTracerImp::replace_pad_cache(src_pad, Some(&cache), None);
                     }
                 }
             }
@@ -1345,7 +1345,7 @@ impl PromLatencyTracerImp {
 
 #[cfg(test)]
 mod tests {
-    use super::{latency_buckets, CompletedSpan, PromLatencyTracerImp, SpanFrame};
+    use super::{latency_buckets, CompletedSpan, MetricsTracerImp, SpanFrame};
     use glib::translate::{FromGlibPtrFull, ToGlibPtr};
     use gst::prelude::*;
     use gstreamer as gst;
@@ -1381,12 +1381,12 @@ mod tests {
             })
             .unwrap();
         super::THREAD_STATE.with(|state| unsafe {
-            let original = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
-            PromLatencyTracerImp::current_pad_cache(state, pads[second].as_ptr());
-            let reused = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            let original = MetricsTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            MetricsTracerImp::current_pad_cache(state, pads[second].as_ptr());
+            let reused = MetricsTracerImp::current_pad_cache(state, pads[first].as_ptr());
             assert!(std::rc::Rc::ptr_eq(&original, &reused));
-            PromLatencyTracerImp::invalidate_topology();
-            let refreshed = PromLatencyTracerImp::current_pad_cache(state, pads[first].as_ptr());
+            MetricsTracerImp::invalidate_topology();
+            let refreshed = MetricsTracerImp::current_pad_cache(state, pads[first].as_ptr());
             assert!(!std::rc::Rc::ptr_eq(&original, &refreshed));
         });
     }
@@ -1408,11 +1408,11 @@ mod tests {
         let weak_source = source.downgrade();
         let weak_sink = sink.downgrade();
         super::THREAD_STATE.with(|state| unsafe {
-            let first = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
-            let hit = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
+            let first = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            let hit = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
             assert!(std::rc::Rc::ptr_eq(&first, &hit));
-            PromLatencyTracerImp::invalidate_topology();
-            let refreshed = PromLatencyTracerImp::current_pad_cache(state, pad.as_ptr());
+            MetricsTracerImp::invalidate_topology();
+            let refreshed = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
             assert!(!std::rc::Rc::ptr_eq(&first, &refreshed));
         });
         drop(pad);
@@ -1429,29 +1429,29 @@ mod tests {
         let first = empty_cache(1);
         let second = empty_cache(2);
         unsafe {
-            assert!(PromLatencyTracerImp::replace_pad_cache(
+            assert!(MetricsTracerImp::replace_pad_cache(
                 pad.as_ptr(),
                 None,
                 Some(&first)
             ));
-            assert!(PromLatencyTracerImp::replace_pad_cache(
+            assert!(MetricsTracerImp::replace_pad_cache(
                 pad.as_ptr(),
                 Some(&first),
                 Some(&second)
             ));
-            assert!(!PromLatencyTracerImp::replace_pad_cache(
+            assert!(!MetricsTracerImp::replace_pad_cache(
                 pad.as_ptr(),
                 Some(&first),
                 None
             ));
             // A failed install must also release the new qdata reference.
-            assert!(!PromLatencyTracerImp::replace_pad_cache(
+            assert!(!MetricsTracerImp::replace_pad_cache(
                 pad.as_ptr(),
                 None,
                 Some(&first)
             ));
             assert!(Arc::ptr_eq(
-                &PromLatencyTracerImp::pad_cache(pad.as_ptr()).unwrap(),
+                &MetricsTracerImp::pad_cache(pad.as_ptr()).unwrap(),
                 &second
             ));
         }
@@ -1470,8 +1470,7 @@ mod tests {
             scope.spawn(|| {
                 start.wait();
                 for _ in 0..10_000 {
-                    if let Some(snapshot) = unsafe { PromLatencyTracerImp::pad_cache(pad.as_ptr()) }
-                    {
+                    if let Some(snapshot) = unsafe { MetricsTracerImp::pad_cache(pad.as_ptr()) } {
                         assert_eq!(snapshot.generation, 1);
                         std::hint::black_box(&snapshot);
                     }
@@ -1491,7 +1490,7 @@ mod tests {
                         pad.as_ptr().cast(),
                         *super::PAD_CACHE_QUARK,
                         Arc::into_raw(cache).cast_mut().cast(),
-                        Some(PromLatencyTracerImp::drop_pad_cache),
+                        Some(MetricsTracerImp::drop_pad_cache),
                     );
                     glib::gobject_ffi::g_object_set_qdata_full(
                         pad.as_ptr().cast(),
@@ -1518,14 +1517,11 @@ mod tests {
         let refs = pad.ref_count();
         let floating = || unsafe { glib::gobject_ffi::g_object_is_floating(pad.as_ptr().cast()) };
         assert_eq!(floating(), glib::ffi::GTRUE);
-        assert!(PromLatencyTracerImp::resolve_pad(pad.to_glib_none().0)
+        assert!(MetricsTracerImp::resolve_pad(pad.to_glib_none().0)
             .unwrap()
             .parent_element()
             .is_none());
-        assert_eq!(
-            PromLatencyTracerImp::pad_name(pad.to_glib_none().0),
-            "floating"
-        );
+        assert_eq!(MetricsTracerImp::pad_name(pad.to_glib_none().0), "floating");
         assert_eq!(floating(), glib::ffi::GTRUE);
         assert_eq!(pad.ref_count(), refs);
     }
@@ -1538,13 +1534,13 @@ mod tests {
                 .name("not_a_queue_name")
                 .build()
                 .unwrap();
-            assert!(PromLatencyTracerImp::is_queue(&element));
+            assert!(MetricsTracerImp::is_queue(&element));
         }
         let element = gst::ElementFactory::make("identity")
             .name("queue")
             .build()
             .unwrap();
-        assert!(!PromLatencyTracerImp::is_queue(&element));
+        assert!(!MetricsTracerImp::is_queue(&element));
     }
 
     #[test]
@@ -1563,7 +1559,7 @@ mod tests {
         let source_refs = source.ref_count();
         let sink_refs = sink.ref_count();
         unsafe {
-            let cache = PromLatencyTracerImp::do_create_latency_cache_for_pad_pair(
+            let cache = MetricsTracerImp::do_create_latency_cache_for_pad_pair(
                 src_pad.to_glib_none().0,
                 sink_pad.to_glib_none().0,
                 1,
@@ -1571,14 +1567,14 @@ mod tests {
             .unwrap();
             assert_eq!(source.ref_count(), source_refs);
             assert_eq!(sink.ref_count(), sink_refs);
-            assert!(PromLatencyTracerImp::replace_pad_cache(
+            assert!(MetricsTracerImp::replace_pad_cache(
                 src_pad.as_ptr(),
                 None,
                 Some(&cache),
             ));
             drop(cache);
             let snapshot = std::rc::Rc::new(
-                PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0)
+                MetricsTracerImp::pad_cache(src_pad.to_glib_none().0)
                     .unwrap()
                     .as_ref()
                     .clone(),
@@ -1603,9 +1599,9 @@ mod tests {
                 std::ptr::null_mut(),
                 None,
             );
-            assert!(PromLatencyTracerImp::pad_cache(src_pad.to_glib_none().0).is_none());
+            assert!(MetricsTracerImp::pad_cache(src_pad.to_glib_none().0).is_none());
             assert!(weak.upgrade().is_some());
-            PromLatencyTracerImp::do_receive_and_record_latency_ts::<false, false>(
+            MetricsTracerImp::do_receive_and_record_latency_ts::<false, false>(
                 0,
                 src_pad.to_glib_none().0,
                 false,
@@ -1628,7 +1624,7 @@ mod tests {
             child_cpu_valid: true,
             sampled: true,
         }];
-        let (span, _) = PromLatencyTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
+        let (span, _) = MetricsTracerImp::complete_span(&mut stack, pad, 10, None).unwrap();
         assert_eq!(span.exclusive_wall_ns, 10);
         assert_eq!(span.exclusive_cpu_ns, None);
     }
@@ -1657,19 +1653,16 @@ mod tests {
             // A deeper span can still be sampled independently.
             timing_frame(30, Some(15), true),
         ];
-        let (leaf, _) = PromLatencyTracerImp::complete_span(&mut stack, pad, 40, Some(20)).unwrap();
+        let (leaf, _) = MetricsTracerImp::complete_span(&mut stack, pad, 40, Some(20)).unwrap();
         assert_eq!(leaf.exclusive_wall_ns, 10);
         assert_eq!(leaf.exclusive_cpu_ns, Some(5));
-        let (grandchild, _) =
-            PromLatencyTracerImp::complete_span(&mut stack, pad, 50, None).unwrap();
+        let (grandchild, _) = MetricsTracerImp::complete_span(&mut stack, pad, 50, None).unwrap();
         assert_eq!(grandchild.exclusive_wall_ns, 20);
         assert_eq!(grandchild.exclusive_cpu_ns, None);
-        let (child, _) =
-            PromLatencyTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
+        let (child, _) = MetricsTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
         assert_eq!(child.exclusive_wall_ns, 40);
         assert_eq!(child.exclusive_cpu_ns, None);
-        let (parent, _) =
-            PromLatencyTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
+        let (parent, _) = MetricsTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
         assert_eq!(parent.exclusive_wall_ns, 30);
         assert_eq!(parent.exclusive_cpu_ns, Some(20));
         assert!(stack.is_empty());
@@ -1685,17 +1678,17 @@ mod tests {
                 timing_frame(20, start, true),
             ];
             let (grandchild, _) =
-                PromLatencyTracerImp::complete_span(&mut stack, pad, 40, end).unwrap();
+                MetricsTracerImp::complete_span(&mut stack, pad, 40, end).unwrap();
             assert_eq!(grandchild.exclusive_cpu_ns, None);
             // A later successful sibling must not hide the missing child time.
             stack.push(timing_frame(50, Some(25), true));
-            PromLatencyTracerImp::complete_span(&mut stack, pad, 70, Some(30));
+            MetricsTracerImp::complete_span(&mut stack, pad, 70, Some(30));
             let (child, _) =
-                PromLatencyTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
+                MetricsTracerImp::complete_span(&mut stack, pad, 80, Some(35)).unwrap();
             assert_eq!(child.exclusive_wall_ns, 30);
             assert_eq!(child.exclusive_cpu_ns, None);
             let (parent, _) =
-                PromLatencyTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
+                MetricsTracerImp::complete_span(&mut stack, pad, 100, Some(50)).unwrap();
             assert_eq!(parent.exclusive_wall_ns, 30);
             assert_eq!(parent.exclusive_cpu_ns, Some(20));
             assert!(stack.is_empty());
@@ -1704,8 +1697,8 @@ mod tests {
 
     #[test]
     fn given_child_time_when_computing_exclusive_latency_then_it_subtracts_and_saturates() {
-        assert_eq!(PromLatencyTracerImp::compute_element_latency(100, 30), 70);
-        assert_eq!(PromLatencyTracerImp::compute_element_latency(30, 50), 0);
+        assert_eq!(MetricsTracerImp::compute_element_latency(100, 30), 70);
+        assert_eq!(MetricsTracerImp::compute_element_latency(30, 50), 0);
     }
 
     #[test]
@@ -1720,32 +1713,23 @@ mod tests {
     #[test]
     fn given_sampling_when_hashing_sequences_then_samples_are_spread() {
         let samples = (0..1024)
-            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234, 16))
+            .filter(|sequence| MetricsTracerImp::sample_sequence(*sequence, 0x1234, 16))
             .count();
         assert!((40..90).contains(&samples), "sample count was {samples}");
         let samples = (0..16384)
             .step_by(96)
-            .filter(|sequence| PromLatencyTracerImp::sample_sequence(*sequence, 0x1234, 17))
+            .filter(|sequence| MetricsTracerImp::sample_sequence(*sequence, 0x1234, 17))
             .count();
         assert!((3..20).contains(&samples), "sample count was {samples}");
     }
 
     #[test]
     fn given_element_patterns_when_matching_then_exact_prefix_suffix_and_contains_work() {
-        assert!(PromLatencyTracerImp::glob_matches(
-            "rdinfer*",
-            "rdinfer-async"
-        ));
-        assert!(PromLatencyTracerImp::glob_matches("*queue", "infer-queue"));
-        assert!(PromLatencyTracerImp::glob_matches(
-            "*infer*",
-            "bench-rdinfer"
-        ));
-        assert!(PromLatencyTracerImp::glob_matches("tracker", "tracker"));
-        assert!(!PromLatencyTracerImp::glob_matches(
-            "tracker",
-            "tracker-copy"
-        ));
+        assert!(MetricsTracerImp::glob_matches("rdinfer*", "rdinfer-async"));
+        assert!(MetricsTracerImp::glob_matches("*queue", "infer-queue"));
+        assert!(MetricsTracerImp::glob_matches("*infer*", "bench-rdinfer"));
+        assert!(MetricsTracerImp::glob_matches("tracker", "tracker"));
+        assert!(!MetricsTracerImp::glob_matches("tracker", "tracker-copy"));
     }
 
     #[test]
@@ -1777,7 +1761,7 @@ mod tests {
             child_cpu_valid: true,
             sampled: true,
         });
-        PromLatencyTracerImp::complete_span(&mut stack, first_child_pad, 30, Some(15));
+        MetricsTracerImp::complete_span(&mut stack, first_child_pad, 30, Some(15));
         stack.push(SpanFrame {
             cache: None,
             pad: second_child_pad,
@@ -1788,10 +1772,10 @@ mod tests {
             child_cpu_valid: true,
             sampled: true,
         });
-        PromLatencyTracerImp::complete_span(&mut stack, second_child_pad, 65, Some(35));
+        MetricsTracerImp::complete_span(&mut stack, second_child_pad, 65, Some(35));
 
         assert_eq!(
-            PromLatencyTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50))
+            MetricsTracerImp::complete_span(&mut stack, parent_pad, 100, Some(50))
                 .map(|(span, _)| span),
             Some(CompletedSpan {
                 exclusive_wall_ns: 50,
@@ -1819,7 +1803,7 @@ mod tests {
         }];
 
         assert_eq!(
-            PromLatencyTracerImp::complete_span(&mut stack, received_pad, 10, None)
+            MetricsTracerImp::complete_span(&mut stack, received_pad, 10, None)
                 .map(|(span, _)| span),
             None
         );

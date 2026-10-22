@@ -1,4 +1,4 @@
-// pyroscope.rs
+// mars-profiles: standalone Pyroscope capture
 //
 // SPDX-License-Identifier: LGPL
 
@@ -19,14 +19,14 @@
  */
 
 /**
- * pyroscope:
+ * mars-profiles:
  *
  * This tracer uses [Pyroscope](https://pyroscope.io/) to collect and visualize performance data.
  *
  * Example:
  *
  * ```console
- * $ GST_TRACERS='pyroscope(server-url=http://localhost:4040,tracer-name=myapp,sample-rate=100,tags=env=dev,team=video)'
+ * $ GST_TRACERS='mars-profiles(server-url=http://localhost:4040,tracer-name=myapp,sample-rate=100,tags=env=dev,team=video)'
  * ```
  *
  * ## Parameters
@@ -41,7 +41,7 @@
  *
  * The name of the tracer, which will appear in the Pyroscope UI.
  *
- * Default: `gst.pyroscope`
+ * Default: `mars-profiles`
  *
  * ### sample-rate
  *
@@ -78,7 +78,7 @@ mod imp {
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
-            "pyroscope",
+            "mars-profiles",
             gst::DebugColorFlags::empty(),
             Some("Pyroscope tracer"),
         )
@@ -97,7 +97,7 @@ mod imp {
         fn default() -> Self {
             Self {
                 server_url: "http://localhost:4040".into(),
-                tracer_name: "gst.pyroscope".into(),
+                tracer_name: "mars-profiles".into(),
                 sample_rate: 100,
                 stop_agent_on_dispose: true,
                 tags: vec![],
@@ -106,8 +106,8 @@ mod imp {
     }
 
     impl Settings {
-        fn update_from_params(&mut self, imp: &PyroscopeTracer, params: String) {
-            let s = match gst::Structure::from_str(&format!("pyroscope,{params}")) {
+        fn update_from_params(&mut self, imp: &ProfilesTracer, params: String) {
+            let s = match gst::Structure::from_str(&format!("mars-profiles,{params}")) {
                 Ok(s) => s,
                 Err(err) => {
                     gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
@@ -149,12 +149,12 @@ mod imp {
     }
 
     #[derive(Debug, Default)]
-    pub struct PyroscopeTracer {
+    pub struct ProfilesTracer {
         state: std::sync::RwLock<State>,
         settings: std::sync::RwLock<Settings>,
     }
 
-    impl PyroscopeTracer {
+    impl ProfilesTracer {
         fn create_first_agent(&self, tags: Vec<(&str, &str)>) {
             // First, check with a read lock to save time
             {
@@ -177,7 +177,7 @@ mod imp {
             if let Some(agent) = agent_write.agent.take() {
                 gst::debug!(
                     CAT,
-                    "Disposing PyroscopeTracer, stopping agent... This can take several minutes..."
+                    "Disposing ProfilesTracer, stopping agent... This can take several minutes..."
                 );
                 let agent_stopped = agent.stop().unwrap();
                 agent_stopped.shutdown();
@@ -221,18 +221,18 @@ mod imp {
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for PyroscopeTracer {
-        const NAME: &'static str = "GstPyroscopeTracer";
-        type Type = super::PyroscopeTracer;
+    impl ObjectSubclass for ProfilesTracer {
+        const NAME: &'static str = "MarsProfilesTracer";
+        type Type = super::ProfilesTracer;
         type ParentType = gst::Tracer;
 
         fn new() -> Self {
-            gst::debug!(CAT, "Creating new PyroscopeTracer instance");
+            gst::debug!(CAT, "Creating new ProfilesTracer instance");
             Self::default()
         }
     }
 
-    impl ObjectImpl for PyroscopeTracer {
+    impl ObjectImpl for ProfilesTracer {
         /// Called whenever the plugin itself is loaded; including during gst-inspect-1.0
         /// and other utility commands; avoid starting collectors or doing other heavy work here.
         fn constructed(&self) {
@@ -256,8 +256,8 @@ mod imp {
         }
     }
 
-    impl GstObjectImpl for PyroscopeTracer {}
-    impl TracerImpl for PyroscopeTracer {
+    impl GstObjectImpl for ProfilesTracer {}
+    impl TracerImpl for ProfilesTracer {
         /// Because the pipeline overall is a bin, we can use this hook as a
         /// signal that the tracer should start collecting data.
         ///
@@ -282,14 +282,14 @@ mod imp {
 }
 
 glib::wrapper! {
-    pub struct PyroscopeTracer(ObjectSubclass<imp::PyroscopeTracer>)
+    pub struct ProfilesTracer(ObjectSubclass<imp::ProfilesTracer>)
         @extends gst::Tracer, gst::Object;
 }
 
 // Register the plugin with GStreamer
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the tracer factory
-    gst::Tracer::register(Some(plugin), "pyroscope", PyroscopeTracer::static_type())?;
+    gst::Tracer::register(Some(plugin), "mars-profiles", ProfilesTracer::static_type())?;
 
     Ok(())
 }

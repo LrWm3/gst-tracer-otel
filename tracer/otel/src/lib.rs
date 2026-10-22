@@ -21,21 +21,21 @@ mod export;
 mod metadata;
 mod metrics;
 mod otellogbridge;
-mod oteltracer;
 mod profiles;
 mod propagation;
+mod tracer;
 mod transport;
 mod wire;
 
 pub use export::{ExportStats, FlushError};
 pub use metrics::MetricStats;
-pub use oteltracer::{InstrumentTracer, TelemetryTracer};
 pub use profiles::{profile_stats, ProfileStats};
+pub use tracer::{InstrumentTracer, TelemetryTracer};
 
 /// Drain traces and snapshot cumulative metrics, bounded by `timeout`.
 /// Stop streaming first for an exact final snapshot. Logs have a separate SDK flush.
 pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
-    oteltracer::runtime()?.flush(timeout)
+    tracer::runtime()?.flush(timeout)
 }
 
 /// Stop accepting records, drain exporters and stop the optional CPU profiler.
@@ -43,7 +43,7 @@ pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
 /// Profile HTTP delivery acknowledgements are not exposed by the Pyroscope SDK.
 pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     let start = std::time::Instant::now();
-    let result = oteltracer::runtime()?.shutdown(timeout);
+    let result = tracer::runtime()?.shutdown(timeout);
     otellogbridge::shutdown(timeout.saturating_sub(start.elapsed()));
     let profiles = profiles::shutdown(timeout.saturating_sub(start.elapsed()));
     result.and_then(|stats| profiles.map(|()| stats))
@@ -57,12 +57,12 @@ pub fn current_span_context() -> Option<opentelemetry::trace::SpanContext> {
 
 /// Cumulative counters; a concurrent snapshot can span multiple updates.
 pub fn stats() -> Result<ExportStats, FlushError> {
-    Ok(oteltracer::runtime()?.stats.snapshot())
+    Ok(tracer::runtime()?.stats.snapshot())
 }
 
 /// Metrics accounting, or zero counters when metrics are disabled.
 pub fn metric_stats() -> Result<MetricStats, FlushError> {
-    Ok(oteltracer::runtime()?
+    Ok(tracer::runtime()?
         .metrics
         .as_ref()
         .map_or_else(MetricStats::default, |m| m.stats()))
@@ -70,13 +70,13 @@ pub fn metric_stats() -> Result<MetricStats, FlushError> {
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    oteltracer::register(plugin)?;
+    tracer::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
     oteltracer, // → libgstoteltracer.so
-    "GStreamer Open Telemetry tracer",
+    "Mars OTLP tracing and correlated instrumentation",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",
@@ -84,3 +84,36 @@ gst::plugin_define!(
     "gst_opentelemetry_tracer",
     "https://github.com/LrWm3/gst-tracer-otel"
 );
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use gst::prelude::*;
+
+    #[test]
+    fn registers_mars_entry_points() {
+        gst::init().unwrap();
+        plugin_register_static().unwrap();
+        let mut factories = gst::TracerFactory::factories()
+            .into_iter()
+            .filter(|factory| factory.plugin_name().as_deref() == Some("oteltracer"))
+            .map(|factory| {
+                (
+                    factory.name().to_string(),
+                    factory.tracer_type().name().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        factories.sort();
+        assert_eq!(
+            factories,
+            vec![
+                (
+                    "mars-instrument".to_owned(),
+                    "MarsInstrumentTracer".to_owned()
+                ),
+                ("mars-otel".to_owned(), "MarsOtelTracer".to_owned())
+            ]
+        );
+    }
+}

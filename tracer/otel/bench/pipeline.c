@@ -60,7 +60,8 @@ static guint64 exporter_ticks(void) {
     FILE *f = fopen(path, "r");
     if (!f) continue;
     if (fgets(line, sizeof line, f) &&
-        (strstr(line, "gst-otel-export") || strstr(line, "OpenTelemetry"))) {
+        (strstr(line, "mars-otel-tx") || strstr(line, "gst-otel-export") ||
+         strstr(line, "OpenTelemetry"))) {
       char *rest = strrchr(line, ')');
       if (rest) {
         char *save, *value = strtok_r(rest + 2, " ", &save);

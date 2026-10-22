@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import re
 import subprocess
 import threading
 import time
@@ -56,7 +57,7 @@ def main():
             env = os.environ.copy()
             plugin = args.root / variant / "libgstprometheustracer.so"
             env.update(
-                GST_TRACERS="" if variant == "off" else "prom-latency(port=19092)",
+                GST_TRACERS="" if variant == "off" else "mars-metrics(port=19092)",
                 GST_PLUGIN_PATH=f"{args.root / variant}:" + env.get("BENCH_PLUGIN_PATH", ""),
                 GST_REGISTRY=str(args.root / f"registry-{args.name}-{variant}.bin"),
                 GST_PROM_LATENCY_INCLUDE="*",
@@ -74,10 +75,17 @@ def main():
             subprocess.run(["gst-inspect-1.0", args.preflight_element], env=inspection_env,
                            stdout=subprocess.DEVNULL, check=True, timeout=30)
             if variant != "off":
-                inspection = subprocess.check_output(["gst-inspect-1.0", "prom-latency"],
+                inspection = subprocess.check_output(["gst-inspect-1.0", str(plugin)],
                                                      env=inspection_env, text=True, timeout=30)
                 if str(plugin) not in inspection:
                     raise RuntimeError(f"Wrong plugin loaded: {inspection}")
+                # Historical binaries retain the old factory name; inspect each
+                # exact artifact so comparisons across the rename remain valid.
+                names = set(re.findall(r"^\s+(\S+) \(GstTracerFactory\)$", inspection, re.MULTILINE))
+                tracer = next((name for name in ("mars-metrics", "prom-latency") if name in names), None)
+                if tracer is None:
+                    raise RuntimeError(f"No metrics tracer in {plugin}: {inspection}")
+                env["GST_TRACERS"] = f"{tracer}(port=19092)"
             stop = threading.Event()
             scrapes = []
 

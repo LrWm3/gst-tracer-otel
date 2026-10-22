@@ -117,7 +117,7 @@ macro_rules! counters {
         pub struct MetricStats { $(pub $name: u64,)* pub active_series: usize }
         impl MetricStats {
             pub fn to_structure(&self) -> gstreamer::Structure {
-                gstreamer::Structure::builder("gst-instrument-metrics-stats")
+                gstreamer::Structure::builder("mars-instrument-metrics-stats")
                     $(.field(stringify!($name), self.$name))*
                     .field("active_series", self.active_series as u64).build()
             }
@@ -277,7 +277,7 @@ impl Metrics {
         let worker = inner.clone();
         let resource: ResourceAttributesWithSchema = resource.into();
         thread::Builder::new()
-            .name("gst-instrument-metrics".into())
+            .name("mars-instrument-metrics".into())
             .spawn(move || {
                 let _finished = finished; // Dropping disconnects and wakes every waiter.
                 worker_loop(&worker, resource, commands, send);
@@ -294,7 +294,7 @@ impl Metrics {
         if rate == 1 {
             return true;
         }
-        // Same SplitMix64 selection as prom-latency; avoids periodic aliasing.
+        // Same SplitMix64 selection as mars-metrics; avoids periodic aliasing.
         let mut n = (sequence ^ pad as u64).wrapping_add(0x9e37_79b9_7f4a_7c15);
         n = (n ^ (n >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         n = (n ^ (n >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -548,7 +548,7 @@ fn export(
                 schema_url: resource.schema_url.clone().unwrap_or_default(),
                 scope_metrics: vec![proto::ScopeMetrics {
                     scope: Some(InstrumentationScope {
-                        name: "gst-instrument".into(),
+                        name: "mars-instrument".into(),
                         version: env!("CARGO_PKG_VERSION").into(),
                         ..Default::default()
                     }),
@@ -589,7 +589,7 @@ fn export(
 
 /// Timing lives on the same frame as the trace token. Direct children contribute
 /// their inclusive time, including every sequential tee branch. CPU clocks are
-/// needed for a sampled call and its immediate children only (as in prom-latency).
+/// needed for a sampled call and its immediate children only (as in mars-metrics).
 pub(crate) struct Timing {
     pub series: Option<Arc<Series>>,
     pub start: u64,

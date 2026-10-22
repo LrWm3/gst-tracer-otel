@@ -1,2 +1,2 @@
-leak:promlatency::tests
-leak:oteltracer::tests
+leak:metrics::tests
+leak:tracer::tests

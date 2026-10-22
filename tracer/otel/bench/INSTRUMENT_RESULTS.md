@@ -1,9 +1,12 @@
-# Initial gst-instrument measurements
+# Initial mars-instrument measurements
 
 Measured 2026-10-21 on Linux x86-64, Intel Core i5-1345U, stock GStreamer 1.24.2,
 Rust 1.89.0 release build. Five repetitions with rotated mode ordering; no CPU
 affinity or frequency pinning. Results are short-run diagnostics, not production
 throughput or tail-latency guarantees.
+
+Entry points below use their current Mars names. The raw measurements predate
+the rename and are preserved unchanged.
 
 Each run processes 10,000 buffers through four identity elements and a fakesink:
 50,000 push calls, divided across one or four source threads. CPU histograms
@@ -19,12 +22,12 @@ CPU includes the exporter and final drain. RSS comes from `/proc/self/status`
 | Sources | Mode | Source CPU (ms) | Process CPU (ms) | Peak RSS (MiB) |
 | --- | --- | ---: | ---: | ---: |
 | 1 | No tracer | 15.8 | 16.4 | 8.8 |
-| 1 | Traces only (`otel-tracer`) | 56.5 | 98.4 | 22.4 |
+| 1 | Traces only (`mars-otel`) | 56.5 | 98.4 | 22.4 |
 | 1 | Metrics only | 36.3 | 37.8 | 13.7 |
 | 1 | Metrics + traces | 47.8 | 90.2 | 22.8 |
 | 1 | Metrics + unsampled trace path | 35.1 | 36.7 | 22.1 |
 | 4 | No tracer | 30.2 | 32.1 | 8.8 |
-| 4 | Traces only (`otel-tracer`) | 67.3 | 110.8 | 22.6 |
+| 4 | Traces only (`mars-otel`) | 67.3 | 110.8 | 22.6 |
 | 4 | Metrics only | 58.0 | 61.0 | 14.1 |
 | 4 | Metrics + traces | 76.2 | 119.7 | 23.2 |
 | 4 | Metrics + unsampled trace path | 64.8 | 67.7 | 22.5 |

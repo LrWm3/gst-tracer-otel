@@ -5,9 +5,14 @@ Measured 2026-10-22 on an Intel Core i5-1345U, Linux x86-64, stock GStreamer
 local checkout before building. No collector implementation changes were
 needed for this benchmark.
 
-On this push-only workload, `prom-latency` added **0.36–0.39 microseconds of
+This report uses the current Mars entry-point names. The recorded builds
+predate the rename; raw measurements and build/harness hashes are preserved
+as captured. Checkout `e309a0a` to reproduce the original harness exactly, or
+use the commands below to run it with the current names.
+
+On this push-only workload, `mars-metrics` added **0.36–0.39 microseconds of
 source-thread CPU per push**, with **10.9–11.5 MiB total peak process RSS**.
-`gst-instrument` with tracing disabled added **0.42–0.58 microseconds per push**,
+`mars-instrument` with tracing disabled added **0.42–0.58 microseconds per push**,
 with **13.8–14.2 MiB total peak RSS**. The collectors produce different metrics,
 as described below; these are overall capture/export costs, not a comparison
 of identical outputs.
@@ -32,11 +37,11 @@ governor is `powersave`. No builds or test suites ran alongside these timings.
 The modes are:
 
 - **No tracer:** `GST_TRACERS` is empty.
-- **Prometheus:** `GST_TRACERS='prom-latency(port=...)'`, all elements selected,
+- **Prometheus:** `GST_TRACERS='mars-metrics(port=...)'`, all elements selected,
   histogram sampling approximately 1/16, PTS age and I/O counts disabled.
   Count, sum, and last exclusive wall time cover every push; exclusive wall,
   CPU, and blocked-time histograms cover sampled pushes.
-- **OTLP metrics only:** `GST_TRACERS=gst-instrument` and
+- **OTLP metrics only:** `GST_TRACERS=mars-instrument` and
   `GST_INSTRUMENT_TRACES=false`, with logs and profiles disabled. Inclusive and
   exclusive wall histograms cover every push; exclusive CPU and blocked-time
   histograms sample approximately 1/16. There is no trace queue or trace traffic.
@@ -63,11 +68,11 @@ latency or a production CPU percentage.
 | Sources | Mode | Source CPU (ms) | Process CPU (ms) | Wall (ms) | Peak RSS (MiB) | Added source CPU (µs/push) |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 1 | No tracer | 1,408.4 | 1,409.1 | 1,409.9 | 8.9 | — |
-| 1 | `prom-latency` | 3,201.7 | 3,205.8 | 3,202.6 | 10.9 | 0.359 |
-| 1 | `gst-instrument`, metrics only | 3,522.2 | 3,525.1 | 3,529.7 | 13.8 | 0.423 |
+| 1 | `mars-metrics` | 3,201.7 | 3,205.8 | 3,202.6 | 10.9 | 0.359 |
+| 1 | `mars-instrument`, metrics only | 3,522.2 | 3,525.1 | 3,529.7 | 13.8 | 0.423 |
 | 4 | No tracer | 2,663.9 | 2,665.7 | 732.8 | 8.9 | — |
-| 4 | `prom-latency` | 4,633.0 | 4,639.2 | 1,355.3 | 11.5 | 0.394 |
-| 4 | `gst-instrument`, metrics only | 5,575.0 | 5,578.8 | 1,662.4 | 14.2 | 0.582 |
+| 4 | `mars-metrics` | 4,633.0 | 4,639.2 | 1,355.3 | 11.5 | 0.394 |
+| 4 | `mars-instrument`, metrics only | 5,575.0 | 5,578.8 | 1,662.4 | 14.2 | 0.582 |
 
 Relative to no tracer, Prometheus added about **2.0 MiB** peak RSS for one source
 and **2.6 MiB** for four sources. OTLP metrics added about **4.9 MiB** and
@@ -82,7 +87,7 @@ inputs for estimating that workload's cost.
 
 All observed source-CPU ranges are retained:
 
-| Sources | No tracer (ms) | `prom-latency` (ms) | OTLP metrics only (ms) |
+| Sources | No tracer (ms) | `mars-metrics` (ms) | OTLP metrics only (ms) |
 | --- | ---: | ---: | ---: |
 | 1 | 1,364.8–1,415.2 | 3,046.1–3,262.2 | 3,445.4–3,754.1 |
 | 4 | 2,557.9–2,790.1 | 4,510.6–5,121.1 | 5,351.7–9,462.5 |

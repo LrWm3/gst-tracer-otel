@@ -16,17 +16,17 @@
  * Boston, MA 02110-1301, USA.
  */
 use gstreamer as gst;
-mod pyroscope;
+mod profiles;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    pyroscope::register(plugin)?;
+    profiles::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
-    pyroscopetracer, // → libgstnooptracer.so
-    "GStreamer Pyroscope tracer",
+    pyroscopetracer, // → libgstpyroscopetracer.so
+    "Mars CPU profiles via Pyroscope",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",
@@ -34,3 +34,30 @@ gst::plugin_define!(
     "gst_pyroscope_tracer",
     "https://github.com/LrWm3/gst-tracer-otel"
 );
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use gst::prelude::*;
+
+    #[test]
+    fn registers_mars_entry_points() {
+        gst::init().unwrap();
+        plugin_register_static().unwrap();
+        let mut factories = gst::TracerFactory::factories()
+            .into_iter()
+            .filter(|factory| factory.plugin_name().as_deref() == Some("pyroscopetracer"))
+            .map(|factory| {
+                (
+                    factory.name().to_string(),
+                    factory.tracer_type().name().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        factories.sort();
+        assert_eq!(
+            factories,
+            vec![("mars-profiles".to_owned(), "MarsProfilesTracer".to_owned())]
+        );
+    }
+}

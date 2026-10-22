@@ -39,6 +39,7 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                     let decoded = ExportLogsServiceRequest::decode(data.as_slice()).unwrap();
                     for resource in decoded.resource_logs {
                         for scope in resource.scope_logs {
+                            assert_eq!(scope.scope.unwrap().name, "mars-otel");
                             log_sink.lock().unwrap().extend(scope.log_records);
                         }
                     }
@@ -46,6 +47,8 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                     continue;
                 }
                 assert_eq!(request.url(), "/custom-traces");
+                assert!(request.headers().iter().any(|h| h.field.equiv("user-agent")
+                    && h.value.as_str() == concat!("mars-otel/", env!("CARGO_PKG_VERSION"))));
                 assert!(request
                     .headers()
                     .iter()
@@ -63,6 +66,7 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                         resource.store(true, Ordering::Relaxed);
                     }
                     for scope in rs.scope_spans {
+                        assert_eq!(scope.scope.unwrap().name, "mars-otel");
                         sink.lock().unwrap().extend(scope.spans);
                     }
                 }

@@ -721,7 +721,7 @@ mod linux {
         fn start(sampler: Arc<Sampler>, config: PyroscopeConfig) -> Result<Self, String> {
             let (stop, wake) = std::sync::mpsc::channel();
             let handle = std::thread::Builder::new()
-                .name("gst-profile-report".into())
+                .name("mars-profile".into())
                 .spawn(move || {
                     let mut backend = ProfileBackend::new(sampler);
                     let manager = SessionManager::new().map_err(|_| FlushError::ExportFailed)?;
@@ -921,7 +921,7 @@ mod linux {
                         Ok(r) => *registration = Some(r),
                         Err(error) => {
                             sampler.counters.registration_failures.fetch_add(1, Relaxed);
-                            eprintln!("gst-otel profiles: thread registration failed: {error}");
+                            eprintln!("mars-otel profiles: thread registration failed: {error}");
                         }
                     }
                 }
@@ -1131,12 +1131,12 @@ mod linux {
                 .iter()
                 .find(|(k, _)| k.as_str() == "service.name")
                 .map(|(_, v)| v.to_string())
-                .unwrap_or_else(|| "gst-otel-tracer".into());
+                .unwrap_or_else(|| "mars-otel".into());
             let config = PyroscopeConfig::new(
                 url,
                 name,
                 rate,
-                "gst-otel-embedded",
+                "mars-otel-embedded",
                 env!("CARGO_PKG_VERSION"),
             )
             .upload_interval(Duration::from_secs(1));

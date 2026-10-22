@@ -59,7 +59,7 @@ impl Settings {
         let mut headers = HeaderMap::new();
         headers.insert(
             reqwest::header::USER_AGENT,
-            HeaderValue::from_static(concat!("gst-otel-tracer/", env!("CARGO_PKG_VERSION"))),
+            HeaderValue::from_static(concat!("mars-otel/", env!("CARGO_PKG_VERSION"))),
         );
         if let Some(input) = setting("HEADERS") {
             for item in input.split_terminator(',') {

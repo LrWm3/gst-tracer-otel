@@ -1,14 +1,14 @@
-# OpenTelemetry push tracing for GStreamer
+# mars-otel: OpenTelemetry push tracing for GStreamer
 
-`otel-tracer` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
+`mars-otel` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
 It does not create live SDK spans or install a global tracer provider. An
 optional `profiles` feature adds an experimental embedded CPU sampler and
-Pyroscope delivery backend. The independent Pyroscope tracer is unchanged.
+Pyroscope delivery backend. The standalone `mars-profiles` tracer uses its own sampler.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
-`gst-instrument` is an additional entry point in the same plugin, with shared
+`mars-instrument` is an additional entry point in the same plugin, with shared
 push capture for metrics, trace exemplars, traces, logs, and CPU profiles.
-Set `GST_TRACERS=gst-instrument` to enable metrics and traces together; logs and
+Set `GST_TRACERS=mars-instrument` to enable metrics and traces together; logs and
 CPU profiles remain opt-in. See
 [setup, measurements, bounds, and current coverage](INSTRUMENT.md).
 
@@ -17,7 +17,7 @@ CPU profiles remain opt-in. See
 ```sh
 cargo build --release -p gst-otel-tracer
 export GST_PLUGIN_PATH="$PWD/target/release"
-export GST_TRACERS=otel-tracer
+export GST_TRACERS=mars-otel
 export OTEL_SERVICE_NAME=gstreamer-pipeline
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -44,7 +44,7 @@ On Linux x86-64, build the optional feature and set the Pyroscope base URL:
 ```sh
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p gst-otel-tracer --features profiles
 export GST_PLUGIN_PATH="$PWD/target/profiling"
-export GST_TRACERS=otel-tracer
+export GST_TRACERS=mars-otel
 export OTEL_SERVICE_NAME=gstreamer-pipeline
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 export GST_OTEL_PROFILE_URL=http://localhost:4040
@@ -234,7 +234,7 @@ exclusive element processing time or end-to-end buffer latency.
 | `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` | 4096 | 1–1048576 Unicode characters per descriptive value |
 | `GST_OTEL_LOGS` | false | `true` or `1` opts into the separate debug-log bridge |
 
-Invalid tracing configuration disables hooks and emits an `otel-tracer` error.
+Invalid tracing configuration disables hooks and emits an `mars-otel` error.
 Non-parent-based and custom samplers are not supported. `OTEL_BSP_*` does not
 configure this worker; there is no SDK batch span processor. No events or links
 are currently produced. SDK span processors and custom global tracer providers
@@ -278,7 +278,7 @@ At 0%, rejected roots avoid random IDs, descriptive metadata, record creation,
 serialization, and export. GStreamer still dispatches the registered hooks, and
 the tracer still tracks nesting, propagates rejection, and counts unsampled
 pushes. This prevents downstream stages from resampling rejected work. To remove
-the OTel hooks, omit `otel-tracer` from `GST_TRACERS` before process startup.
+the OTel hooks, omit `mars-otel` from `GST_TRACERS` before process startup.
 Other active tracers can still incur GStreamer's shared dispatch overhead.
 
 ## Performance and sampling cost

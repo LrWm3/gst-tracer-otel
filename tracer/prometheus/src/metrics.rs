@@ -1,7 +1,7 @@
 use glib::prelude::*;
 use gstreamer as gst;
 
-use crate::promlatencyimp::{PromLatencyTracerImp, CAT};
+use crate::metricsimp::{MetricsTracerImp, CAT};
 
 mod imp {
     use super::*;
@@ -26,8 +26,8 @@ mod imp {
     }
 
     impl Settings {
-        fn update_from_params(&mut self, imp: &PromLatencyTracer, params: String) {
-            let s = match gst::Structure::from_str(&format!("prom-latency,{params}")) {
+        fn update_from_params(&mut self, imp: &MetricsTracer, params: String) {
+            let s = match gst::Structure::from_str(&format!("mars-metrics,{params}")) {
                 Ok(s) => s,
                 Err(err) => {
                     gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
@@ -42,19 +42,19 @@ mod imp {
     }
 
     #[derive(Default)]
-    pub struct PromLatencyTracer {
-        core: PromLatencyTracerImp,
+    pub struct MetricsTracer {
+        core: MetricsTracerImp,
         settings: RwLock<Settings>,
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for PromLatencyTracer {
-        const NAME: &'static str = "promlatencytracer";
-        type Type = super::PromLatencyTracer;
+    impl ObjectSubclass for MetricsTracer {
+        const NAME: &'static str = "MarsMetricsTracer";
+        type Type = super::MetricsTracer;
         type ParentType = gst::Tracer;
     }
 
-    impl ObjectImpl for PromLatencyTracer {
+    impl ObjectImpl for MetricsTracer {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
@@ -86,7 +86,7 @@ mod imp {
                     .flags(glib::SignalFlags::ACTION)
                     .return_type::<Option<String>>()
                     .class_handler(|_args| {
-                        let ret = PromLatencyTracerImp::request_metrics();
+                        let ret = MetricsTracerImp::request_metrics();
                         gst::info!(
                             CAT,
                             "Prometheus metrics requested via signal, returning {} bytes",
@@ -100,26 +100,26 @@ mod imp {
         }
     }
 
-    impl GstObjectImpl for PromLatencyTracer {}
+    impl GstObjectImpl for MetricsTracer {}
 
-    impl TracerImpl for PromLatencyTracer {
+    impl TracerImpl for MetricsTracer {
         fn element_add_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
-            PromLatencyTracerImp::invalidate_topology();
+            MetricsTracerImp::invalidate_topology();
         }
 
         fn element_remove_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
-            PromLatencyTracerImp::invalidate_topology();
+            MetricsTracerImp::invalidate_topology();
         }
 
         fn bin_add_post(&self, _ts: u64, _bin: &gst::Bin, _element: &gst::Element, success: bool) {
             if success {
-                PromLatencyTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_topology();
             }
         }
 
         fn bin_remove_post(&self, _ts: u64, _bin: &gst::Bin, success: bool) {
             if success {
-                PromLatencyTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_topology();
             }
         }
 
@@ -131,7 +131,7 @@ mod imp {
         ) {
             if change == gst::StateChange::ReadyToPaused {
                 // Also pick up names changed while the pipeline was stopped.
-                PromLatencyTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_topology();
             }
         }
 
@@ -143,16 +143,12 @@ mod imp {
 }
 
 glib::wrapper! {
-    pub struct PromLatencyTracer(ObjectSubclass<imp::PromLatencyTracer>)
+    pub struct MetricsTracer(ObjectSubclass<imp::MetricsTracer>)
         @extends gst::Tracer, gst::Object;
 }
 
 // Register the plugin with GStreamer
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    gst::Tracer::register(
-        Some(plugin),
-        "prom-latency",
-        PromLatencyTracer::static_type(),
-    )?;
+    gst::Tracer::register(Some(plugin), "mars-metrics", MetricsTracer::static_type())?;
     Ok(())
 }

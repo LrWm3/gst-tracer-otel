@@ -29,7 +29,7 @@ fn setup() -> u16 {
             "GST_REGISTRY",
             env::temp_dir().join(format!("gst-prom-tests-{}.bin", std::process::id())),
         );
-        env::set_var("GST_TRACERS", format!("prom-latency(port={port})"));
+        env::set_var("GST_TRACERS", format!("mars-metrics(port={port})"));
         let case = env::var("GST_PROM_TEST_CASE").unwrap_or_default();
         if case == "sampling" {
             env::remove_var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE");
@@ -57,8 +57,17 @@ fn setup() -> u16 {
         gst::init().unwrap();
         let factory = gst::TracerFactory::factories()
             .into_iter()
-            .find(|factory| factory.name() == "prom-latency")
+            .find(|factory| factory.name() == "mars-metrics")
             .expect("test plugin was not loaded");
+        assert_eq!(factory.tracer_type().name(), "MarsMetricsTracer");
+        assert_eq!(
+            gst::TracerFactory::factories()
+                .into_iter()
+                .filter(|f| f.plugin_name() == factory.plugin_name())
+                .count(),
+            1,
+            "the metrics plugin should register only its Mars entry point"
+        );
         assert_eq!(
             factory
                 .plugin()
@@ -194,7 +203,7 @@ fn exact_counts_and_signal_match_http_for_a_completed_pipeline() {
     {
         let signal = gst::active_tracers()
             .iter()
-            .find(|tracer| tracer.type_().name() == "promlatencytracer")
+            .find(|tracer| tracer.type_().name() == "MarsMetricsTracer")
             .unwrap()
             .emit_by_name::<Option<String>>("metrics", &[])
             .unwrap();

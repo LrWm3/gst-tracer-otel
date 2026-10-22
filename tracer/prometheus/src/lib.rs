@@ -17,18 +17,18 @@
  */
 use gstreamer as gst;
 mod metric_lifecycle;
-mod promlatency;
-mod promlatencyimp;
+mod metrics;
+mod metricsimp;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    promlatency::register(plugin)?;
+    metrics::register(plugin)?;
     Ok(())
 }
 
 gst::plugin_define!(
     prometheustracer, // → libgstprometheustracer.so
-    "GStreamer Prometheus tracer",
+    "Mars Prometheus metrics",
     plugin_init,
     env!("CARGO_PKG_VERSION"),
     "LGPL",

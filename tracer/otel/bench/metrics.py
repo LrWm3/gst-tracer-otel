@@ -197,7 +197,7 @@ def main():
                         with socket.socket() as reservation:
                             reservation.bind(('127.0.0.1', 0))
                             port = reservation.getsockname()[1]
-                    tracer = '' if mode == 'none' else f'prom-latency(port={port})' if port else 'gst-instrument'
+                    tracer = '' if mode == 'none' else f'mars-metrics(port={port})' if port else 'mars-instrument'
                     output, body, scrapes, scrape_bytes = run(
                         binary, pipeline, streams, dict(base, GST_TRACERS=tracer), port, workdir, args.cpus)
                     totals, groups = prometheus_counts(body) if port else otlp_counts(payloads)

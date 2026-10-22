@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from plugins import otel_tracer
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -209,6 +210,7 @@ def main():
     base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_'))}
     endpoint = f'http://127.0.0.1:{server.server_port}'
     results = []
+    tracer_names = {}
     try:
         for workload in args.workloads:
             streams = 4 if workload == 'push4' else 1
@@ -228,18 +230,23 @@ def main():
                 offset = max(0, repeat) % len(args.modes)
                 for mode in args.modes[offset:] + args.modes[:offset]:
                     directory = {'baseline': args.baseline, 'no-feature': args.no_feature, 'previous': args.previous}.get(mode, args.profiles)
-                    env = dict(base, GST_PLUGIN_PATH=str(directory.resolve()), GST_TRACERS='otel-tracer',
+                    env = dict(base, GST_PLUGIN_PATH=str(directory.resolve()), GST_TRACERS='mars-otel',
                                GST_REGISTRY=str(args.output.parent / f'registry-{mode}.bin'), GST_DEBUG='0',
                                OTEL_SERVICE_NAME='gst-profile-bench', OTEL_EXPORTER_OTLP_ENDPOINT=endpoint,
                                GST_OTEL_LOGS='false', GST_OTEL_EXPORT_INTERVAL_MS='10', GST_OTEL_BATCH_SIZE='512',
                                GST_OTEL_QUEUE_CAPACITY=str(args.queue_capacity), OTEL_BENCH_DRAIN_MS=str(args.drain_ms),
                                OTEL_TRACES_SAMPLER='parentbased_always_on')
+                    if directory not in tracer_names:
+                        tracer_names[directory] = otel_tracer(directory.resolve(), env)
+                    env['GST_TRACERS'] = tracer_names[directory]
                     if mode in ('enabled', 'previous'):
                         env.update(GST_OTEL_PROFILE_URL=endpoint, GST_OTEL_PROFILE_HZ=str(args.hz))
                     payloads.clear()
                     forwards.clear()
                     started = int(time.time() * 1000)
-                    process = subprocess.run(['/usr/bin/time', '-f', 'RESOURCE user_s=%U sys_s=%S max_rss_kb=%M',
+                    # Keep time's inherited high-water mark separate from the
+                    # driver's post-exec VmHWM (max_rss_kb).
+                    process = subprocess.run(['/usr/bin/time', '-f', 'RESOURCE user_s=%U sys_s=%S time_max_rss_kb=%M',
                         'taskset', '-c', args.cpus, str(binary), pipeline, str(streams)],
                         env=env, capture_output=True, text=True, timeout=50)
                     ended = int(time.time() * 1000)

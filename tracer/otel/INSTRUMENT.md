@@ -1,13 +1,13 @@
-# gst-instrument: correlated push telemetry
+# mars-instrument: correlated push telemetry
 
-`gst-instrument` is an experimental entry point in `libgstoteltracer.so`. It
+`mars-instrument` is an experimental entry point in `libgstoteltracer.so`. It
 uses one set of push hooks, one nested call stack, and cached pad descriptions
 for OTLP metrics and traces, optional correlated GStreamer logs, and optional
-Pyroscope CPU profiles. `otel-tracer` retains its existing defaults.
+Pyroscope CPU profiles. `mars-otel` retains its existing defaults.
 
 This first version covers ordinary `gst_pad_push` calls, including nested
 pushes and propagation across queues. It does not replace the full
-`prom-latency` feature set: pull mode, buffer lists, queue pressure, per-pad I/O
+`mars-metrics` feature set: pull mode, buffer lists, queue pressure, per-pad I/O
 counts, and PTS-age diagnostics remain in that plugin. The existing
 [trace propagation boundaries](README.md#correlation-boundaries) still apply.
 
@@ -16,7 +16,7 @@ counts, and PTS-age diagnostics remain in that plugin. The existing
 ```sh
 cargo build --release -p gst-otel-tracer
 export GST_PLUGIN_PATH="$PWD/target/release"
-export GST_TRACERS=gst-instrument
+export GST_TRACERS=mars-instrument
 export OTEL_SERVICE_NAME=gstreamer-pipeline
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
@@ -55,7 +55,7 @@ Boolean settings accept `true`, `false`, `1`, and `0`. Existing `GST_OTEL_*`
 trace queue/batch/flush controls and `OTEL_TRACES_SAMPLER*` settings still apply.
 All signals use the same resource, including `OTEL_SERVICE_NAME` and
 `OTEL_RESOURCE_ATTRIBUTES`. The first telemetry tracer instance selects the
-process-wide configuration. Additional `otel-tracer` or `gst-instrument`
+process-wide configuration. Additional `mars-otel` or `mars-instrument`
 instances warn and do not register duplicate hooks. Select one entry point.
 
 Metrics-only operation (`GST_INSTRUMENT_TRACES=false`, profiles and logs off)
@@ -172,11 +172,11 @@ Run the reproducible comparison after building the release plugin:
 python3 tracer/otel/bench/instrument.py --repeats 5 --buffers 10000
 ```
 
-It compares no tracer, `otel-tracer`, metrics-only, combined metrics/traces, and
+It compares no tracer, `mars-otel`, metrics-only, combined metrics/traces, and
 combined capture with traces unsampled. Profiles and logs are disabled for this
 comparison. It decodes exports and checks every expected trace and metric count.
 See [measured results](bench/INSTRUMENT_RESULTS.md).
 
 A separate [metrics-only comparison](../prometheus/METRICS_RESULTS.md) measures
-`GST_INSTRUMENT_TRACES=false` against `prom-latency` and no tracer, including
+`GST_INSTRUMENT_TRACES=false` against `mars-metrics` and no tracer, including
 HTTP delivery, CPU cost per push, and peak memory on longer runs.
