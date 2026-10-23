@@ -26,7 +26,7 @@ from profiles import analyze, fields
 
 ROOT = Path(__file__).resolve().parents[3]
 MODES = ('none', 'native-logs', 'profiles', 'otel', 'otel-logs',
-         'otel-profiles', 'otel-profiles-logs', 'instrument', 'instrument-profiles-logs')
+         'otel-profiles', 'otel-profiles-logs', 'instrument', 'instrument-profiles-logs', 'profiles-raw')
 
 
 def sha256(path):
@@ -194,6 +194,7 @@ def main():
                       log_messages_per_frame=1, trace_sample_ratio=1,
                       queue_capacity=args.queue_capacity, export_interval_ms=args.export_interval_ms,
                       metric_interval_ms=10000, metric_cpu_sample_rate=16,
+                      element_attribution={mode: mode != 'profiles-raw' for mode in args.modes},
                       perf=args.perf),
     )
     args.output.with_suffix('.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -232,11 +233,12 @@ def main():
             for mode in args.modes[offset:] + args.modes[:offset]:
                 logging = 'logs' in mode
                 env = dict(base, GST_DEBUG='0,mars-profile-bench:4' if logging else '0',
+                           GST_OTEL_PROFILE_ELEMENTS='false' if mode == 'profiles-raw' else 'true',
                            GST_OTEL_LOGS='true' if logging and mode.startswith(('otel', 'instrument')) else 'false')
                 if 'profiles' in mode:
                     env['GST_OTEL_PROFILE_URL'] = endpoint
                 driver_mode = ('instrument' if mode.startswith('instrument') else
-                               'otel' if mode.startswith('otel') else 'profiles' if mode == 'profiles' else 'none')
+                               'otel' if mode.startswith('otel') else 'profiles' if mode.startswith('profiles') else 'none')
                 payloads.clear()
                 start = time.time_ns()
                 command = ['taskset', '-c', args.cpus]

@@ -179,10 +179,14 @@ macro_rules! tracer_impl {
                     ] {
                         self.register_hook(hook);
                     }
+                    #[cfg(feature = "profiles")]
+                    crate::profilecontext::register(self);
                 }
             }
             impl GstObjectImpl for OtelTracerImpl {}
             impl TracerImpl for OtelTracerImpl {
+                #[cfg(feature = "profiles")]
+                crate::profilecontext::methods!();
                 fn pad_push_pre(&self, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
                     if let Ok(runtime) = runtime() {
                         capture::begin(runtime, ts, pad, buffer);

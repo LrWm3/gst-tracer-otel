@@ -27,6 +27,9 @@ use crate::{capture::Token, export::FlushError};
 pub struct ProfileStats {
     pub samples: u64,
     pub correlated_samples: u64,
+    pub element_samples: u64,
+    pub task_samples: u64,
+    pub context_capacity_rejections: u64,
     pub dropped_full: u64,
     pub timer_overruns: u64,
     pub failed_stack_reads: u64,
@@ -57,6 +60,12 @@ mod platform {
     pub fn clear() {}
     #[cfg(feature = "profiles")]
     pub fn register_thread() {}
+    #[cfg(feature = "profiles")]
+    pub fn active() -> bool {
+        false
+    }
+    #[cfg(feature = "profiles")]
+    pub fn publish_element(_: u64) {}
     pub fn shutdown(_: Duration) -> Result<(), FlushError> {
         Ok(())
     }
@@ -66,7 +75,7 @@ mod platform {
 }
 
 #[cfg(feature = "profiles")]
-pub(crate) use platform::register_thread;
+pub(crate) use platform::{active, publish_element, register_thread};
 pub(crate) use platform::{clear, initialize, publish, shutdown};
 
 pub fn profile_stats() -> ProfileStats {
@@ -124,6 +133,7 @@ mod linux {
     #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
     struct Sample {
         ids: [u64; 3], // trace high, trace low, span; zero means uncorrelated
+        element: u64,  // immutable description ID plus execution/task discriminator
         tid: i32,
         len: usize,
         pcs: [usize; MAX_FRAMES],
@@ -132,6 +142,7 @@ mod linux {
         fn default() -> Self {
             Self {
                 ids: [0; 3],
+                element: 0,
                 tid: 0,
                 len: 0,
                 pcs: [0; MAX_FRAMES],
@@ -146,6 +157,7 @@ mod linux {
         high: AtomicUsize,
         valid: AtomicBool,
         ids: [AtomicU64; 3],
+        element: AtomicU64,
         head: AtomicUsize,
         tail: AtomicUsize,
         buffers: OnceLock<Box<Buffers>>,
@@ -171,6 +183,7 @@ mod linux {
                 high: AtomicUsize::new(0),
                 valid: AtomicBool::new(false),
                 ids: std::array::from_fn(|_| AtomicU64::new(0)),
+                element: AtomicU64::new(0),
                 head: AtomicUsize::new(0),
                 tail: AtomicUsize::new(0),
                 buffers: OnceLock::new(),
@@ -254,6 +267,8 @@ mod linux {
     struct Counters {
         samples: AtomicU64,
         correlated_samples: AtomicU64,
+        element_samples: AtomicU64,
+        task_samples: AtomicU64,
         dropped_full: AtomicU64,
         timer_overruns: AtomicU64,
         failed_stack_reads: AtomicU64,
@@ -456,7 +471,21 @@ mod linux {
                         let relative = offset.checked_sub(start)?;
                         (relative < len).then(|| address + relative)
                     });
-                    let frames = resolve_file(pc, address, loader.as_ref());
+                    let mut frames = resolve_file(pc, address, loader.as_ref());
+                    if frames.len() == 1 && frames[0].name.as_deref() == Some(&format!("0x{pc:x}"))
+                    {
+                        // Keep the instruction address on the pprof location,
+                        // but group unnamed code by its mapped library instead
+                        // of making ASLR-dependent addresses the function name.
+                        frames[0].name = Some(format!(
+                            "[unresolved native] {}",
+                            mapping
+                                .path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ));
+                    }
                     let bytes = frames.capacity() * std::mem::size_of::<StackFrame>()
                         + frames
                             .iter()
@@ -533,6 +562,7 @@ mod linux {
         strings: HashMap<String, i64>,
         functions: HashMap<(i64, i64), u64>,
         locations: HashMap<usize, u64>,
+        elements: HashMap<u64, u64>,
     }
     impl Pprof {
         fn new(rate: u32, start: i64, duration: i64) -> Self {
@@ -546,6 +576,7 @@ mod linux {
                 strings: HashMap::new(),
                 functions: HashMap::new(),
                 locations: HashMap::new(),
+                elements: HashMap::new(),
             };
             result.string("");
             let cpu = result.string("cpu");
@@ -605,11 +636,39 @@ mod linux {
                 ));
                 labels.push(self.label("span_id", &format!("{:016x}", sample.ids[2])));
             }
+            let mut location_id: Vec<_> = sample.pcs[..sample.len]
+                .iter()
+                .map(|pc| self.locations[pc])
+                .collect();
+            if crate::profilecontext::enabled() {
+                let location = if let Some(id) = self.elements.get(&sample.element) {
+                    *id
+                } else {
+                    let name = self.string(&crate::profilecontext::frame(sample.element));
+                    let function_id = self.profile.function.len() as u64 + 1;
+                    self.profile.function.push(Function {
+                        id: function_id,
+                        name,
+                        ..Default::default()
+                    });
+                    let id = self.profile.location.len() as u64 + 1;
+                    self.profile.location.push(Location {
+                        id,
+                        line: vec![Line {
+                            function_id,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    self.elements.insert(sample.element, id);
+                    id
+                };
+                // pprof locations are leaf first: append one grouping root.
+                // Never duplicate samples into enclosing elements or spans.
+                location_id.push(location);
+            }
             self.profile.sample.push(PprofSample {
-                location_id: sample.pcs[..sample.len]
-                    .iter()
-                    .map(|pc| self.locations[pc])
-                    .collect(),
+                location_id,
                 value: vec![count as i64 * self.profile.period],
                 label: labels,
             });
@@ -818,6 +877,7 @@ mod linux {
             let _guard = self.sampler.registration.lock().unwrap();
             let slot = &self.sampler.slots[self.index];
             slot.publish(None);
+            slot.element.store(0, Relaxed);
             slot.delete_timer();
             // Pending notifications to this exiting thread cannot sample a
             // recycled slot: the handler checks the target's native TID.
@@ -836,6 +896,7 @@ mod linux {
             .ok_or("all 64 profiler thread slots are occupied")?;
         let slot = &sampler.slots[index];
         slot.prepare();
+        slot.element.store(0, Relaxed);
         // SAFETY: pthread attributes and signal masks below refer to the calling
         // thread, all output storage is initialized before use and destroyed.
         unsafe {
@@ -939,11 +1000,26 @@ mod linux {
             .unwrap_or(false)
     }
 
-    // Profiles-only hooks need just one registration per native thread. Avoid
-    // context writes, stack bookkeeping, and repeated registration attempts.
+    // Register only once per native thread. Later calls leave the active span
+    // and element context intact, including after a failed registration attempt.
     pub fn register_thread() {
         if ACTIVE.load(Relaxed) && ATTEMPTED.try_with(|v| !v.get()).unwrap_or(false) {
             publish(None);
+        }
+    }
+
+    pub fn active() -> bool {
+        ACTIVE.load(Relaxed)
+    }
+    pub fn publish_element(id: u64) {
+        if active() {
+            let _ = REGISTRATION.try_with(|registration| {
+                if let Ok(registration) = registration.try_borrow() {
+                    if let Some(r) = registration.as_ref() {
+                        r.sampler.slots[r.index].element.store(id, Relaxed);
+                    }
+                }
+            });
         }
     }
 
@@ -1040,6 +1116,7 @@ mod linux {
         let fp = registers[libc::REG_RBP as usize] as usize;
         let mut sample = Sample {
             ids: slot.context(),
+            element: slot.element.load(Relaxed),
             tid,
             len: 1,
             ..Default::default()
@@ -1083,6 +1160,13 @@ mod linux {
         }
         if slot.push(sample) {
             sampler.counters.samples.fetch_add(1, Relaxed);
+            if sample.element != 0 {
+                if sample.element & 1 == 0 {
+                    sampler.counters.element_samples.fetch_add(1, Relaxed);
+                } else {
+                    sampler.counters.task_samples.fetch_add(1, Relaxed);
+                }
+            }
             if sample.ids != [0; 3] {
                 sampler.counters.correlated_samples.fetch_add(1, Relaxed);
             }
@@ -1114,6 +1198,7 @@ mod linux {
         if !(1..=1000).contains(&rate) {
             return Err("GST_OTEL_PROFILE_HZ must be 1..=1000".into());
         }
+        crate::profilecontext::configure()?;
         let signal = std::env::var("GST_OTEL_PROFILE_SIGNAL")
             .ok()
             .map(|s| s.parse::<i32>())
@@ -1202,6 +1287,9 @@ mod linux {
         ProfileStats {
             samples: s.counters.samples.load(Relaxed),
             correlated_samples: s.counters.correlated_samples.load(Relaxed),
+            element_samples: s.counters.element_samples.load(Relaxed),
+            task_samples: s.counters.task_samples.load(Relaxed),
+            context_capacity_rejections: crate::profilecontext::rejected(),
             dropped_full: s.counters.dropped_full.load(Relaxed),
             timer_overruns: s.counters.timer_overruns.load(Relaxed),
             failed_stack_reads: s.counters.failed_stack_reads.load(Relaxed),
@@ -1577,6 +1665,7 @@ mod linux {
             for span in [11, 11, 12] {
                 assert!(sampler.slots[0].push(Sample {
                     ids: [1, 2, span],
+                    element: 0,
                     tid: 7,
                     len: 1,
                     pcs: [0; MAX_FRAMES]

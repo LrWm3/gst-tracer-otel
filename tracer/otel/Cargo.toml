@@ -34,8 +34,12 @@ tiny_http = "0.12"
 [features]
 noop = []
 capi = []
-profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "dep:libflate"]
+profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "dep:libflate", "gstreamer/v1_22"]
 
 [[example]]
 name = "profile_video"
+required-features = ["profiles"]
+
+[[example]]
+name = "profile_elements"
 required-features = ["profiles"]

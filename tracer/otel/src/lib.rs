@@ -21,6 +21,8 @@ mod export;
 mod metadata;
 mod metrics;
 mod otellogbridge;
+#[cfg(feature = "profiles")]
+mod profilecontext;
 mod profiles;
 #[cfg(feature = "profiles")]
 mod profiletracer;

@@ -41,6 +41,10 @@ Profiling currently requires Linux x86-64. To include GStreamer logs, set
 `GST_INSTRUMENT_LOGS=true` and select the desired categories with `GST_DEBUG`.
 The standard GStreamer log handler remains enabled.
 
+Profiles also [group CPU by element instance or task owner](PROFILES.md#finding-the-element-that-used-cpu),
+independently of trace and metric sampling. This requires GStreamer 1.22 or newer;
+set `GST_OTEL_PROFILE_ELEMENTS=false` to disable the grouping.
+
 ## Signal controls
 
 | Setting | Default | Meaning |

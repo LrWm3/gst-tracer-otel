@@ -27,6 +27,9 @@ variation; these are not limits or FPS-loss estimates. `mars-instrument` added
 about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
 [profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
 The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
+These figures predate element-attributed profiles; see the
+[attribution review](reports/otel/PROFILE_ELEMENT_REVIEW.md) for its additional
+cost and screenshots.
 
 ## Get your first metrics
 
@@ -76,11 +79,12 @@ Each guide includes its build command, backend requirements, and configuration:
   together, with optional correlated logs and CPU profiles.
 - [OpenTelemetry traces](tracer/otel/README.md): push-call spans, trace sampling,
   and optional correlated logs and profiles.
-- [CPU profiles](tracer/otel/PROFILES.md): profiling alone, including frame
-  pointers and debug symbols for useful call stacks.
+- [CPU profiles](tracer/otel/PROFILES.md): native stacks grouped by element
+  instance or task owner, including frame pointers and debug symbols.
 
 Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
-they share one configuration. Profiling requires the `profiles` build feature.
+they share one configuration. Profiling requires the `profiles` build feature
+and GStreamer 1.22 or newer.
 
 ## Know what you are measuring
 

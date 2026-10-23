@@ -22,6 +22,13 @@ struct PadState {
     // Generation in the high bits, source classification in bit zero.
     source: AtomicU64,
     site: ArcSwapOption<Site>,
+    #[cfg(feature = "profiles")]
+    profile: ArcSwapOption<ProfileSite>,
+}
+#[cfg(feature = "profiles")]
+struct ProfileSite {
+    epoch: u64,
+    id: u64,
 }
 impl PadState {
     fn invalidate(&self) {
@@ -61,11 +68,11 @@ unsafe extern "C" fn drop_watchers(ptr: glib::ffi::gpointer) {
     drop(Box::from_raw(ptr as *mut Arc<Watchers>));
 }
 
-fn state(pad: &gst::Pad) -> &Arc<PadState> {
-    // Install once. The borrowed pad protects qdata lifetime, and no strong pad
+fn state(object: &impl IsA<gst::Object>) -> &Arc<PadState> {
+    // Install once. The borrowed object protects qdata lifetime, and no strong
     // reference is retained by a descriptor or invalidation subscription.
     unsafe {
-        let object = pad.as_ptr().cast();
+        let object = object.as_ref().as_ptr().cast();
         let quark = STATE.into_glib();
         let mut ptr = glib::gobject_ffi::g_object_get_qdata(object, quark) as *mut Arc<PadState>;
         if ptr.is_null() {
@@ -73,6 +80,8 @@ fn state(pad: &gst::Pad) -> &Arc<PadState> {
                 epoch: AtomicU64::new(1),
                 source: AtomicU64::new(0),
                 site: ArcSwapOption::empty(),
+                #[cfg(feature = "profiles")]
+                profile: ArcSwapOption::empty(),
             })));
             if glib::gobject_ffi::g_object_replace_qdata(
                 object,
@@ -91,6 +100,35 @@ fn state(pad: &gst::Pad) -> &Arc<PadState> {
         }
         &*ptr
     }
+}
+
+/// Immutable, bounded profile descriptions. Cache hits avoid name/path lookups
+/// and registry locks. Old IDs remain valid for queued CPU samples.
+#[cfg(feature = "profiles")]
+pub(crate) fn profile_id(object: &gst::Object) -> u64 {
+    let state = state(object);
+    let epoch = state.epoch.load(Relaxed);
+    if let Some(site) = state.profile.load_full().filter(|s| s.epoch == epoch) {
+        return site.id;
+    }
+    watch_path(object, state);
+    let element = object.downcast_ref::<gst::Element>().cloned().or_else(|| {
+        object
+            .downcast_ref::<gst::Pad>()
+            .and_then(|p| p.parent_element())
+    });
+    let id = element.map_or(0, |element| {
+        let path = text_value(&element.path_string(), 512);
+        let factory = element.factory().map_or_else(
+            || element.type_().name().to_owned(),
+            |f| f.name().to_string(),
+        );
+        crate::profilecontext::intern(&path, &text_value(&factory, 128))
+    });
+    state
+        .profile
+        .store(Some(Arc::new(ProfileSite { epoch, id })));
+    id
 }
 
 fn watch(object: &gst::Object, state: &Arc<PadState>) {
@@ -229,6 +267,32 @@ pub(crate) fn has_description(pad: &gst::Pad) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "profiles")]
+    #[test]
+    fn profile_descriptions_survive_rename_without_retaining_elements() {
+        gst::init().unwrap();
+        let pipeline = gst::Pipeline::with_name("profile-old");
+        let element = gst::ElementFactory::make("identity")
+            .name("instance")
+            .build()
+            .unwrap();
+        pipeline.add(&element).unwrap();
+        let pad = element.static_pad("sink").unwrap();
+        let refs = element.ref_count();
+        let before = profile_id(pad.upcast_ref());
+        pipeline.set_property("name", "profile-new");
+        let after = profile_id(pad.upcast_ref());
+        assert_ne!(before, after);
+        assert!(crate::profilecontext::frame(before << 1).contains("profile-old"));
+        assert!(crate::profilecontext::frame(after << 1).contains("profile-new"));
+        assert_eq!(element.ref_count(), refs);
+        let weak = element.downgrade();
+        drop(pad);
+        drop(element);
+        drop(pipeline);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn renaming_an_ancestor_invalidates_its_sites_without_touching_other_pipelines() {

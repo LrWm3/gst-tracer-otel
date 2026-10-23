@@ -162,6 +162,9 @@ fn collect(mode: &str) -> (Received, String) {
     if mode.ends_with("invalid-rate") {
         command.env("GST_OTEL_PROFILE_HZ", "0");
     }
+    if mode.ends_with("invalid-elements") {
+        command.env("GST_OTEL_PROFILE_ELEMENTS", "invalid");
+    }
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -263,6 +266,19 @@ fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
                     && format!("{:?}", a.value).contains(*span_id)));
             if let Some(phase) = expected.get(&key) {
                 phases.insert(phase.as_str());
+                let root = scope_frame(profile, sample);
+                match phase.as_str() {
+                    "outer" => assert!(
+                        root.starts_with("[element]") && root.contains("GstIdentity:outer"),
+                        "{root}"
+                    ),
+                    "queue" => assert!(
+                        root.starts_with("[element]") && root.contains("GstIdentity:worker"),
+                        "{root}"
+                    ),
+                    "nested" => assert_eq!(root, "[unattributed GStreamer CPU]"),
+                    _ => unreachable!(),
+                }
             }
             tids.insert(labels["thread_id"].to_owned());
             assert!(!sample.location_id.is_empty());
@@ -353,6 +369,7 @@ fn profiles_only_uploads_cpu_samples_without_any_otlp_requests() {
 fn profiles_only_rejects_invalid_configuration_without_starting_other_signals() {
     for mode in [
         "profiles-only-invalid-rate",
+        "profiles-only-invalid-elements",
         "profiles-only-signal-conflict",
         "profiles-only-legacy-params",
     ] {
@@ -418,6 +435,7 @@ fn profile_child() {
     };
     if profiles_only
         && (mode.ends_with("invalid-rate")
+            || mode.ends_with("invalid-elements")
             || mode.ends_with("signal-conflict")
             || mode.ends_with("legacy-params"))
     {
@@ -437,7 +455,9 @@ fn profile_child() {
     let _duplicate_traces = glib::Object::new::<gstoteltracer::TelemetryTracer>();
     let _duplicate_instrument = glib::Object::new::<gstoteltracer::InstrumentTracer>();
 
-    if mode.ends_with("-list") || mode.ends_with("-pull") {
+    if mode == "profiles-only-elements" {
+        profile_element_work();
+    } else if mode.ends_with("-list") || mode.ends_with("-pull") {
         profile_non_push_work(&mode);
     } else {
         profile_push_work();
@@ -587,6 +607,106 @@ fn profile_push_work() {
     pipeline.set_state(gst::State::Null).unwrap();
     source.set_active(false).unwrap();
     sink.set_active(false).unwrap();
+}
+
+fn busy_cpu(milliseconds: u64) {
+    fn now() -> u64 {
+        let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
+        // SAFETY: checked clock_gettime initializes the output.
+        assert_eq!(
+            unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, time.as_mut_ptr()) },
+            0
+        );
+        let time = unsafe { time.assume_init() };
+        time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+    }
+    let until = now() + milliseconds * 1_000_000;
+    let mut value = 1u64;
+    while now() < until {
+        for _ in 0..10000 {
+            value = std::hint::black_box(value.wrapping_mul(6364136223846793005).wrapping_add(1));
+        }
+    }
+}
+
+fn profile_element_work() {
+    let pipeline = gst::parse::launch("fakesrc name=producer num-buffers=10 signal-handoffs=true ! identity name=light ! queue ! identity name=heavy ! fakesink sync=false")
+        .unwrap().downcast::<gst::Pipeline>().unwrap();
+    for (name, cpu_ms) in [("producer", 20), ("light", 40), ("heavy", 120)] {
+        pipeline
+            .by_name(name)
+            .unwrap()
+            .connect("handoff", false, move |_| {
+                busy_cpu(cpu_ms);
+                None
+            });
+    }
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let message = pipeline
+        .bus()
+        .unwrap()
+        .timed_pop_filtered(
+            gst::ClockTime::from_seconds(20),
+            &[gst::MessageType::Eos, gst::MessageType::Error],
+        )
+        .unwrap();
+    assert_eq!(message.type_(), gst::MessageType::Eos);
+    pipeline.set_state(gst::State::Null).unwrap();
+}
+
+fn scope_frame<'a>(
+    profile: &'a Profile,
+    sample: &pyroscope::encode::gen::google::Sample,
+) -> &'a str {
+    let location = profile
+        .location
+        .iter()
+        .find(|l| Some(&l.id) == sample.location_id.last())
+        .unwrap();
+    let function = profile
+        .function
+        .iter()
+        .find(|f| f.id == location.line[0].function_id)
+        .unwrap();
+    &profile.string_table[function.name as usize]
+}
+
+#[test]
+fn profiles_distinguish_same_factory_instances_and_source_task_work() {
+    let (received, stdout) = collect("profiles-only-elements");
+    assert!(received.spans.is_empty());
+    let mut weights = HashMap::<String, i64>::new();
+    for profile in &received.profiles {
+        for sample in &profile.sample {
+            let root = scope_frame(profile, sample);
+            assert!(
+                root.starts_with("[element]")
+                    || root.starts_with("[task owner]")
+                    || root.starts_with("[unattributed"),
+                "{root}"
+            );
+            *weights.entry(root.into()).or_default() += sample.value[0];
+        }
+    }
+    let weight = |name: &str, kind: &str| {
+        weights
+            .iter()
+            .filter(|(k, _)| k.starts_with(kind) && k.contains(name))
+            .map(|(_, v)| *v)
+            .sum::<i64>()
+    };
+    let light = weight("GstIdentity:light", "[element]");
+    let heavy = weight("GstIdentity:heavy", "[element]");
+    assert!(light > 200_000_000, "{weights:?}\n{stdout}");
+    assert!(
+        (2.0..4.0).contains(&(heavy as f64 / light as f64)),
+        "{weights:?}"
+    );
+    assert!(
+        weight("GstFakeSrc:producer", "[task owner]") > 100_000_000,
+        "{weights:?}"
+    );
+    assert_eq!(weight("GstIdentity:heavy", "[task owner]"), 0);
 }
 
 #[test]

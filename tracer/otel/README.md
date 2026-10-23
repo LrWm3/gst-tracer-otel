@@ -40,7 +40,8 @@ compression settings disable tracing with an initialization error.
 
 ## Experimental correlated CPU profiles
 
-On Linux x86-64, build the optional feature and set the Pyroscope base URL:
+On Linux x86-64 with GStreamer 1.22 or newer, build the optional feature and set
+the Pyroscope base URL:
 
 ```sh
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p gst-otel-tracer --features profiles
@@ -62,6 +63,14 @@ Queue workers publish their own active push, using the existing buffer context
 propagation. Overflow or uncertain hook nesting suppresses correlation until
 the stack recovers. Unsampled pushes still contribute CPU samples without IDs.
 
+Element attribution is separate from trace correlation. The hooks in
+[src/profilecontext.rs](src/profilecontext.rs) track chain/list/pull calls and
+GStreamer task ownership. Each native stack gains one synthetic root identifying
+the element instance, or a separately marked task owner or unattributed context.
+This works even with trace sampling disabled and adds no series labels. See
+[how to read these frames](PROFILES.md#finding-the-element-that-used-cpu) and
+[the Grafana screenshots](../../reports/otel/PROFILE_ELEMENT_REVIEW.md).
+
 Profiles use the trace resource's `service.name` as Pyroscope `service_name`.
 `span_id`, `trace_id` and native `thread_id` are **pprof sample labels**, not
 series labels. Eligible spans have `pyroscope.profile.id` equal to their
@@ -73,7 +82,7 @@ Tempo-to-Pyroscope link separately, selecting the same service and span IDs.
 The automated tests validate upload payloads. A local Pyroscope 2.4.0 server
 also accepted the uploads: aggregate, span-ID and trace-ID queries returned the
 exact CPU weights decoded from those payloads, and an unknown span returned no
-samples. Grafana UI navigation has not been tested. The reproducible
+samples. Tempo-to-Pyroscope UI navigation has not been tested. The reproducible
 [profile benchmark](bench/profiles.py) can forward uploads with `--pyroscope`
 and check these server queries.
 
@@ -81,6 +90,7 @@ and check these server queries.
 | --- | --- | --- |
 | `GST_OTEL_PROFILE_URL` | unset (disabled) | HTTP(S) Pyroscope base URL; delivery uses `/push.v1.PusherService/Push` |
 | `GST_OTEL_PROFILE_HZ` | `100` | Per-thread CPU sampling frequency, from 1 to 1000 Hz |
+| `GST_OTEL_PROFILE_ELEMENTS` | `true` | Group native stacks by element execution context or task owner |
 | `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Numeric realtime signal reserved by this sampler |
 
 Feature compilation alone does not start profiling. Missing feature/platform,
@@ -93,18 +103,21 @@ selects the signal configuration and later instances install no hooks. Configure
 credentials/authentication at a local forwarding proxy for this prototype;
 it does not map OTLP headers to Pyroscope requests.
 
-Sampling covers up to 64 simultaneously registered **push threads**, including
-their CPU work between pushes after registration. It does not measure sleeping
-time, all process threads, or CPU work before a thread's first push. CPU is
-attributed to the innermost active push, not duplicated into every enclosing
-span. Each thread has a 256-sample ring, a 64-frame limit and an 8 KiB stack
-snapshot. Storage is allocated on first registration: about 146 KiB per used
+Sampling covers up to 64 simultaneously registered **participating threads**,
+including their CPU work between calls after registration. Element attribution
+registers GStreamer tasks at ENTER, before source production and the first push;
+chain and push/pull hooks provide fallback registration. It does not measure
+sleeping time, all process threads, or CPU before registration. Trace correlation
+uses the innermost active sampled push; element context uses the innermost
+chain/list/pull call. Neither duplicates samples into enclosing spans/elements.
+Each thread has a 256-sample ring, a 64-frame limit and an 8 KiB stack
+snapshot. Storage is allocated on first registration: about 148 KiB per used
 slot, rather than allocating about 9 MiB for all 64 slots at startup. Retiring
 threads release their timers and slots; their buffers remain available for
 reuse and safe handling of pending signals. Full rings drop samples.
 
-The `mars-profiles` entry point also registers buffer-list and pull-range
-threads, without a capture stack or span correlation. See its
+The `mars-profiles` entry point uses the same bounded element context stack,
+without trace capture or span correlation. See its
 [configuration and migration guide](PROFILES.md).
 
 A dedicated report worker drains rings every second, aggregates raw stacks,
@@ -124,7 +137,8 @@ DWARF resolver per mapped executable region; no process-wide backtrace mutex or
 dynamic-loader enumeration is involved. Embedded and installed build-ID debug
 files provide names, file/line and inline frames. Debuglink-only/supplementary
 debug files and symbols unloaded before report processing are not guaranteed;
-unresolved addresses remain visible. Debug parsing can still raise peak RSS.
+unresolved locations keep their instruction addresses and use a library-name
+fallback when the mapping is known. Debug parsing can still raise peak RSS.
 
 Profile time windows use actual report intervals, rather than per-sample
 timestamps; reporting delays can place buffered samples in a later window.
@@ -143,7 +157,9 @@ unwinding or JIT stack support.
 
 `gstoteltracer::profile_stats()` reports queued/correlated samples, full-ring
 drops, timer overruns, failed stack reads, truncated stacks, registration
-failures, reported samples and active timers. `dropped_processing` counts samples
+failures, reported samples and active timers. `element_samples`, `task_samples`,
+and `context_capacity_rejections` expose element attribution coverage and its
+bounded registry. `dropped_processing` counts samples
 discarded by the encoded-size limit; `dropped_upload` counts samples discarded
 when the upload queue is full or disconnected. `reported_samples` counts samples
 successfully enqueued to the SDK, **not successful delivery**: the SDK does not expose HTTP

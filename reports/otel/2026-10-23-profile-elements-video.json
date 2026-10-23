@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-23T17:02:13.235563+00:00",
+  "revision": "68739fb6c41d65c8598984e8cfc30783f4eac36d",
+  "command": [
+    "tracer/otel/bench/profile_video.py",
+    "--perf",
+    "--cpus",
+    "0,2",
+    "--frames",
+    "1200",
+    "--repeats",
+    "3",
+    "--modes",
+    "none",
+    "profiles-raw",
+    "profiles",
+    "--export-interval-ms",
+    "200",
+    "--queue-capacity",
+    "8192",
+    "--output",
+    "reports/otel/2026-10-23-profile-elements-video.csv"
+  ],
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)\nbinary: rustc\ncommit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2\ncommit-date: 2025-08-04\nhost: x86_64-unknown-linux-gnu\nrelease: 1.89.0\nLLVM version: 20.1.7\n",
+  "perf_version": "perf version 7.0.14",
+  "gstreamer": "1.24.2",
+  "uname": {
+    "system": "Linux",
+    "node": "cranberry",
+    "release": "7.0.0-38-generic",
+    "version": "#38~24.04.4-Ubuntu SMP PREEMPT_DYNAMIC Mon Sep 14 16:37:11 UTC 2",
+    "machine": "x86_64",
+    "processor": "x86_64"
+  },
+  "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  12\nOn-line CPU(s) list:                     0-11\nVendor ID:                               GenuineIntel\nModel name:                              13th Gen Intel(R) Core(TM) i5-1345U\nCPU family:                              6\nModel:                                   186\nThread(s) per core:                      2\nCore(s) per socket:                      10\nSocket(s):                               1\nStepping:                                3\nCPU(s) scaling MHz:                      94%\nCPU max MHz:                             4700.0000\nCPU min MHz:                             400.0000\nBogoMIPS:                                4992.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid movdiri movdir64b fsrm md_clear serialize pconfig arch_lbr ibt flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               352 KiB (10 instances)\nL1i cache:                               576 KiB (10 instances)\nL2 cache:                                6.5 MiB (4 instances)\nL3 cache:                                12 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-11\nVulnerability Gather data sampling:      Not affected\nVulnerability Ghostwrite:                Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Old microcode:             Not affected\nVulnerability Reg file data sampling:    Mitigation; Clear Register File\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace\n",
+  "affinity": [
+    4
+  ],
+  "child_cpus": "0,2",
+  "governor": "powersave",
+  "binary_sha256": "72bf38422ac4f2fbe0e6523b100d913f091f3f1957eacb23063bb17e07839608",
+  "source_sha256": {
+    "tracer/otel/bench/profile_video.py": "acd0ac188b04d45b5874f96b02277c9cc4e469ddf3cb2e3c98ec90c08797ea77",
+    "tracer/otel/examples/profile_video.rs": "aceac3f65252d5dfeb3e8365f5cd16c374e3b41f59604a5c5c424776621c2c4b",
+    "tracer/otel/bench/profiles.py": "1295e2a29567b6b37e9887609ac62a4de3d34fc398a17d6cf8eea94952e6ab08",
+    "Cargo.lock": "17d7f4500d0ea30ec2bf8d0ebb066c7d2239bdbb4681c4b243686505f9e8f110"
+  },
+  "settings": {
+    "frames": 1200,
+    "repeats": 3,
+    "hz": 100,
+    "modes": [
+      "none",
+      "profiles-raw",
+      "profiles"
+    ],
+    "rustflags": "-C force-frame-pointers=yes",
+    "profile": "release",
+    "log_messages_per_frame": 1,
+    "trace_sample_ratio": 1,
+    "queue_capacity": 8192,
+    "export_interval_ms": 200,
+    "metric_interval_ms": 10000,
+    "metric_cpu_sample_rate": 16,
+    "element_attribution": {
+      "none": true,
+      "profiles-raw": false,
+      "profiles": true
+    },
+    "perf": true
+  }
+}
