@@ -43,3 +43,7 @@ required-features = ["profiles"]
 [[example]]
 name = "profile_elements"
 required-features = ["profiles"]
+
+[[example]]
+name = "profile_correlation"
+required-features = ["profiles"]

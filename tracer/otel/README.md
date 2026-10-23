@@ -82,14 +82,15 @@ series labels. Eligible spans have `pyroscope.profile.id` equal to their
 16-character span ID. The marker means sampling was enabled for that span;
 short spans may receive no samples, and dropped trace/profile exports can leave
 missing counterparts. Attribute limits can omit the marker; a string limit
-below 16 omits it instead of truncating the identifier. Configure Grafana's
-Tempo-to-Pyroscope link separately, selecting the same service and span IDs.
-The automated tests validate upload payloads. A local Pyroscope 2.4.0 server
-also accepted the uploads: aggregate, span-ID and trace-ID queries returned the
-exact CPU weights decoded from those payloads, and an unknown span returned no
-samples. Tempo-to-Pyroscope UI navigation has not been tested. The reproducible
-[profile benchmark](bench/profiles.py) can forward uploads with `--pyroscope`
-and check these server queries.
+below 16 omits it instead of truncating the identifier. Follow the
+[Grafana correlation guide](CORRELATION.md) to configure the Tempo-to-Pyroscope
+link, including the data-source UID, service-name mapping and CPU profile type.
+Its local demo validates the provisioned configuration, stored Tempo span marker,
+and exact aggregate/span/trace CPU totals through Grafana's data-source proxies.
+Unknown spans return no samples. Browser click-through remains a separate manual
+check; see the [validation report](../../reports/otel/CORRELATION_REVIEW.md).
+The [profile benchmark](bench/profiles.py) also supports direct Pyroscope query
+validation with `--pyroscope`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

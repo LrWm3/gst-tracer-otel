@@ -1,0 +1,1487 @@
+{
+  "revision": "a4bb8fdf83ae1980e10013a089b37dafa266c2b9",
+  "source_sha256": {
+    "tracer/otel/bench/correlation/check.py": "784ca24f8d8d3b7dde030130c6e551d773382e2e06229cfc6ea88f872057b915",
+    "tracer/otel/bench/correlation/compose.yaml": "da04bd8039afcabb89fa285d7d1500fe0cf80c06f15ee9be03de6d5fa9495321",
+    "tracer/otel/bench/correlation/tempo.yaml": "0453d2406c9a425e8d4e2bd5c2d26e27baee3eb41dd1096f1574716a25ea0f01",
+    "tracer/otel/bench/correlation/datasources.yaml": "aa0904f05eb8d1687eeeadea673cad4ea2003ecef22397c1ad8ec5a47256f5a7",
+    "tracer/otel/examples/profile_correlation.rs": "d2be93c3960d8bf3b6facfbf7ecca7bb700f1aca044e2405d77507b50719aae6",
+    "tracer/otel/bench/profiles.py": "8a6213929df14560537e2ae6008cf0bd1b68758ad3df6b91a81c3904ffaf610f"
+  },
+  "binary_sha256": "6f03a3b5269501e7e668923b80310be793d58c82fe42cd94efc7f645271b59e7",
+  "grafana": {
+    "database": "ok",
+    "version": "13.1.1",
+    "commit": "e784b7782a43822971f896b3377dc736346a9c66"
+  },
+  "service_name": "mars-correlation-1792798403075545147",
+  "started_ms": 1792798403076,
+  "ended_ms": 1792798405157,
+  "selected": {
+    "trace_id": "8cb19ea01fbc44c49cf49b531039a28d",
+    "span_id": "6693ea3f590c1762",
+    "cpu_ns": 250000000
+  },
+  "provisioned_traces_to_profiles": {
+    "datasourceUid": "mars-correlation-pyroscope",
+    "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+    "tags": [
+      {
+        "key": "service.name",
+        "value": "service_name"
+      }
+    ]
+  },
+  "decoded": {
+    "received_spans": 16,
+    "profiles": 2,
+    "profile_cpu_ns": 1380000000,
+    "correlated_cpu_ns": 1370000000,
+    "correlated_spans": 8,
+    "depth_cpu_ns": {
+      "21": 1340000000,
+      "23": 30000000,
+      "17": 10000000
+    },
+    "leaf_cpu_ns": {
+      "profile_correlation::simulated_cpu_work": 1340000000,
+      "0x72be37d9aa49": 30000000,
+      "g_type_check_instance_is_fundamentally_a": 10000000
+    },
+    "span_cpu_ns": [
+      {
+        "trace_id": "8775a6c9e102e34838423722fcd06ce4",
+        "span_id": "10596ce829f5596d",
+        "cpu_ns": 240000000
+      },
+      {
+        "trace_id": "8cb19ea01fbc44c49cf49b531039a28d",
+        "span_id": "b874b1c639f413a8",
+        "cpu_ns": 100000000
+      },
+      {
+        "trace_id": "17edfe054f7c3ad25733587806a6cde9",
+        "span_id": "77c46bddc4b442c9",
+        "cpu_ns": 240000000
+      },
+      {
+        "trace_id": "eeb6deaee7c300c01da01bcdfdaa58f8",
+        "span_id": "f1eb0d20cfba1862",
+        "cpu_ns": 100000000
+      },
+      {
+        "trace_id": "17edfe054f7c3ad25733587806a6cde9",
+        "span_id": "15e1b4e5b3a22ec8",
+        "cpu_ns": 90000000
+      },
+      {
+        "trace_id": "8775a6c9e102e34838423722fcd06ce4",
+        "span_id": "e482c322244fc2b0",
+        "cpu_ns": 100000000
+      },
+      {
+        "trace_id": "8cb19ea01fbc44c49cf49b531039a28d",
+        "span_id": "6693ea3f590c1762",
+        "cpu_ns": 250000000
+      },
+      {
+        "trace_id": "eeb6deaee7c300c01da01bcdfdaa58f8",
+        "span_id": "028b445631406cf6",
+        "cpu_ns": 250000000
+      }
+    ]
+  },
+  "tempo_trace": {
+    "batches": [
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "mars-correlation-1792798403075545147"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "0.33.1"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "opentelemetry"
+              }
+            },
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "rust"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "mars-otel",
+              "version": "0.1.0"
+            },
+            "spans": [
+              {
+                "traceId": "jLGeoB+8RMSc9JtTEDmijQ==",
+                "spanId": "uHSxxjn0E6g=",
+                "flags": 257,
+                "name": "gst.pad.push",
+                "kind": "SPAN_KIND_INTERNAL",
+                "startTimeUnixNano": "1792798403396366379",
+                "endTimeUnixNano": "1792798403496430196",
+                "attributes": [
+                  {
+                    "key": "src_pad.element",
+                    "value": {
+                      "stringValue": "fakesrc0"
+                    }
+                  },
+                  {
+                    "key": "src_pad.name",
+                    "value": {
+                      "stringValue": "src"
+                    }
+                  },
+                  {
+                    "key": "src_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstFakeSrc:fakesrc0.GstPad:src"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.element",
+                    "value": {
+                      "stringValue": "light"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.name",
+                    "value": {
+                      "stringValue": "sink"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstIdentity:light.GstPad:sink"
+                    }
+                  },
+                  {
+                    "key": "ts.start",
+                    "value": {
+                      "intValue": "317044640"
+                    }
+                  },
+                  {
+                    "key": "ts.end",
+                    "value": {
+                      "intValue": "417108457"
+                    }
+                  },
+                  {
+                    "key": "buffer.id",
+                    "value": {
+                      "intValue": "126160637816560"
+                    }
+                  },
+                  {
+                    "key": "buffer.size",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "thread.id",
+                    "value": {
+                      "stringValue": "ThreadId(8)"
+                    }
+                  },
+                  {
+                    "key": "thread.name",
+                    "value": {
+                      "stringValue": "unnamed"
+                    }
+                  },
+                  {
+                    "key": "gst.flow_return",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "pyroscope.profile.id",
+                    "value": {
+                      "stringValue": "b874b1c639f413a8"
+                    }
+                  }
+                ],
+                "status": {}
+              },
+              {
+                "traceId": "jLGeoB+8RMSc9JtTEDmijQ==",
+                "spanId": "phIxGoxFjdc=",
+                "parentSpanId": "uHSxxjn0E6g=",
+                "flags": 257,
+                "name": "gst.pad.push",
+                "kind": "SPAN_KIND_INTERNAL",
+                "startTimeUnixNano": "1792798403496404722",
+                "endTimeUnixNano": "1792798403496418369",
+                "attributes": [
+                  {
+                    "key": "src_pad.element",
+                    "value": {
+                      "stringValue": "light"
+                    }
+                  },
+                  {
+                    "key": "src_pad.name",
+                    "value": {
+                      "stringValue": "src"
+                    }
+                  },
+                  {
+                    "key": "src_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstIdentity:light.GstPad:src"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.element",
+                    "value": {
+                      "stringValue": "handoff"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.name",
+                    "value": {
+                      "stringValue": "sink"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstQueue:handoff.GstPad:sink"
+                    }
+                  },
+                  {
+                    "key": "ts.start",
+                    "value": {
+                      "intValue": "417082983"
+                    }
+                  },
+                  {
+                    "key": "ts.end",
+                    "value": {
+                      "intValue": "417096630"
+                    }
+                  },
+                  {
+                    "key": "buffer.id",
+                    "value": {
+                      "intValue": "126160637816560"
+                    }
+                  },
+                  {
+                    "key": "buffer.size",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "thread.id",
+                    "value": {
+                      "stringValue": "ThreadId(8)"
+                    }
+                  },
+                  {
+                    "key": "thread.name",
+                    "value": {
+                      "stringValue": "unnamed"
+                    }
+                  },
+                  {
+                    "key": "gst.flow_return",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "pyroscope.profile.id",
+                    "value": {
+                      "stringValue": "a612311a8c458dd7"
+                    }
+                  }
+                ],
+                "status": {}
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "resource": {
+          "attributes": [
+            {
+              "key": "service.name",
+              "value": {
+                "stringValue": "mars-correlation-1792798403075545147"
+              }
+            },
+            {
+              "key": "telemetry.sdk.version",
+              "value": {
+                "stringValue": "0.33.1"
+              }
+            },
+            {
+              "key": "telemetry.sdk.name",
+              "value": {
+                "stringValue": "opentelemetry"
+              }
+            },
+            {
+              "key": "telemetry.sdk.language",
+              "value": {
+                "stringValue": "rust"
+              }
+            }
+          ]
+        },
+        "scopeSpans": [
+          {
+            "scope": {
+              "name": "mars-otel",
+              "version": "0.1.0"
+            },
+            "spans": [
+              {
+                "traceId": "jLGeoB+8RMSc9JtTEDmijQ==",
+                "spanId": "ZpPqP1kMF2I=",
+                "parentSpanId": "phIxGoxFjdc=",
+                "flags": 257,
+                "name": "gst.pad.push",
+                "kind": "SPAN_KIND_INTERNAL",
+                "startTimeUnixNano": "1792798403947236361",
+                "endTimeUnixNano": "1792798404197455888",
+                "attributes": [
+                  {
+                    "key": "src_pad.element",
+                    "value": {
+                      "stringValue": "handoff"
+                    }
+                  },
+                  {
+                    "key": "src_pad.name",
+                    "value": {
+                      "stringValue": "src"
+                    }
+                  },
+                  {
+                    "key": "src_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstQueue:handoff.GstPad:src"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.element",
+                    "value": {
+                      "stringValue": "heavy"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.name",
+                    "value": {
+                      "stringValue": "sink"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstIdentity:heavy.GstPad:sink"
+                    }
+                  },
+                  {
+                    "key": "ts.start",
+                    "value": {
+                      "intValue": "867914622"
+                    }
+                  },
+                  {
+                    "key": "ts.end",
+                    "value": {
+                      "intValue": "1118134149"
+                    }
+                  },
+                  {
+                    "key": "buffer.id",
+                    "value": {
+                      "intValue": "126160637816560"
+                    }
+                  },
+                  {
+                    "key": "buffer.size",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "thread.id",
+                    "value": {
+                      "stringValue": "ThreadId(9)"
+                    }
+                  },
+                  {
+                    "key": "thread.name",
+                    "value": {
+                      "stringValue": "unnamed"
+                    }
+                  },
+                  {
+                    "key": "gst.flow_return",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "pyroscope.profile.id",
+                    "value": {
+                      "stringValue": "6693ea3f590c1762"
+                    }
+                  }
+                ],
+                "status": {}
+              },
+              {
+                "traceId": "jLGeoB+8RMSc9JtTEDmijQ==",
+                "spanId": "u/zJrqDmAPw=",
+                "parentSpanId": "ZpPqP1kMF2I=",
+                "flags": 257,
+                "name": "gst.pad.push",
+                "kind": "SPAN_KIND_INTERNAL",
+                "startTimeUnixNano": "1792798404197436054",
+                "endTimeUnixNano": "1792798404197450438",
+                "attributes": [
+                  {
+                    "key": "src_pad.element",
+                    "value": {
+                      "stringValue": "heavy"
+                    }
+                  },
+                  {
+                    "key": "src_pad.name",
+                    "value": {
+                      "stringValue": "src"
+                    }
+                  },
+                  {
+                    "key": "src_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstIdentity:heavy.GstPad:src"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.element",
+                    "value": {
+                      "stringValue": "output"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.name",
+                    "value": {
+                      "stringValue": "sink"
+                    }
+                  },
+                  {
+                    "key": "sink_pad.path",
+                    "value": {
+                      "stringValue": "/GstPipeline:pipeline0/GstFakeSink:output.GstPad:sink"
+                    }
+                  },
+                  {
+                    "key": "ts.start",
+                    "value": {
+                      "intValue": "1118114315"
+                    }
+                  },
+                  {
+                    "key": "ts.end",
+                    "value": {
+                      "intValue": "1118128699"
+                    }
+                  },
+                  {
+                    "key": "buffer.id",
+                    "value": {
+                      "intValue": "126160637816560"
+                    }
+                  },
+                  {
+                    "key": "buffer.size",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "thread.id",
+                    "value": {
+                      "stringValue": "ThreadId(9)"
+                    }
+                  },
+                  {
+                    "key": "thread.name",
+                    "value": {
+                      "stringValue": "unnamed"
+                    }
+                  },
+                  {
+                    "key": "gst.flow_return",
+                    "value": {
+                      "intValue": "0"
+                    }
+                  },
+                  {
+                    "key": "pyroscope.profile.id",
+                    "value": {
+                      "stringValue": "bbfcc9aea0e600fc"
+                    }
+                  }
+                ],
+                "status": {}
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "queries": {
+    "all": {
+      "request": {
+        "start": 1792798401076,
+        "end": 1792798407157,
+        "labelSelector": "{service_name=\"mars-correlation-1792798403075545147\"}",
+        "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+        "maxNodes": 10000
+      },
+      "cpu_ns": 1380000000,
+      "response": {
+        "flamegraph": {
+          "names": [
+            "total",
+            "[element] light [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:light",
+            "clone3",
+            "start_thread",
+            "[unresolved native] libglib-2.0.so.0.8000.0",
+            "[unresolved native] libgstreamer-1.0.so.0.2402.0",
+            "[unresolved native] libgstbase-1.0.so.0.2402.0",
+            "gst_pad_push",
+            "[unresolved native] libgstcoreelements.so",
+            "g_signal_emit",
+            "g_signal_emit_valist",
+            "[unresolved native] libgobject-2.0.so.0.8000.0",
+            "g_closure_invoke",
+            "glib::closure::Closure::new_unsafe::marshal",
+            "profile_correlation::main::{{closure}}",
+            "profile_correlation::simulated_cpu_work",
+            "__GI___clock_gettime",
+            "0x72be37d9aa49",
+            "[element] heavy [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:heavy",
+            "<T as gstreamer::subclass::tracer::TracerImplExt>::register_hook::callback",
+            "gstoteltracer::capture::begin_local",
+            "gstoteltracer::metadata::site",
+            "gstoteltracer::metadata::state",
+            "g_type_check_instance_is_fundamentally_a"
+          ],
+          "levels": [
+            {
+              "values": [
+                "0",
+                "1380000000",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "18",
+                "0",
+                "390000000",
+                "0",
+                "1"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "2",
+                "0",
+                "390000000",
+                "0",
+                "2"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "3",
+                "0",
+                "390000000",
+                "0",
+                "3"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "4",
+                "0",
+                "390000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "4",
+                "0",
+                "390000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "5",
+                "0",
+                "390000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "8",
+                "0",
+                "390000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "7",
+                "0",
+                "390000000",
+                "0",
+                "7"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "5",
+                "0",
+                "390000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "5",
+                "0",
+                "390000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "990000000",
+                "0",
+                "6",
+                "0",
+                "390000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "6",
+                "0",
+                "10000000",
+                "0",
+                "7",
+                "0",
+                "390000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "8",
+                "0",
+                "10000000",
+                "0",
+                "19",
+                "0",
+                "390000000",
+                "0",
+                "8"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "9",
+                "0",
+                "10000000",
+                "0",
+                "20",
+                "0",
+                "390000000",
+                "0",
+                "9"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "10",
+                "0",
+                "10000000",
+                "0",
+                "21",
+                "0",
+                "390000000",
+                "0",
+                "10"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "11",
+                "0",
+                "10000000",
+                "0",
+                "22",
+                "0",
+                "390000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "11",
+                "0",
+                "10000000",
+                "10000000",
+                "23",
+                "0",
+                "390000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "12",
+                "10000000",
+                "390000000",
+                "0",
+                "12"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "13",
+                "10000000",
+                "390000000",
+                "0",
+                "13"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "0",
+                "14",
+                "10000000",
+                "390000000",
+                "0",
+                "14"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "980000000",
+                "970000000",
+                "15",
+                "10000000",
+                "390000000",
+                "370000000",
+                "15"
+              ]
+            },
+            {
+              "values": [
+                "970000000",
+                "10000000",
+                "0",
+                "16",
+                "380000000",
+                "20000000",
+                "0",
+                "16"
+              ]
+            },
+            {
+              "values": [
+                "970000000",
+                "10000000",
+                "10000000",
+                "17",
+                "380000000",
+                "20000000",
+                "20000000",
+                "17"
+              ]
+            }
+          ],
+          "total": "1380000000",
+          "maxSelf": "970000000"
+        },
+        "tree": "AAACR1tlbGVtZW50XSBsaWdodCBbaWRlbnRpdHldIOKAlCAvR3N0UGlwZWxpbmU6cGlwZWxpbmUwL0dzdElkZW50aXR5OmxpZ2h0AAEGY2xvbmUzAAEMc3RhcnRfdGhyZWFkAAErW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnbGliLTIuMC5zby4wLjgwMDAuMAABK1t1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ2xpYi0yLjAuc28uMC44MDAwLjAAATBbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdHJlYW1lci0xLjAuc28uMC4yNDAyLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGJhc2UtMS4wLnNvLjAuMjQwMi4wAAEMZ3N0X3BhZF9wdXNoAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RiYXNlLTEuMC5zby4wLjI0MDIuMAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0YmFzZS0xLjAuc28uMC4yNDAyLjAAASlbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGNvcmVlbGVtZW50cy5zbwABDWdfc2lnbmFsX2VtaXQAARRnX3NpZ25hbF9lbWl0X3ZhbGlzdAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ29iamVjdC0yLjAuc28uMC44MDAwLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdvYmplY3QtMi4wLnNvLjAuODAwMC4wAAEQZ19jbG9zdXJlX2ludm9rZQABK2dsaWI6OmNsb3N1cmU6OkNsb3N1cmU6Om5ld191bnNhZmU6Om1hcnNoYWwAASZwcm9maWxlX2NvcnJlbGF0aW9uOjptYWluOjp7e2Nsb3N1cmV9fQABJ3Byb2ZpbGVfY29ycmVsYXRpb246OnNpbXVsYXRlZF9jcHVfd29ya4CBt7ABARRfX0dJX19fY2xvY2tfZ2V0dGltZQABDjB4NzJiZTM3ZDlhYTQ5gNrECQBHW2VsZW1lbnRdIGhlYXZ5IFtpZGVudGl0eV0g4oCUIC9Hc3RQaXBlbGluZTpwaXBlbGluZTAvR3N0SWRlbnRpdHk6aGVhdnkAAQZjbG9uZTMAAQxzdGFydF90aHJlYWQAAStbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdsaWItMi4wLnNvLjAuODAwMC4wAAErW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnbGliLTIuMC5zby4wLjgwMDAuMAABMFt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0cmVhbWVyLTEuMC5zby4wLjI0MDIuMAABKVt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0Y29yZWVsZW1lbnRzLnNvAAEMZ3N0X3BhZF9wdXNoAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RiYXNlLTEuMC5zby4wLjI0MDIuMAACDGdzdF9wYWRfcHVzaAABSjxUIGFzIGdzdHJlYW1lcjo6c3ViY2xhc3M6OnRyYWNlcjo6VHJhY2VySW1wbEV4dD46OnJlZ2lzdGVyX2hvb2s6OmNhbGxiYWNrAAEjZ3N0b3RlbHRyYWNlcjo6Y2FwdHVyZTo6YmVnaW5fbG9jYWwAAR1nc3RvdGVsdHJhY2VyOjptZXRhZGF0YTo6c2l0ZQABHmdzdG90ZWx0cmFjZXI6Om1ldGFkYXRhOjpzdGF0ZQABKGdfdHlwZV9jaGVja19pbnN0YW5jZV9pc19mdW5kYW1lbnRhbGx5X2GAreIEAC5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGJhc2UtMS4wLnNvLjAuMjQwMi4wAAEpW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3Rjb3JlZWxlbWVudHMuc28AAQ1nX3NpZ25hbF9lbWl0AAEUZ19zaWduYWxfZW1pdF92YWxpc3QAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdvYmplY3QtMi4wLnNvLjAuODAwMC4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnb2JqZWN0LTIuMC5zby4wLjgwMDAuMAABEGdfY2xvc3VyZV9pbnZva2UAAStnbGliOjpjbG9zdXJlOjpDbG9zdXJlOjpuZXdfdW5zYWZlOjptYXJzaGFsAAEmcHJvZmlsZV9jb3JyZWxhdGlvbjo6bWFpbjo6e3tjbG9zdXJlfX0AASdwcm9maWxlX2NvcnJlbGF0aW9uOjpzaW11bGF0ZWRfY3B1X3dvcmuAjcTOAwEUX19HSV9fX2Nsb2NrX2dldHRpbWUAAQ4weDcyYmUzN2Q5YWE0OYCt4gQA"
+      }
+    },
+    "span": {
+      "request": {
+        "start": 1792798401076,
+        "end": 1792798407157,
+        "labelSelector": "{service_name=\"mars-correlation-1792798403075545147\"}",
+        "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+        "maxNodes": 10000,
+        "spanSelector": [
+          "6693ea3f590c1762"
+        ]
+      },
+      "cpu_ns": 250000000,
+      "response": {
+        "flamegraph": {
+          "names": [
+            "total",
+            "[element] heavy [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:heavy",
+            "clone3",
+            "start_thread",
+            "[unresolved native] libglib-2.0.so.0.8000.0",
+            "[unresolved native] libgstreamer-1.0.so.0.2402.0",
+            "[unresolved native] libgstcoreelements.so",
+            "gst_pad_push",
+            "[unresolved native] libgstbase-1.0.so.0.2402.0",
+            "g_signal_emit",
+            "g_signal_emit_valist",
+            "[unresolved native] libgobject-2.0.so.0.8000.0",
+            "g_closure_invoke",
+            "glib::closure::Closure::new_unsafe::marshal",
+            "profile_correlation::main::{{closure}}",
+            "profile_correlation::simulated_cpu_work"
+          ],
+          "levels": [
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "1"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "2"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "3"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "7"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "8"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "8"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "9"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "10"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "12"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "13"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "14"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "250000000",
+                "15"
+              ]
+            }
+          ],
+          "total": "250000000",
+          "maxSelf": "250000000"
+        },
+        "tree": "AAABR1tlbGVtZW50XSBoZWF2eSBbaWRlbnRpdHldIOKAlCAvR3N0UGlwZWxpbmU6cGlwZWxpbmUwL0dzdElkZW50aXR5OmhlYXZ5AAEGY2xvbmUzAAEMc3RhcnRfdGhyZWFkAAErW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnbGliLTIuMC5zby4wLjgwMDAuMAABK1t1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ2xpYi0yLjAuc28uMC44MDAwLjAAATBbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdHJlYW1lci0xLjAuc28uMC4yNDAyLjAAASlbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGNvcmVlbGVtZW50cy5zbwABDGdzdF9wYWRfcHVzaAABMFt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0cmVhbWVyLTEuMC5zby4wLjI0MDIuMAABMFt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0cmVhbWVyLTEuMC5zby4wLjI0MDIuMAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0YmFzZS0xLjAuc28uMC4yNDAyLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGJhc2UtMS4wLnNvLjAuMjQwMi4wAAEpW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3Rjb3JlZWxlbWVudHMuc28AAQ1nX3NpZ25hbF9lbWl0AAEUZ19zaWduYWxfZW1pdF92YWxpc3QAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdvYmplY3QtMi4wLnNvLjAuODAwMC4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnb2JqZWN0LTIuMC5zby4wLjgwMDAuMAABEGdfY2xvc3VyZV9pbnZva2UAAStnbGliOjpjbG9zdXJlOjpDbG9zdXJlOjpuZXdfdW5zYWZlOjptYXJzaGFsAAEmcHJvZmlsZV9jb3JyZWxhdGlvbjo6bWFpbjo6e3tjbG9zdXJlfX0AASdwcm9maWxlX2NvcnJlbGF0aW9uOjpzaW11bGF0ZWRfY3B1X3dvcmuA5Zp3AA=="
+      }
+    },
+    "trace": {
+      "request": {
+        "start": 1792798401076,
+        "end": 1792798407157,
+        "labelSelector": "{service_name=\"mars-correlation-1792798403075545147\"}",
+        "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+        "maxNodes": 10000,
+        "traceIdSelector": [
+          "8cb19ea01fbc44c49cf49b531039a28d"
+        ]
+      },
+      "cpu_ns": 350000000,
+      "response": {
+        "flamegraph": {
+          "names": [
+            "total",
+            "[element] light [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:light",
+            "clone3",
+            "start_thread",
+            "[unresolved native] libglib-2.0.so.0.8000.0",
+            "[unresolved native] libgstreamer-1.0.so.0.2402.0",
+            "[unresolved native] libgstbase-1.0.so.0.2402.0",
+            "gst_pad_push",
+            "[unresolved native] libgstcoreelements.so",
+            "g_signal_emit",
+            "g_signal_emit_valist",
+            "[unresolved native] libgobject-2.0.so.0.8000.0",
+            "g_closure_invoke",
+            "glib::closure::Closure::new_unsafe::marshal",
+            "profile_correlation::main::{{closure}}",
+            "profile_correlation::simulated_cpu_work",
+            "__GI___clock_gettime",
+            "0x72be37d9aa49",
+            "[element] heavy [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:heavy"
+          ],
+          "levels": [
+            {
+              "values": [
+                "0",
+                "350000000",
+                "0",
+                "0"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "18",
+                "0",
+                "100000000",
+                "0",
+                "1"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "2",
+                "0",
+                "100000000",
+                "0",
+                "2"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "3",
+                "0",
+                "100000000",
+                "0",
+                "3"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "4",
+                "0",
+                "100000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "4",
+                "0",
+                "100000000",
+                "0",
+                "4"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5",
+                "0",
+                "100000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "8",
+                "0",
+                "100000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "7",
+                "0",
+                "100000000",
+                "0",
+                "7"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5",
+                "0",
+                "100000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "5",
+                "0",
+                "100000000",
+                "0",
+                "5"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "6",
+                "0",
+                "100000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "6",
+                "0",
+                "100000000",
+                "0",
+                "6"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "8",
+                "0",
+                "100000000",
+                "0",
+                "8"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "9",
+                "0",
+                "100000000",
+                "0",
+                "9"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "10",
+                "0",
+                "100000000",
+                "0",
+                "10"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "11",
+                "0",
+                "100000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "11",
+                "0",
+                "100000000",
+                "0",
+                "11"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "12",
+                "0",
+                "100000000",
+                "0",
+                "12"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "13",
+                "0",
+                "100000000",
+                "0",
+                "13"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "0",
+                "14",
+                "0",
+                "100000000",
+                "0",
+                "14"
+              ]
+            },
+            {
+              "values": [
+                "0",
+                "250000000",
+                "250000000",
+                "15",
+                "0",
+                "100000000",
+                "90000000",
+                "15"
+              ]
+            },
+            {
+              "values": [
+                "340000000",
+                "10000000",
+                "0",
+                "16"
+              ]
+            },
+            {
+              "values": [
+                "340000000",
+                "10000000",
+                "10000000",
+                "17"
+              ]
+            }
+          ],
+          "total": "350000000",
+          "maxSelf": "250000000"
+        },
+        "tree": "AAACR1tlbGVtZW50XSBsaWdodCBbaWRlbnRpdHldIOKAlCAvR3N0UGlwZWxpbmU6cGlwZWxpbmUwL0dzdElkZW50aXR5OmxpZ2h0AAEGY2xvbmUzAAEMc3RhcnRfdGhyZWFkAAErW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnbGliLTIuMC5zby4wLjgwMDAuMAABK1t1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ2xpYi0yLjAuc28uMC44MDAwLjAAATBbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdHJlYW1lci0xLjAuc28uMC4yNDAyLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGJhc2UtMS4wLnNvLjAuMjQwMi4wAAEMZ3N0X3BhZF9wdXNoAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RiYXNlLTEuMC5zby4wLjI0MDIuMAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0YmFzZS0xLjAuc28uMC4yNDAyLjAAASlbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGNvcmVlbGVtZW50cy5zbwABDWdfc2lnbmFsX2VtaXQAARRnX3NpZ25hbF9lbWl0X3ZhbGlzdAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ29iamVjdC0yLjAuc28uMC44MDAwLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdvYmplY3QtMi4wLnNvLjAuODAwMC4wAAEQZ19jbG9zdXJlX2ludm9rZQABK2dsaWI6OmNsb3N1cmU6OkNsb3N1cmU6Om5ld191bnNhZmU6Om1hcnNoYWwAASZwcm9maWxlX2NvcnJlbGF0aW9uOjptYWluOjp7e2Nsb3N1cmV9fQABJ3Byb2ZpbGVfY29ycmVsYXRpb246OnNpbXVsYXRlZF9jcHVfd29ya4CV9SoBFF9fR0lfX19jbG9ja19nZXR0aW1lAAEOMHg3MmJlMzdkOWFhNDmAreIEAEdbZWxlbWVudF0gaGVhdnkgW2lkZW50aXR5XSDigJQgL0dzdFBpcGVsaW5lOnBpcGVsaW5lMC9Hc3RJZGVudGl0eTpoZWF2eQABBmNsb25lMwABDHN0YXJ0X3RocmVhZAABK1t1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ2xpYi0yLjAuc28uMC44MDAwLjAAAStbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdsaWItMi4wLnNvLjAuODAwMC4wAAEwW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RyZWFtZXItMS4wLnNvLjAuMjQwMi4wAAEpW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3Rjb3JlZWxlbWVudHMuc28AAQxnc3RfcGFkX3B1c2gAATBbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdHJlYW1lci0xLjAuc28uMC4yNDAyLjAAATBbdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdHJlYW1lci0xLjAuc28uMC4yNDAyLjAAAS5bdW5yZXNvbHZlZCBuYXRpdmVdIGxpYmdzdGJhc2UtMS4wLnNvLjAuMjQwMi4wAAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnc3RiYXNlLTEuMC5zby4wLjI0MDIuMAABKVt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ3N0Y29yZWVsZW1lbnRzLnNvAAENZ19zaWduYWxfZW1pdAABFGdfc2lnbmFsX2VtaXRfdmFsaXN0AAEuW3VucmVzb2x2ZWQgbmF0aXZlXSBsaWJnb2JqZWN0LTIuMC5zby4wLjgwMDAuMAABLlt1bnJlc29sdmVkIG5hdGl2ZV0gbGliZ29iamVjdC0yLjAuc28uMC44MDAwLjAAARBnX2Nsb3N1cmVfaW52b2tlAAErZ2xpYjo6Y2xvc3VyZTo6Q2xvc3VyZTo6bmV3X3Vuc2FmZTo6bWFyc2hhbAABJnByb2ZpbGVfY29ycmVsYXRpb246Om1haW46Ont7Y2xvc3VyZX19AAEncHJvZmlsZV9jb3JyZWxhdGlvbjo6c2ltdWxhdGVkX2NwdV93b3JrgOWadwA="
+      }
+    },
+    "missing": {
+      "request": {
+        "start": 1792798401076,
+        "end": 1792798407157,
+        "labelSelector": "{service_name=\"mars-correlation-1792798403075545147\"}",
+        "profileTypeID": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+        "maxNodes": 10000,
+        "spanSelector": [
+          "ffffffffffffffff"
+        ]
+      },
+      "cpu_ns": 0,
+      "response": {
+        "flamegraph": {
+          "names": [
+            "total"
+          ],
+          "levels": [
+            {
+              "values": [
+                "0",
+                "0",
+                "0",
+                "0"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "explore_url": "http://127.0.0.1:43002/explore?schemaVersion=1&panes=%7B%22A%22%3A+%7B%22datasource%22%3A+%22mars-correlation-tempo%22%2C+%22queries%22%3A+%5B%7B%22refId%22%3A+%22A%22%2C+%22queryType%22%3A+%22traceId%22%2C+%22query%22%3A+%228cb19ea01fbc44c49cf49b531039a28d%22%7D%5D%2C+%22range%22%3A+%7B%22from%22%3A+%221792798401076%22%2C+%22to%22%3A+%221792798407157%22%7D%7D%7D&orgId=1",
+  "browser_clickthrough_verified": false
+}

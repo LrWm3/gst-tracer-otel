@@ -22,6 +22,7 @@ Run reproduction commands from the repository root.
 - [Combined instrumentation on 1080p video, including profiles and logs](otel/INSTRUMENT_VIDEO_RESULTS.md)
 - [Current CPU profiling and log overhead on 1080p video](otel/PROFILE_VIDEO_RESULTS.md)
 - [Element-attributed profiles: Grafana screenshots and validation](otel/PROFILE_ELEMENT_REVIEW.md)
+- [Grafana trace/profile correlation: provisioning and backend validation](otel/CORRELATION_REVIEW.md)
 - [Linux arm64 profiling: validation on an integrated memory nvidia device, CPU costs, and lifecycle checks](otel/ARM64_PROFILES.md)
 
 Historical correlated-profile measurements are described in the

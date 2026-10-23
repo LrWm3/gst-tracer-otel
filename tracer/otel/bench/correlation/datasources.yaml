@@ -1,0 +1,20 @@
+apiVersion: 1
+datasources:
+  - name: Mars traces
+    uid: mars-correlation-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: true
+    jsonData:
+      tracesToProfiles:
+        datasourceUid: mars-correlation-pyroscope
+        tags:
+          - key: service.name
+            value: service_name
+        profileTypeId: process_cpu:cpu:nanoseconds:cpu:nanoseconds
+  - name: Mars profiles
+    uid: mars-correlation-pyroscope
+    type: grafana-pyroscope-datasource
+    access: proxy
+    url: http://pyroscope:4040

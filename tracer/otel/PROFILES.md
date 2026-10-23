@@ -36,7 +36,8 @@ Select one of `mars-profiles`, `mars-otel`, or `mars-instrument`. They share one
 process-wide configuration; the first constructed instance selects the signals
 and installs hooks. Later instances log a warning and install no hooks. For
 profiles correlated with traces, select `mars-otel` or `mars-instrument` and set
-`GST_OTEL_PROFILE_URL`.
+`GST_OTEL_PROFILE_URL`. Then configure the
+[Grafana trace-to-profile link](CORRELATION.md); IDs alone do not configure data-source navigation.
 
 ## Finding the element that used CPU
 

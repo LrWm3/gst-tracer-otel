@@ -114,7 +114,9 @@ The navigation chain is:
 4. GStreamer logs emitted inside the active push carry native trace/span fields.
 
 Configure your metrics backend and Grafana data sources to retain exemplars and
-link their `trace_id` to Tempo, then use the existing Tempo-to-Pyroscope link.
+link their trace-ID label to Tempo, then configure the Tempo-to-Pyroscope link.
+The [Grafana correlation guide](CORRELATION.md) includes concrete provisioning,
+a local trace/profile demo, and the separate setup needed for metrics and logs.
 Backend rejection, trace retention, and short spans with no CPU samples can
 still leave missing counterparts. No exporter can guarantee that every
 exemplar's trace/profile has reached durable storage. The integration tests

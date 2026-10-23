@@ -94,6 +94,10 @@ Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
 they share one configuration. Profiling requires Linux x86-64 or arm64, the
 `profiles` build feature, and GStreamer 1.22 or newer.
 
+For clickable trace-to-profile links, follow the
+[Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source
+configuration and a local demo that checks real traces and profiles through Grafana.
+
 ## Know what you are measuring
 
 - **Metrics assume synchronous calls.** Metrics may still hint at non-sync latency

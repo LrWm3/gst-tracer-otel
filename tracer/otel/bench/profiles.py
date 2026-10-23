@@ -62,7 +62,7 @@ def packed(data):
         yield value
 
 
-def analyze(payloads):
+def analyze(payloads, service_name='gst-profile-bench'):
     wanted = collections.Counter()
     cpu_ns = 0
     correlated_ns = 0
@@ -76,7 +76,7 @@ def analyze(payloads):
         for rawseries in fields(gzip.decompress(body))[1]:
             series = fields(rawseries)
             labels = {fields(l)[1][0].decode(): fields(l)[2][0].decode() for l in series[1]}
-            assert labels['service_name'] == 'gst-profile-bench', labels
+            assert labels['service_name'] == service_name, labels
             assert 'span_id' not in labels and 'trace_id' not in labels
             for rawsample in series[2]:
                 profile = fields(fields(rawsample)[1][0])
