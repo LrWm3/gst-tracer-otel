@@ -290,6 +290,10 @@ Other active tracers can still incur GStreamer's shared dispatch overhead.
 
 ## Performance and sampling cost
 
+The [combined video comparison](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md)
+also measures `mars-otel` with default trace-export settings alongside
+`mars-instrument`, both with and without profiles and logs.
+
 **Current profiles-only, trace, and log comparison, 2026-10-23.** See the
 [matched 1080p video results](../../reports/otel/PROFILE_VIDEO_RESULTS.md) for
 `mars-profiles` and `mars-otel` with profiles and logs enabled. The new runner

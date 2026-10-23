@@ -23,7 +23,11 @@ fn cpu(clock: libc::clockid_t) -> u64 {
 fn main() {
     let total_start = cpu(libc::CLOCK_PROCESS_CPUTIME_ID);
     let args: Vec<_> = std::env::args().collect();
-    assert_eq!(args.len(), 3, "profile_video none|profiles|otel FRAMES");
+    assert_eq!(
+        args.len(),
+        3,
+        "profile_video none|profiles|otel|instrument FRAMES"
+    );
     let frames: u64 = args[2].parse().unwrap();
     assert!(frames > 0);
     gst::init().unwrap();
@@ -31,6 +35,7 @@ fn main() {
         "none" => None,
         "profiles" => Some(glib::Object::new::<gstoteltracer::ProfilesTracer>().upcast()),
         "otel" => Some(glib::Object::new::<gstoteltracer::TelemetryTracer>().upcast()),
+        "instrument" => Some(glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()),
         _ => panic!("unknown mode"),
     };
     let pipeline = gst::parse::launch(&format!(
@@ -108,6 +113,16 @@ fn main() {
     let shutdown = shutdown_start.elapsed();
     let process_end = cpu(libc::CLOCK_PROCESS_CPUTIME_ID);
     let profile = gstoteltracer::profile_stats();
+    let metrics = if tracer.is_some() {
+        gstoteltracer::metric_stats().unwrap()
+    } else {
+        gstoteltracer::MetricStats::default()
+    };
+    assert_eq!(metrics.failed_exports, 0);
+    assert_eq!(
+        metrics.dropped_capacity + metrics.dropped_invalid + metrics.skipped_closed,
+        0
+    );
     assert_eq!(stats.pending_spans, 0);
     assert_eq!(stats.failed_export_spans, 0);
     assert_eq!(stats.dropped_queue_full, 0);
@@ -131,4 +146,5 @@ fn main() {
         process_end - total_start, shutdown.as_nanos());
     println!("TRACE {stats:?}");
     println!("PROFILE {profile:?}");
+    println!("METRIC {metrics:?}");
 }

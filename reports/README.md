@@ -19,6 +19,7 @@ Run reproduction commands from the repository root.
 - [Capture propagation](otel/CAPTURE_RESULTS.md)
 - [Rejected-push overhead](otel/REJECTED_RESULTS.md)
 - [Combined instrumentation measurements](otel/INSTRUMENT_RESULTS.md)
+- [Combined instrumentation on 1080p video, including profiles and logs](otel/INSTRUMENT_VIDEO_RESULTS.md)
 - [Current CPU profiling and log overhead on 1080p video](otel/PROFILE_VIDEO_RESULTS.md)
 
 Historical correlated-profile measurements are described in the

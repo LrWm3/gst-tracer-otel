@@ -6,12 +6,12 @@ code.
 
 ## Choose a tracer
 
-| I want to… | Use | Send data to | Approx. overhead |
+| I want to… | Use | Send data to | Approx. CPU overhead |
 | --- | --- | --- | --- |
 | Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% expected on video workloads |
-| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% CPU cycles; +41 MiB peak RSS |
-| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | ~2% CPU cycles for traces; ~4% with profiles + logs |
-| Collect correlated metrics, traces, spans, logs and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | All-in-one metrics | tbd |
+| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% |
+| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | ~1% for traces; ~3–4% with profiles + logs |
+| Collect correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | OpenTelemetry collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
 
 Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
 
@@ -19,13 +19,14 @@ For a list of available metrics, see the [prometheus plugin README.md](https://g
 
 See the [performance reports](reports/README.md) for measured CPU and memory costs on the tested pipelines for each tracer.
 
-The [1080p video measurements](reports/otel/PROFILE_VIDEO_RESULTS.md) use 100 Hz
-profiling, 100% trace sampling, and one log per frame when enabled. Profiles + logs
-use default trace-export settings and add about **44 MiB peak RSS**; the
-traces-only measurement uses a faster 10 ms export interval. CPU cycles describe
-CPU work, not FPS loss; timing was too variable to estimate that reliably.
-The metrics figure is a rough expectation based on the
-[video benchmarks](reports/prometheus/BENCHMARK.md), not a universal limit.
+These are rounded planning figures from our
+[1080p video measurements](reports/otel/INSTRUMENT_VIDEO_RESULTS.md): extra CPU
+cycles with default export settings, 100% trace sampling, 100 Hz profiles, and
+one log per frame when enabled. Small sub-percent results overlap baseline
+variation; these are not limits or FPS-loss estimates. `mars-instrument` added
+about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
+[profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
+The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
 
 ## Get your first metrics
 

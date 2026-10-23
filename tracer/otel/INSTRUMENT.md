@@ -159,6 +159,13 @@ shutdown is permanent; a bare process exit can lose pending telemetry.
 
 ## Validation and performance
 
+For approximate overhead on a video pipeline, see the
+[1080p video comparison](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md). It
+measures the default metrics/traces configuration and profiles/logs enabled,
+against no tracer and `mars-otel` using the same binary and export settings.
+The report includes whole-process CPU cycles, peak RSS, and checks of delivered
+histograms, exemplars, traces, logs, and CPU samples.
+
 Tests decode real HTTP requests from subprocesses and cover zero/partial trace
 sampling, metrics-only and traces-only operation, duplicate tracer instances,
 queue boundaries, controlled downstream sleeps, trace queue overflow, metric
