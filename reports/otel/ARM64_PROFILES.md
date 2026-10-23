@@ -138,6 +138,82 @@ retained. Raw [CSV](arm64/2026-10-23-video.csv) and
 warm-ups, binary hash, and timings. These short synthetic runs do not establish
 overhead for production video decoding, inference, or GPU workloads.
 
+## Deadlock and memory-growth check
+
+A follow-up on an integrated memory nvidia device tested runtime code from `128b002`. Source hashes matched
+the checkout. No deadlock or sustained memory growth was observed in these
+finite runs; this is not proof that every production workload is free of leaks
+or hangs.
+
+Each profiled process ran two approximately 90-second phases of repeated
+30-frame, 1080p video pipelines. Between those phases it created and destroyed
+**1500 uniquely named tiny pipelines**, exercising the 4096-description limit.
+Every pipeline's weak reference had to expire within one second of teardown.
+An untraced control used two 30-second video phases and the same 1500-pipeline
+churn. All processes completed. The two profiled runs processed **35,841 CPU
+samples**, with no ring, processing, or upload-queue drops and no registration
+failures or failed stack reads.
+
+| Mode | Video pipeline cycles, in addition to 1500 tiny pipelines | Late-run median RSS | Peak RSS | RSS after shutdown | Shutdown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| No tracer | 58 | 37.7 MiB | 38.0 MiB | 37.7 MiB | — |
+| `mars-profiles` | 172 | 84.7 MiB | 139.6 MiB | 45.8 MiB | 10.5 ms |
+| `mars-otel` with profiles and logs | 171 | 71.9 MiB | 125.5 MiB | 33.5 MiB | 13.4 ms |
+
+These are **whole-process RSS observations from one run per mode**, not an
+overhead comparison or a ranking of the modes' memory requirements. The
+profiled runs' late-run medians cover the last 60 seconds of video processing;
+the shorter control covers its final 30-second phase. Profiles-only RSS ranged
+from 84.5 to 84.7 MiB over that final minute; OTel stayed at 71.9 MiB at the
+pipeline-boundary observations. Threads and file descriptors returned to the
+control's idle counts: two threads and three descriptors. Sampling timers were
+all stopped.
+
+After shutdown and ten idle seconds, a diagnostic `malloc_trim(0)` reduced RSS
+further to 36.4 MiB for profiles-only and 21.5 MiB for OTel. The application does
+not call this in production. It demonstrates that allocator retention accounts
+for part of the measured footprint. Sampling buffers and element descriptions
+deliberately remain allocated for process lifetime, subject to their bounds;
+temporary debug parsing and report construction are outside the symbol-cache
+budget.
+
+The deliberate description churn caused 1264 and 1259 context-capacity
+rejections, respectively; new descriptions become unattributed once the registry
+is full. There were three and eight timer overruns, respectively, and 27
+truncated chains in the OTel run. Truncated samples retained the interrupted PC.
+These counters are recorded alongside the zero queue-drop counts rather than
+treating every attempted CPU tick as a delivered sample.
+
+Separately, **60 native stress checks passed**: ten repetitions each of
+1000 Hz sampling during allocation/mutex/loader activity and thread retirement,
+symbolization while the loader lock is held, full/disconnected upload queues,
+concurrent ring transfers, and both tracers' slow-receiver shutdown tests.
+Those checks ran concurrently on CPU 1 in a separate container with a one-CPU
+quota. The soak container had a two-CPU quota, with video children pinned to
+CPUs 0 and 2. These runs assess progress and memory behavior; they are not CPU
+performance measurements.
+
+The soak used the same native container environment and `profiling` build with
+frame pointers, 100 Hz sampling, default trace export settings, and one INFO log
+per video frame in OTel mode. Its local HTTP receiver discarded request bodies
+after acknowledgement, keeping receiver memory independent of run duration.
+Unlike the earlier video benchmark, this check did not decode every upload or
+verify remote Pyroscope ingestion.
+
+[Summary and counters](arm64/2026-10-23-lifetime/summary.json), per-process RSS
+series ([control](arm64/2026-10-23-lifetime/none.csv),
+[profiles](arm64/2026-10-23-lifetime/profiles.csv),
+[OTel](arm64/2026-10-23-lifetime/otel.csv)), and
+[stress-test results](arm64/2026-10-23-lifetime/stress.json) preserve the evidence.
+The exact one-off [driver](arm64/2026-10-23-lifetime/profile_soak.rs),
+[receiver/monitor](arm64/2026-10-23-lifetime/run.py), and
+[stress runner](arm64/2026-10-23-lifetime/stress.py) are archived with their hashes
+in the summary. The driver was temporarily copied to
+`tracer/otel/examples/profile_soak.rs` and built with
+`cargo build -p gst-otel-tracer --profile profiling --features profiles --example profile_soak`;
+the scripts ran inside the `/work`-mounted ARM container after the native test
+binaries had been built. They assume CPUs 0–2 and the paths shown in the scripts.
+
 ## Reproduce
 
 On a native ARM machine with Docker, from the repository root:

@@ -142,6 +142,13 @@ after a timeout, and cannot restart sampling. Pipeline NULL transitions and
 `flush()` do not drain profiles. `gst-launch-1.0` relies on periodic uploads and
 may lose the final interval when exiting.
 
+Sampling buffers and immutable element descriptions are bounded but intentionally
+remain allocated until process exit. Temporary symbolization allocations and
+allocator retention can make process RSS much larger than the retained caches.
+The [native ARM lifecycle check](../../reports/otel/ARM64_PROFILES.md#deadlock-and-memory-growth-check)
+observed settled memory usage and prompt shutdown after repeated pipeline
+creation and destruction; it does not rule out every production leak or hang.
+
 `gstoteltracer::profile_stats()` exposes sampling, registration, processing,
 and upload-queue counters. `element_samples` and `task_samples` count accepted
 samples with those contexts; `context_capacity_rejections` counts descriptions
@@ -159,6 +166,11 @@ different workloads, sample rates, and debug symbols can change the cost.
 Those measurements predate element attribution. The
 [element review](../../reports/otel/PROFILE_ELEMENT_REVIEW.md) includes a matched
 attribution-on/off check.
+
+With attribution enabled, the [check on an integrated memory nvidia device](../../reports/otel/ARM64_PROFILES.md)
+measured approximately 1.3% extra process CPU time for profiles-only and 3.1% for
+OTel with profiles and logs. Its builds include debug information, and memory
+peaks varied substantially; use the report's observed upper values when planning.
 
 ## Migrating from the standalone plugin
 

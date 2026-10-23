@@ -27,10 +27,17 @@ variation; these are not limits or FPS-loss estimates. `mars-instrument` added
 about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
 [profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
 The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
-For native arm64 results, see the [profiling check on an integrated memory nvidia device](reports/otel/ARM64_PROFILES.md).
-These figures predate element-attributed profiles; see the
+These x86-64 figures predate element-attributed profiles; see the
 [attribution review](reports/otel/PROFILE_ELEMENT_REVIEW.md) for its additional
 cost and screenshots.
+
+On an integrated memory nvidia device, a separate [1080p check](reports/otel/ARM64_PROFILES.md#video-cpu-and-memory-check)
+with element attribution measured about **1.3% extra process CPU time** for
+profiles and **3.1%** for OTel with profiles and logs. In subsequent
+[lifecycle tests](reports/otel/ARM64_PROFILES.md#deadlock-and-memory-growth-check),
+memory settled and no hangs were observed, but process RSS peaked at
+**125–140 MiB** in these builds with debug information. Allow for these temporary
+memory peaks; the measurements are workload-specific, not production guarantees.
 
 ## Get your first metrics
 
@@ -84,8 +91,8 @@ Each guide includes its build command, backend requirements, and configuration:
   instance or task owner, including frame pointers and debug symbols.
 
 Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
-they share one configuration. Profiling requires the `profiles` build feature
-and GStreamer 1.22 or newer.
+they share one configuration. Profiling requires Linux x86-64 or arm64, the
+`profiles` build feature, and GStreamer 1.22 or newer.
 
 ## Know what you are measuring
 

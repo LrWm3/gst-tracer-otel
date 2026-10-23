@@ -1,0 +1,302 @@
+[
+  {
+    "repeat": 0,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.960590124945156
+  },
+  {
+    "repeat": 0,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1452074029948562
+  },
+  {
+    "repeat": 0,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011741170077584684
+  },
+  {
+    "repeat": 0,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04241564299445599
+  },
+  {
+    "repeat": 0,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.572698378935456
+  },
+  {
+    "repeat": 0,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.377811496029608
+  },
+  {
+    "repeat": 1,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.780984638025984
+  },
+  {
+    "repeat": 1,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1441321279853582
+  },
+  {
+    "repeat": 1,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011518927989527583
+  },
+  {
+    "repeat": 1,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.042644414003007114
+  },
+  {
+    "repeat": 1,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.461827607010491
+  },
+  {
+    "repeat": 1,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.371956589980982
+  },
+  {
+    "repeat": 2,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.765306437970139
+  },
+  {
+    "repeat": 2,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.152116334065795
+  },
+  {
+    "repeat": 2,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011816498008556664
+  },
+  {
+    "repeat": 2,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04322432400658727
+  },
+  {
+    "repeat": 2,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.462847937014885
+  },
+  {
+    "repeat": 2,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.385099597973749
+  },
+  {
+    "repeat": 3,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.937699374975637
+  },
+  {
+    "repeat": 3,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.146420086035505
+  },
+  {
+    "repeat": 3,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.01171563402749598
+  },
+  {
+    "repeat": 3,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04232796304859221
+  },
+  {
+    "repeat": 3,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.448087793076411
+  },
+  {
+    "repeat": 3,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.423381729051471
+  },
+  {
+    "repeat": 4,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.829785207984969
+  },
+  {
+    "repeat": 4,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1496068369597197
+  },
+  {
+    "repeat": 4,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011771569959819317
+  },
+  {
+    "repeat": 4,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.042390107992105186
+  },
+  {
+    "repeat": 4,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.529597064014524
+  },
+  {
+    "repeat": 4,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.38316130801104
+  },
+  {
+    "repeat": 5,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.884777901927009
+  },
+  {
+    "repeat": 5,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1437995169544592
+  },
+  {
+    "repeat": 5,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.01159406395163387
+  },
+  {
+    "repeat": 5,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.0427061429945752
+  },
+  {
+    "repeat": 5,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.4797073639929295
+  },
+  {
+    "repeat": 5,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.426198174012825
+  },
+  {
+    "repeat": 6,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.704706171061844
+  },
+  {
+    "repeat": 6,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1421489398926497
+  },
+  {
+    "repeat": 6,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011715314001776278
+  },
+  {
+    "repeat": 6,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04244470002595335
+  },
+  {
+    "repeat": 6,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.5473337159492075
+  },
+  {
+    "repeat": 6,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.388756336993538
+  },
+  {
+    "repeat": 7,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.895813336945139
+  },
+  {
+    "repeat": 7,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.146357333054766
+  },
+  {
+    "repeat": 7,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.01181781105697155
+  },
+  {
+    "repeat": 7,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04266431799624115
+  },
+  {
+    "repeat": 7,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.465039925999008
+  },
+  {
+    "repeat": 7,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.391436203964986
+  },
+  {
+    "repeat": 8,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.959088383009657
+  },
+  {
+    "repeat": 8,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1738270719069988
+  },
+  {
+    "repeat": 8,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011782193905673921
+  },
+  {
+    "repeat": 8,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04263993399217725
+  },
+  {
+    "repeat": 8,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.51759102800861
+  },
+  {
+    "repeat": 8,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.367388609913178
+  },
+  {
+    "repeat": 9,
+    "test": "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+    "seconds": 4.826350615010597
+  },
+  {
+    "repeat": 9,
+    "test": "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+    "seconds": 1.1454470519674942
+  },
+  {
+    "repeat": 9,
+    "test": "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+    "seconds": 0.011636817012913525
+  },
+  {
+    "repeat": 9,
+    "test": "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+    "seconds": 0.04252358095254749
+  },
+  {
+    "repeat": 9,
+    "test": "slow_profile_receiver_does_not_extend_shutdown_deadline",
+    "seconds": 6.488474137964658
+  },
+  {
+    "repeat": 9,
+    "test": "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+    "seconds": 6.368257227004506
+  }
+]

@@ -1,0 +1,229 @@
+{
+  "revision": "128b002bab148fc0f67d3183be30dc27c48141bb",
+  "device": "an integrated memory nvidia device",
+  "notes": [
+    "Investigative runs, not overhead benchmarks; 2-CPU container quota, child affinity 0,2.",
+    "60 repeated native stress tests ran concurrently on CPU 1 in a separate container.",
+    "Receiver discards request bodies rather than accumulating them in memory.",
+    "Each process recreated 1500 uniquely named tiny pipelines between its video phases; pipeline weak references had to expire within 1 second.",
+    "RSS is sampled every 0.5s, and after each video pipeline; malloc_trim is diagnostic only, after shutdown and 10s idle.",
+    "Finite stress checks cannot establish the absence of all leaks or deadlocks."
+  ],
+  "harness_sha256": {
+    "profile_soak.rs": "f382446471131dfff868a7175580d4a879c86174238a3c1bdaf7440c9864fce7",
+    "run.py": "fc1ea55e0aad895aac57a97e6ed81928589ac0063e427a8949b49435d78dfcd3",
+    "stress.py": "3fde122be9ffefb43851eee988d514f526ab6a36b408105626a20b0e673f3912"
+  },
+  "modes": {
+    "none": {
+      "mode": "none",
+      "exit_code": 0,
+      "wall_seconds": 71.13100359390955,
+      "receiver": {},
+      "hz": 100,
+      "phase_seconds": 30,
+      "churn_pipelines": 1500,
+      "video_cycles": 58,
+      "peak_rss_mib": 38.01953125,
+      "final_60s_rss_median_mib": 37.734375,
+      "final_60s_rss_min_mib": 37.375,
+      "final_60s_rss_max_mib": 37.734375,
+      "shutdown_seconds": 0.0,
+      "final_memory": {
+        "shutdown": {
+          "phase": "shutdown",
+          "seconds": 61.041,
+          "cycles": 58,
+          "peak_kb": 38640,
+          "rss_kb": 38640,
+          "anon_kb": 30288,
+          "threads": 3
+        },
+        "idle": {
+          "phase": "idle",
+          "seconds": 71.041,
+          "cycles": 58,
+          "peak_kb": 38840,
+          "rss_kb": 38840,
+          "anon_kb": 30488,
+          "threads": 2
+        },
+        "trim": {
+          "phase": "trim",
+          "seconds": 71.042,
+          "cycles": 58,
+          "peak_kb": 38932,
+          "rss_kb": 38692,
+          "anon_kb": 30276,
+          "threads": 2
+        }
+      },
+      "profile_stats": {
+        "samples": 0,
+        "correlated_samples": 0,
+        "element_samples": 0,
+        "task_samples": 0,
+        "context_capacity_rejections": 0,
+        "dropped_full": 0,
+        "timer_overruns": 0,
+        "failed_stack_reads": 0,
+        "truncated_stacks": 0,
+        "registration_failures": 0,
+        "reported_samples": 0,
+        "dropped_processing": 0,
+        "dropped_upload": 0,
+        "active_threads": 0
+      },
+      "final_fds": 3
+    },
+    "profiles": {
+      "mode": "profiles",
+      "exit_code": 0,
+      "wall_seconds": 192.36470616306178,
+      "receiver": {
+        "/push.v1.PusherService/Push": 182,
+        "bytes": 365196
+      },
+      "hz": 100,
+      "phase_seconds": 90,
+      "churn_pipelines": 1500,
+      "video_cycles": 172,
+      "peak_rss_mib": 139.62890625,
+      "final_60s_rss_median_mib": 84.65625,
+      "final_60s_rss_min_mib": 84.5,
+      "final_60s_rss_max_mib": 84.65625,
+      "shutdown_seconds": 0.010505,
+      "final_memory": {
+        "shutdown": {
+          "phase": "shutdown",
+          "seconds": 181.914,
+          "cycles": 172,
+          "peak_kb": 142980,
+          "rss_kb": 46856,
+          "anon_kb": 35180,
+          "threads": 2
+        },
+        "idle": {
+          "phase": "idle",
+          "seconds": 191.914,
+          "cycles": 172,
+          "peak_kb": 142980,
+          "rss_kb": 46856,
+          "anon_kb": 35180,
+          "threads": 2
+        },
+        "trim": {
+          "phase": "trim",
+          "seconds": 191.916,
+          "cycles": 172,
+          "peak_kb": 142980,
+          "rss_kb": 37300,
+          "anon_kb": 25624,
+          "threads": 2
+        }
+      },
+      "profile_stats": {
+        "samples": 17907,
+        "correlated_samples": 0,
+        "element_samples": 3117,
+        "task_samples": 5828,
+        "context_capacity_rejections": 1264,
+        "dropped_full": 0,
+        "timer_overruns": 3,
+        "failed_stack_reads": 0,
+        "truncated_stacks": 0,
+        "registration_failures": 0,
+        "reported_samples": 17907,
+        "dropped_processing": 0,
+        "dropped_upload": 0,
+        "active_threads": 0
+      },
+      "final_fds": 3
+    },
+    "otel": {
+      "mode": "otel",
+      "exit_code": 0,
+      "wall_seconds": 193.35364689596463,
+      "receiver": {
+        "/v1/traces": 2526,
+        "bytes": 15564287,
+        "/v1/logs": 342,
+        "/push.v1.PusherService/Push": 184
+      },
+      "hz": 100,
+      "phase_seconds": 90,
+      "churn_pipelines": 1500,
+      "video_cycles": 171,
+      "peak_rss_mib": 125.4609375,
+      "final_60s_rss_median_mib": 71.8984375,
+      "final_60s_rss_min_mib": 71.8984375,
+      "final_60s_rss_max_mib": 71.8984375,
+      "shutdown_seconds": 0.013421,
+      "final_memory": {
+        "shutdown": {
+          "phase": "shutdown",
+          "seconds": 183.078,
+          "cycles": 171,
+          "peak_kb": 128472,
+          "rss_kb": 34308,
+          "anon_kb": 22628,
+          "threads": 2
+        },
+        "idle": {
+          "phase": "idle",
+          "seconds": 193.078,
+          "cycles": 171,
+          "peak_kb": 128472,
+          "rss_kb": 34308,
+          "anon_kb": 22628,
+          "threads": 2
+        },
+        "trim": {
+          "phase": "trim",
+          "seconds": 193.08,
+          "cycles": 171,
+          "peak_kb": 128472,
+          "rss_kb": 21984,
+          "anon_kb": 10304,
+          "threads": 2
+        }
+      },
+      "profile_stats": {
+        "samples": 17934,
+        "correlated_samples": 6294,
+        "element_samples": 3179,
+        "task_samples": 5759,
+        "context_capacity_rejections": 1259,
+        "dropped_full": 0,
+        "timer_overruns": 8,
+        "failed_stack_reads": 0,
+        "truncated_stacks": 27,
+        "registration_failures": 0,
+        "reported_samples": 17934,
+        "dropped_processing": 0,
+        "dropped_upload": 0,
+        "active_threads": 0
+      },
+      "final_fds": 3
+    }
+  },
+  "repeated_tests": {
+    "passed": 60,
+    "rounds": 10,
+    "test_names": [
+      "profiles::linux::tests::capture_context_edges_thread_retirement_and_shutdown_are_isolated",
+      "profiles::linux::tests::concurrent_ring_transfers_complete_samples_in_order",
+      "profiles::linux::tests::file_symbolization_progresses_while_dynamic_loader_is_locked",
+      "profiles::linux::tests::full_or_failed_upload_queue_never_blocks_processing",
+      "profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver",
+      "slow_profile_receiver_does_not_extend_shutdown_deadline"
+    ]
+  },
+  "native_runtime_sources_match_checkout": {
+    "profiles.rs": "7ac384d9689e0af94085e893429f30435ba5a82516dd5e40d978b7a39c06adf9",
+    "profilearch.rs": "c778cec369f57fb6a719dd176691160029a1d74b1b235216407079d6dd4b88be",
+    "profilecontext.rs": "9d41053df7ba643346fa19c8a2fed007130dca1f1ea6a0b04292646b8ed6fbb0",
+    "metadata.rs": "2261ae1fd6b88c902387f04d756faefd2ab2ae8597428ffe503fe8a294302e5e"
+  },
+  "runtime_code_changed_for_review": false
+}
