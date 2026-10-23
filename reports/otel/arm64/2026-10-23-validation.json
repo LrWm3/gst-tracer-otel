@@ -1,0 +1,34 @@
+{
+  "base_revision": "970c35cdaffb11cd2da610cc333298cc934479f3",
+  "revision_note": "Native binaries include the uncommitted impl/profiles-arm64 implementation; see source hashes and the containing commit.",
+  "source_sha256": {
+    "tracer/otel/src/profilearch.rs": "c778cec369f57fb6a719dd176691160029a1d74b1b235216407079d6dd4b88be",
+    "tracer/otel/src/profiles.rs": "7ac384d9689e0af94085e893429f30435ba5a82516dd5e40d978b7a39c06adf9",
+    "tracer/otel/src/profilecontext.rs": "9d41053df7ba643346fa19c8a2fed007130dca1f1ea6a0b04292646b8ed6fbb0",
+    "tracer/otel/tests/profiles.rs": "cea5165e646aeb744efb9120db787b593efe6f4c2ce9ddeb07afdc2719347c3d",
+    "Cargo.lock": "17d7f4500d0ea30ec2bf8d0ebb066c7d2239bdbb4681c4b243686505f9e8f110"
+  },
+  "native_environment": "an integrated memory nvidia device\nLinux AArch64\nrustc 1.89.0 (29483883e 2025-08-04)\nbinary: rustc\ncommit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2\ncommit-date: 2025-08-04\nhost: aarch64-unknown-linux-gnu\nrelease: 1.89.0\nLLVM version: 20.1.7\n1.22.0\nqemu-aarch64 version 7.2.22 (Debian 1:7.2+dfsg-7+deb12u18+b3)\n",
+  "native_test_results": [
+    "test result: ok. 43 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 4.48s",
+    "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.36s",
+    "test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 19.62s",
+    "test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.24s",
+    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.76s"
+  ],
+  "native_arch_test_results": [
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s"
+  ],
+  "pac_emulation": "\nrunning 1 test\nPAC signatures changed addresses: key A=true, key B=true\ntest profiles::arch::tests::signed_and_unsigned_return_addresses_resolve_to_the_same_callsite ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.07s\n\n",
+  "x86_profiles_test_results": [
+    "test result: ok. 42 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.97s",
+    "test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.67s",
+    "test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 5.83s",
+    "test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.42s",
+    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  ],
+  "x86_frame_chain_test_results": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.08s"
+  ]
+}

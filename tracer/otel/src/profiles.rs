@@ -4,7 +4,7 @@
 //! aggregation and profiler lifecycle live here. Capture only publishes fixed
 //! IDs. This module deliberately does NOT call Pyroscope's thread-tag API.
 //!
-//! Linux x86-64 only. Each participating thread owns a CPU timer and an SPSC
+//! Linux x86-64 and AArch64. Each participating thread owns a CPU timer and an SPSC
 //! sample ring. The signal handler copies registers and a bounded stack window
 //! using process_vm_readv, walks frame pointers in that COPY, and snapshots IDs.
 //! It never borrows Rust TLS, allocates, locks, symbolizes or calls Pyroscope.
@@ -41,15 +41,31 @@ pub struct ProfileStats {
     pub active_threads: u64,
 }
 
-#[cfg(all(feature = "profiles", target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 use linux as platform;
 
-#[cfg(not(all(feature = "profiles", target_os = "linux", target_arch = "x86_64")))]
+#[cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "profilearch.rs"]
+mod arch;
+
+#[cfg(not(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
 mod platform {
     use super::*;
     pub fn initialize(_: &opentelemetry_sdk::Resource, required: bool) -> Result<(), String> {
         if required || std::env::var_os("GST_OTEL_PROFILE_URL").is_some() {
-            Err("requires the profiles Cargo feature on Linux x86-64".into())
+            Err("requires the profiles Cargo feature on Linux x86-64 or AArch64".into())
         } else {
             Ok(())
         }
@@ -82,7 +98,11 @@ pub fn profile_stats() -> ProfileStats {
     platform::stats()
 }
 
-#[cfg(all(feature = "profiles", target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod linux {
     use super::*;
     use prost::Message;
@@ -1044,7 +1064,10 @@ mod linux {
             if ret == 0 {
                 return false;
             }
-            sample.pcs[sample.len] = ret.saturating_sub(1);
+            let Some(pc) = arch::callsite(ret) else {
+                return true;
+            };
+            sample.pcs[sample.len] = pc;
             sample.len += 1;
             if next == 0 {
                 return false;
@@ -1111,9 +1134,9 @@ mod linux {
                 .timer_overruns
                 .fetch_add(overruns as u64, Relaxed);
         }
-        let registers = unsafe { &(*(context as *const libc::ucontext_t)).uc_mcontext.gregs };
-        let sp = registers[libc::REG_RSP as usize] as usize;
-        let fp = registers[libc::REG_RBP as usize] as usize;
+        let registers = unsafe { arch::registers(context.cast()) };
+        let sp = registers.sp;
+        let fp = registers.fp;
         let mut sample = Sample {
             ids: slot.context(),
             element: slot.element.load(Relaxed),
@@ -1121,7 +1144,7 @@ mod linux {
             len: 1,
             ..Default::default()
         };
-        sample.pcs[0] = registers[libc::REG_RIP as usize] as usize;
+        sample.pcs[0] = registers.pc;
         // SAFETY: scratch is used only by this slot's non-reentrant handler.
         let Some(buffers) = slot.buffers.get() else {
             return;
@@ -1640,6 +1663,50 @@ mod linux {
             assert_eq!(actual, (1..=CAPACITY as u64).collect::<Vec<_>>());
             assert!(slot.push(Sample::default()));
         }
+
+        #[test]
+        fn concurrent_ring_transfers_complete_samples_in_order() {
+            let slot = Arc::new(Slot::new());
+            slot.prepare();
+            let producer = slot.clone();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let thread = std::thread::spawn(move || {
+                for id in 1..=20000 {
+                    let sample = Sample {
+                        ids: [id, id + 1, id + 2],
+                        element: id * 2,
+                        tid: id as i32,
+                        len: 2,
+                        pcs: [id as usize; MAX_FRAMES],
+                    };
+                    while !producer.push(sample) {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "ring producer stalled"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+            });
+            let mut expected = 1;
+            while expected <= 20000 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "ring consumer stalled"
+                );
+                slot.drain(&mut |sample| {
+                    assert_eq!(sample.ids, [expected, expected + 1, expected + 2]);
+                    assert_eq!(sample.element, expected * 2);
+                    assert_eq!(sample.tid, expected as i32);
+                    assert_eq!(sample.len, 2);
+                    assert_eq!(sample.pcs, [expected as usize; MAX_FRAMES]);
+                    expected += 1;
+                });
+                std::thread::yield_now();
+            }
+            thread.join().unwrap();
+        }
+
         #[test]
         fn snapshot_unwinding_stops_on_invalid_cyclic_and_truncated_chains() {
             let mut stack = [0u8; 32];
@@ -1651,12 +1718,29 @@ mod linux {
                 ..Default::default()
             };
             assert!(!unwind(&mut sample, &stack, 1000, 1000));
-            assert_eq!(&sample.pcs[1..sample.len], &[1999, 2999]);
+            assert_eq!(
+                &sample.pcs[1..sample.len],
+                &[arch::callsite(2000).unwrap(), arch::callsite(3000).unwrap()]
+            );
             for bad in [999, 1001, usize::MAX] {
                 assert!(unwind(&mut Sample::default(), &stack, 1000, bad));
             }
             stack[..8].copy_from_slice(&1000usize.to_ne_bytes());
             assert!(unwind(&mut Sample::default(), &stack, 1000, 1000));
+        }
+
+        #[test]
+        fn missing_or_incomplete_frames_preserve_the_interrupted_leaf() {
+            for fp in [0, 999, 1000, usize::MAX] {
+                let mut sample = Sample {
+                    len: 1,
+                    ..Default::default()
+                };
+                sample.pcs[0] = 0x1234;
+                let truncated = unwind(&mut sample, &[0; 8], 1000, fp);
+                assert_eq!(truncated, fp != 0);
+                assert_eq!(&sample.pcs[..sample.len], &[0x1234]);
+            }
         }
         #[test]
         fn aggregation_and_pprof_keep_identical_stacks_with_different_span_ids_separate() {

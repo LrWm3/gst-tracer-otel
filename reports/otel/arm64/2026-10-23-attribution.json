@@ -1,0 +1,69 @@
+{
+  "date": "2026-10-23T20:45:57.837036+00:00",
+  "revision": "970c35cdaffb11cd2da610cc333298cc934479f3",
+  "binary_sha256": "5ddf2225c94e80b741262b4da809b42fba470fc88fce70dcf1e8f63ade252775",
+  "frames": 1200,
+  "hz": 100,
+  "modes": {
+    "off": {
+      "service": "mars-elements-off",
+      "started_ms": 1792788358034,
+      "ended_ms": 1792788366135,
+      "total_cpu_ns": 14190000000,
+      "groups_cpu_ns": {
+        "0xffffa607bf18": 14190000000
+      },
+      "stats": {
+        "samples": 1419,
+        "correlated_samples": 0,
+        "element_samples": 0,
+        "task_samples": 0,
+        "context_capacity_rejections": 0,
+        "dropped_full": 0,
+        "timer_overruns": 0,
+        "failed_stack_reads": 0,
+        "truncated_stacks": 0,
+        "registration_failures": 0,
+        "reported_samples": 1419,
+        "dropped_processing": 0,
+        "dropped_upload": 0,
+        "active_threads": 0
+      },
+      "server_total_cpu_ns": 14190000000
+    },
+    "on": {
+      "service": "mars-elements-on",
+      "started_ms": 1792788367016,
+      "ended_ms": 1792788375135,
+      "total_cpu_ns": 14190000000,
+      "groups_cpu_ns": {
+        "[element] heavy [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:heavy": 7230000000,
+        "[task owner] source [videotestsrc] \u2014 /GstPipeline:pipeline0/GstVideoTestSrc:source": 2880000000,
+        "[element] light [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:light": 2530000000,
+        "[element] convert [videoconvert] \u2014 /GstPipeline:pipeline0/GstVideoConvert:convert": 1510000000,
+        "[unattributed GStreamer CPU]": 20000000,
+        "[element] output [fakesink] \u2014 /GstPipeline:pipeline0/GstFakeSink:output": 10000000,
+        "[element] capsfilter1 [capsfilter] \u2014 /GstPipeline:pipeline0/GstCapsFilter:capsfilter1": 10000000
+      },
+      "stats": {
+        "samples": 1419,
+        "correlated_samples": 0,
+        "element_samples": 1129,
+        "task_samples": 288,
+        "context_capacity_rejections": 0,
+        "dropped_full": 0,
+        "timer_overruns": 0,
+        "failed_stack_reads": 0,
+        "truncated_stacks": 0,
+        "registration_failures": 0,
+        "reported_samples": 1419,
+        "dropped_processing": 0,
+        "dropped_upload": 0,
+        "active_threads": 0
+      },
+      "server_total_cpu_ns": 14190000000
+    }
+  },
+  "revision_note": "Native binaries include the uncommitted impl/profiles-arm64 implementation; see source hashes and the containing commit.",
+  "pyroscope_version": "2.4.0"
+}

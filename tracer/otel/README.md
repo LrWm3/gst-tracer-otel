@@ -40,7 +40,7 @@ compression settings disable tracing with an initialization error.
 
 ## Experimental correlated CPU profiles
 
-On Linux x86-64 with GStreamer 1.22 or newer, build the optional feature and set
+On Linux x86-64 or arm64 with GStreamer 1.22 or newer, build the optional feature and set
 the Pyroscope base URL:
 
 ```sh
@@ -62,6 +62,11 @@ key. Nested pushes replace the active ID and restore the parent on return.
 Queue workers publish their own active push, using the existing buffer context
 propagation. Overflow or uncertain hook nesting suppresses correlation until
 the stack recovers. Unsampled pushes still contribute CPU samples without IDs.
+
+Architecture-specific signal registers and return-address normalization live in
+[src/profilearch.rs](src/profilearch.rs). AArch64 uses x29 frame records and
+removes pointer-authentication signatures from saved return addresses. See
+[ARM build and stack limitations](PROFILES.md#linux-arm64).
 
 Element attribution is separate from trace correlation. The hooks in
 [src/profilecontext.rs](src/profilecontext.rs) track chain/list/pull calls and

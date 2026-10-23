@@ -160,6 +160,8 @@ def validate(payloads, mode, frames, hz, profile, trace, metrics):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/profile-video-build/release/examples/profile_video')
+    parser.add_argument('--build-profile', choices=('release', 'profiling'), default='release',
+                        help='Record the profile used to build --binary; does not build or select a binary')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--frames', type=int, default=1200)
     parser.add_argument('--repeats', type=int, default=7)
@@ -190,7 +192,7 @@ def main():
         governor=Path('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor').read_text().strip(),
         binary_sha256=sha256(binary), source_sha256={str(p.relative_to(ROOT)): sha256(p) for p in source_paths},
         settings=dict(frames=args.frames, repeats=args.repeats, hz=args.hz, modes=list(args.modes),
-                      rustflags='-C force-frame-pointers=yes', profile='release',
+                      rustflags='-C force-frame-pointers=yes', profile=args.build_profile,
                       log_messages_per_frame=1, trace_sample_ratio=1,
                       queue_capacity=args.queue_capacity, export_interval_ms=args.export_interval_ms,
                       metric_interval_ms=10000, metric_cpu_sample_rate=16,

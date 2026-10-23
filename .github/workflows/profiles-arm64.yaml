@@ -1,0 +1,53 @@
+name: Native ARM64 profiles
+
+on:
+  push:
+    branches: [main, 'impl/profiles-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profiles:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      RUSTFLAGS: -C force-frame-pointers=yes
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer and Rust
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base qemu-user
+          rustup toolchain install stable --profile minimal --component clippy --no-self-update
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: profiles-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-fp-v1
+      - name: Record native environment
+        run: |
+          test "$(uname -m)" = aarch64
+          uname -a
+          lscpu
+          rustc -Vv
+          pkg-config --modversion gstreamer-1.0
+      - name: Lint all profile code and examples
+        run: cargo clippy -p gst-otel-tracer --features profiles --all-targets -- -D warnings
+      - name: Test native timers, stacks, attribution and shutdown
+        run: cargo test -p gst-otel-tracer --features profiles -- --nocapture
+      - name: Verify native caller chains with frame pointers
+        run: >-
+          cargo test -p gst-otel-tracer --features profiles --test profiles
+          native_frame_chain_retains_known_callers_under_an_element_root
+          -- --ignored --nocapture
+      - name: Build profiling examples
+        run: cargo build -p gst-otel-tracer --features profiles --examples
+      - name: Exercise PAC stripping with both keys under QEMU
+        run: python3 tracer/otel/bench/arm64/check_pac.py

@@ -37,7 +37,7 @@ For CPU profiles, build with `--features profiles` and set
 `GST_OTEL_PROFILE_URL=http://localhost:4040`. Use frame pointers and debug
 symbols for better stack resolution; see the existing
 [profile instructions](README.md#experimental-correlated-cpu-profiles).
-Profiling currently requires Linux x86-64. To include GStreamer logs, set
+Profiling supports Linux x86-64 and arm64. To include GStreamer logs, set
 `GST_INSTRUMENT_LOGS=true` and select the desired categories with `GST_DEBUG`.
 The standard GStreamer log handler remains enabled.
 

@@ -6,7 +6,7 @@ background symbolization, and Pyroscope uploader as correlated profiling in
 `mars-otel` and `mars-instrument`. It emits CPU profiles only: no OTLP requests,
 span capture, buffer trace metadata, metric series, or GStreamer log bridge.
 
-The current sampler supports Linux x86-64 and requires GStreamer 1.22 or newer.
+The sampler supports Linux x86-64 and arm64 (AArch64), with GStreamer 1.22 or newer.
 Build and run:
 
 ```sh
@@ -72,6 +72,42 @@ Attribution does not recover missing native symbols or follow element-owned
 private worker pools. Events, queries, and arbitrary callbacks have no separate
 scope hooks; they retain the surrounding call/task context. Task-owner names
 are captured at ENTER; chain descriptions refresh after name/parent changes.
+
+## Linux arm64
+
+Use the same feature, tracer names, configuration, and build command on a native
+`aarch64-unknown-linux-gnu` system. Element/task attribution and trace correlation
+work independently of native-stack completeness on both architectures.
+See [validation on an integrated memory nvidia device and measurements](../../reports/otel/ARM64_PROFILES.md).
+Validation uses GNU libc; other C libraries have not been tested on ARM.
+
+For native C/C++ dependencies built with GCC or Clang, keep both ordinary and
+leaf frame pointers. The [ARM Meson native file](gstreamer/native.aarch64.flags.ini)
+adds `-mno-omit-leaf-frame-pointer` to the existing native flags:
+
+```sh
+meson setup build --native-file /path/to/gst-tracer-otel/tracer/otel/gstreamer/native.aarch64.flags.ini
+```
+
+The sampler reads the interrupted PC/SP/x29 and walks only the bounded copied
+stack. Saved return addresses have their PAC signature stripped with XPACLRI
+(a backwards-compatible HINT on CPUs without pointer authentication), then
+are adjusted by four bytes to identify the calling instruction. No fixed virtual
+address-width mask is used. The original interrupted PC is preserved.
+
+An omitted frame or interruption during a function prologue/epilogue can skip
+callers or shorten the stack. Live x30 is deliberately not appended: it may
+describe a nested call inside the interrupted function rather than its caller.
+Missing/unreadable frames still retain the interrupted PC and element context.
+This does not add DWARF unwinding, JIT support, or recovery of tagged stack
+pointers. `truncated_stacks` counts detected chain failures, not every omitted
+frame. Stock vendor libraries can therefore produce incomplete native stacks.
+
+An integrated memory nvidia device may ship GStreamer 1.16 or 1.20. The existing 1.22 minimum
+still applies; use an application environment with newer GStreamer. The
+[validation Dockerfile](bench/arm64/Dockerfile) provides Rust and GStreamer 1.22
+in a container without changing the host installation. It tests CPU profiling;
+it does not include NVIDIA GPU plugins or measure GPU execution.
 
 ## Sampling and shutdown
 

@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-23T20:46:16.039346+00:00",
+  "revision": "970c35cdaffb11cd2da610cc333298cc934479f3",
+  "command": [
+    "tracer/otel/bench/profile_video.py",
+    "--binary",
+    "target/profiling/examples/profile_video",
+    "--build-profile",
+    "profiling",
+    "--cpus",
+    "0,2",
+    "--frames",
+    "600",
+    "--repeats",
+    "3",
+    "--modes",
+    "none",
+    "profiles",
+    "otel-profiles-logs",
+    "--export-interval-ms",
+    "200",
+    "--queue-capacity",
+    "8192",
+    "--output",
+    "target/arm64-review/video.csv"
+  ],
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)\nbinary: rustc\ncommit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2\ncommit-date: 2025-08-04\nhost: aarch64-unknown-linux-gnu\nrelease: 1.89.0\nLLVM version: 20.1.7\n",
+  "perf_version": null,
+  "gstreamer": "1.22.0",
+  "uname": {
+    "system": "Linux",
+    "machine": "aarch64"
+  },
+  "cpu": "an integrated memory nvidia device",
+  "affinity": [
+    3
+  ],
+  "child_cpus": "0,2",
+  "governor": "schedutil",
+  "binary_sha256": "27a3e72b80d6efe112b08dacd73b9096314ca5d26996ae0218e38f4fdea11fa0",
+  "source_sha256": {
+    "tracer/otel/bench/profile_video.py": "f6c0d9addb44d6e42e0a71b900c393a7035381873597b808da5c9ddd255e1846",
+    "tracer/otel/examples/profile_video.rs": "aceac3f65252d5dfeb3e8365f5cd16c374e3b41f59604a5c5c424776621c2c4b",
+    "tracer/otel/bench/profiles.py": "1295e2a29567b6b37e9887609ac62a4de3d34fc398a17d6cf8eea94952e6ab08",
+    "Cargo.lock": "17d7f4500d0ea30ec2bf8d0ebb066c7d2239bdbb4681c4b243686505f9e8f110"
+  },
+  "settings": {
+    "frames": 600,
+    "repeats": 3,
+    "hz": 100,
+    "modes": [
+      "none",
+      "profiles",
+      "otel-profiles-logs"
+    ],
+    "rustflags": "-C force-frame-pointers=yes",
+    "profile": "profiling",
+    "log_messages_per_frame": 1,
+    "trace_sample_ratio": 1,
+    "queue_capacity": 8192,
+    "export_interval_ms": 200,
+    "metric_interval_ms": 10000,
+    "metric_cpu_sample_rate": 16,
+    "element_attribution": {
+      "none": true,
+      "profiles": true,
+      "otel-profiles-logs": true
+    },
+    "perf": false
+  },
+  "revision_note": "revision records the parent main commit; the measured binary includes the uncommitted impl/profiles-arm64 implementation",
+  "device": "an integrated memory nvidia device"
+}

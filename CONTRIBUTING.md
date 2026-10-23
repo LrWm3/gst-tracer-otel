@@ -54,8 +54,17 @@ cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets -
 `cargo test` alone covers the default Prometheus member. The explicit OTel
 commands exercise builds with and without profiling; feature-enabled integration
 tests check metrics, traces, logs, and profile correlation. Profiler tests require
-Linux x86-64. `cargo audit` and `cargo udeps` require the corresponding Cargo
+Linux x86-64 or AArch64. `cargo audit` and `cargo udeps` require the corresponding Cargo
 tools; `udeps` also requires a nightly toolchain.
+
+The native caller-chain test additionally requires frame pointers and is run
+explicitly by [ARM CI](.github/workflows/profiles-arm64.yaml):
+
+```sh
+RUSTFLAGS='-C force-frame-pointers=yes' cargo test -p gst-otel-tracer \
+  --features profiles --test profiles \
+  native_frame_chain_retains_known_callers_under_an_element_root -- --ignored --nocapture
+```
 
 For the Prometheus address-sanitizer checks used in CI:
 

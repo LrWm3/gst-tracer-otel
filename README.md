@@ -19,7 +19,7 @@ For a list of available metrics, see the [prometheus plugin README.md](https://g
 
 See the [performance reports](reports/README.md) for measured CPU and memory costs on the tested pipelines for each tracer.
 
-These are rounded planning figures from our
+These are rounded planning figures from our x86-64
 [1080p video measurements](reports/otel/INSTRUMENT_VIDEO_RESULTS.md): extra CPU
 cycles with default export settings, 100% trace sampling, 100 Hz profiles, and
 one log per frame when enabled. Small sub-percent results overlap baseline
@@ -27,6 +27,7 @@ variation; these are not limits or FPS-loss estimates. `mars-instrument` added
 about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
 [profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
 The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
+For native arm64 results, see the [profiling check on an integrated memory nvidia device](reports/otel/ARM64_PROFILES.md).
 These figures predate element-attributed profiles; see the
 [attribution review](reports/otel/PROFILE_ELEMENT_REVIEW.md) for its additional
 cost and screenshots.
@@ -98,9 +99,10 @@ and GStreamer 1.22 or newer.
   `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
   asynchronous boundaries are not handled correctly by the element timings.
   If this is important to you, please open an issue and it can be explored.
-- **CPU profiling currently requires Linux x86-64.** It samples participating
+- **CPU profiling supports Linux x86-64 and arm64 (AArch64).** It samples participating
   streaming threads, with [stack and shutdown limitations](tracer/otel/PROFILES.md#sampling-and-shutdown).
-  This may be extended in the future, raise an issue if this is important to you.
+  On an integrated memory nvidia device, check that the application environment has GStreamer
+  1.22 or newer; see the [ARM build notes](tracer/otel/PROFILES.md#linux-arm64).
 
 ## Further reading
 

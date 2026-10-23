@@ -1,6 +1,10 @@
 //! Decode actual Pyroscope uploads and OTLP spans from a fresh process. The
 //! child uses real CPU timers, nested pad pushes, and a GStreamer queue thread.
-#![cfg(all(feature = "profiles", target_os = "linux", target_arch = "x86_64"))]
+#![cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 
 use gstreamer::{self as gst, prelude::*};
 use opentelemetry_proto::tonic::{
@@ -457,6 +461,31 @@ fn profile_child() {
 
     if mode == "profiles-only-elements" {
         profile_element_work();
+    } else if mode == "profiles-only-stack" {
+        let pipeline = gst::parse::launch(
+            "fakesrc num-buffers=1 ! identity name=stack-check ! fakesink sync=false",
+        )
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        pipeline
+            .by_name("stack-check")
+            .unwrap()
+            .connect("handoff", false, |_| {
+                profile_stack_outer();
+                None
+            });
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let message = pipeline
+            .bus()
+            .unwrap()
+            .timed_pop_filtered(
+                gst::ClockTime::from_seconds(10),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            )
+            .unwrap();
+        assert_eq!(message.type_(), gst::MessageType::Eos);
+        pipeline.set_state(gst::State::Null).unwrap();
     } else if mode.ends_with("-list") || mode.ends_with("-pull") {
         profile_non_push_work(&mode);
     } else {
@@ -609,6 +638,7 @@ fn profile_push_work() {
     sink.set_active(false).unwrap();
 }
 
+#[inline(never)]
 fn busy_cpu(milliseconds: u64) {
     fn now() -> u64 {
         let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
@@ -627,6 +657,65 @@ fn busy_cpu(milliseconds: u64) {
             value = std::hint::black_box(value.wrapping_mul(6364136223846793005).wrapping_add(1));
         }
     }
+}
+
+#[inline(never)]
+fn profile_stack_inner() {
+    busy_cpu(500);
+    std::hint::black_box(());
+}
+
+#[inline(never)]
+fn profile_stack_outer() {
+    profile_stack_inner();
+    std::hint::black_box(());
+}
+
+#[test]
+#[ignore = "requires -C force-frame-pointers=yes; explicitly run by native profiling CI"]
+fn native_frame_chain_retains_known_callers_under_an_element_root() {
+    let (received, stdout) = collect("profiles-only-stack");
+    let mut matched = 0;
+    for profile in &received.profiles {
+        for sample in &profile.sample {
+            let names: Vec<_> = sample
+                .location_id
+                .iter()
+                .flat_map(|id| {
+                    profile
+                        .location
+                        .iter()
+                        .find(|l| l.id == *id)
+                        .unwrap()
+                        .line
+                        .iter()
+                        .map(|line| {
+                            let function = profile
+                                .function
+                                .iter()
+                                .find(|f| f.id == line.function_id)
+                                .unwrap();
+                            profile.string_table[function.name as usize].as_str()
+                        })
+                })
+                .collect();
+            let inner = names
+                .iter()
+                .position(|n| n.contains("::profile_stack_inner"));
+            let outer = names
+                .iter()
+                .position(|n| n.contains("::profile_stack_outer"));
+            if let (Some(inner), Some(outer)) = (inner, outer) {
+                assert!(inner < outer, "leaf-first caller ordering: {names:?}");
+                assert!(scope_frame(profile, sample).contains("GstIdentity:stack-check"));
+                matched += 1;
+            }
+        }
+    }
+    assert!(
+        matched > 0,
+        "no known native caller chain captured; build with -C force-frame-pointers=yes\n{stdout}"
+    );
 }
 
 fn profile_element_work() {
