@@ -6,12 +6,12 @@ code.
 
 ## Choose a tracer
 
-| I want to… | Use | Send data to |
+| I want to… | Use | Send data to | Overhead |
 | --- | --- | --- |
-| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus |
-| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope |
-| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector |
-| Collect correlated metrics, traces, spans, logs and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | All-in-one metrics |
+| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% |
+| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | tbd |
+| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | <1% for traces only |
+| Collect correlated metrics, traces, spans, logs and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | All-in-one metrics | tbd |
 
 Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
 
