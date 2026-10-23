@@ -35,3 +35,7 @@ tiny_http = "0.12"
 noop = []
 capi = []
 profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "dep:libflate"]
+
+[[example]]
+name = "profile_video"
+required-features = ["profiles"]

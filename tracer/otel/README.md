@@ -290,6 +290,13 @@ Other active tracers can still incur GStreamer's shared dispatch overhead.
 
 ## Performance and sampling cost
 
+**Current profiles-only, trace, and log comparison, 2026-10-23.** See the
+[matched 1080p video results](../../reports/otel/PROFILE_VIDEO_RESULTS.md) for
+`mars-profiles` and `mars-otel` with profiles and logs enabled. The new runner
+includes an untraced baseline, actual per-frame logs, explicit final shutdown,
+decoded-output checks, hardware cycle counts, and a default-settings check.
+The tables below describe older implementations and configurations.
+
 **Background processing and memory follow-up, 2026-10-21.** Both columns below
 enable 100 Hz profiling and 100% trace sampling: the initial embedded prototype
 versus the optimized worker. Builds use the same release/frame-pointer flags,

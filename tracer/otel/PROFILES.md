@@ -65,6 +65,14 @@ and upload-queue counters. Trace and metric counters remain zero. The SDK does
 not expose delivery acknowledgements; a drained upload queue does not prove
 successful server ingestion.
 
+## Measured overhead
+
+The [current 1080p video comparison](../../reports/otel/PROFILE_VIDEO_RESULTS.md)
+measures profiles-only against an untraced baseline and `mars-otel` with profiles
+and logs. It includes CPU work, peak memory, delivery checks, and the observed
+timing variability. Results use 100 Hz sampling and the stock native libraries;
+different workloads, sample rates, and debug symbols can change the cost.
+
 ## Migrating from the standalone plugin
 
 The `gst-pyroscope-tracer` package and `libgstpyroscopetracer.so` are removed.

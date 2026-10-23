@@ -6,11 +6,11 @@ code.
 
 ## Choose a tracer
 
-| I want to… | Use | Send data to | Overhead |
+| I want to… | Use | Send data to | Approx. overhead |
 | --- | --- | --- | --- |
-| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% |
-| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | tbd |
-| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | <1% for traces only |
+| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% expected on video workloads |
+| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% CPU cycles; +41 MiB peak RSS |
+| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | ~2% CPU cycles for traces; ~4% with profiles + logs |
 | Collect correlated metrics, traces, spans, logs and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | All-in-one metrics | tbd |
 
 Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
@@ -18,6 +18,14 @@ Start with **mars-metrics** if you are unsure, as it carries the least overhead 
 For a list of available metrics, see the [prometheus plugin README.md](https://github.com/LrWm3/gst-tracer-otel/blob/main/tracer/prometheus/README.md#metric-semantics).
 
 See the [performance reports](reports/README.md) for measured CPU and memory costs on the tested pipelines for each tracer.
+
+The [1080p video measurements](reports/otel/PROFILE_VIDEO_RESULTS.md) use 100 Hz
+profiling, 100% trace sampling, and one log per frame when enabled. Profiles + logs
+use default trace-export settings and add about **44 MiB peak RSS**; the
+traces-only measurement uses a faster 10 ms export interval. CPU cycles describe
+CPU work, not FPS loss; timing was too variable to estimate that reliably.
+The metrics figure is a rough expectation based on the
+[video benchmarks](reports/prometheus/BENCHMARK.md), not a universal limit.
 
 ## Get your first metrics
 
