@@ -8,15 +8,16 @@ code.
 
 | I want to… | Use | Send data to |
 | --- | --- | --- |
-| Measure element cost, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus |
-| Connect metrics to traces and optional CPU profiles and logs | [mars-instrument](tracer/otel/INSTRUMENT.md) | An OTLP/HTTP collector, plus Pyroscope for profiles |
-| Trace buffer pushes, with optional correlated logs and profiles | [mars-otel](tracer/otel/README.md) | An OTLP/HTTP collector, plus Pyroscope for profiles |
-| See CPU call stacks without collecting traces | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope |
+| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus |
+| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope |
+| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector |
+| Collect correlated metrics, traces, spans, logs and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | All-in-one metrics |
 
-Start with **mars-metrics** if you are unsure. It is the most mature option,
-currently alpha. `mars-otel` is pre-alpha; `mars-instrument` and `mars-profiles`
-are experimental. See the [performance reports](reports/README.md) for measured
-CPU and memory costs on the tested pipelines.
+Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
+
+For a list of available metrics, see the [prometheus plugin README.md](https://github.com/LrWm3/gst-tracer-otel/blob/main/tracer/prometheus/README.md#metric-semantics).
+
+See the [performance reports](reports/README.md) for measured CPU and memory costs on the tested pipelines for each tracer.
 
 ## Get your first metrics
 
@@ -45,7 +46,7 @@ Look for `gst_element_latency_count_count` and
 `gst_element_sync_wall_seconds_bucket`, with labels identifying pipeline elements.
 No Prometheus server is needed to try this; to retain measurements, configure
 Prometheus to scrape this endpoint. The metrics server listens on all interfaces
-on the chosen port. Stop the test pipeline with **Ctrl+C**.
+on the chosen port.
 
 To instrument your application, set the same `GST_PLUGIN_PATH` and `GST_TRACERS`
 when launching it. Replace the example pipeline with your own, or see the
@@ -74,20 +75,23 @@ they share one configuration. Profiling requires the `profiles` build feature.
 
 ## Know what you are measuring
 
-- **Timing measures synchronous calls.** It does not measure per-buffer queue
-  residence, GPU completion, or end-to-end latency. The metrics guide explains
-  [what each measurement means](tracer/prometheus/README.md#metric-semantics).
-- **Pipeline structure matters.** `mars-metrics` supports push, pull, and buffer
+- **Metrics assume synchronous calls.** Metrics may still hint at non-sync latency
+  depending on if the elements underlying queues are saturated.
+- **Metrics do not support bin elements.** Latency is measured across bin sub-elements.
+  If you see elements you do not recognize from your pipeline, it is possible it is from
+  a bin element.
+- **No async support.** `mars-metrics` supports push, pull, and buffer
   lists; combined instrumentation currently covers ordinary pushes. Regular
   `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
   asynchronous boundaries are not handled correctly by the element timings.
+  If this is important to you, please open an issue and it can be explored.
 - **CPU profiling currently requires Linux x86-64.** It samples participating
   streaming threads, with [stack and shutdown limitations](tracer/otel/PROFILES.md#sampling-and-shutdown).
+  This may be extended in the future, raise an issue if this is important to you.
 
 ## Further reading
 
 - [Performance reports](reports/README.md): measured overhead and reproduction instructions.
-- [Migration guide](MIGRATING.md): renamed tracers and the replacement for the standalone profiler.
 - [Contributing](CONTRIBUTING.md): development setup, tests, benchmarks, and remaining work.
 
 ## License and credits
