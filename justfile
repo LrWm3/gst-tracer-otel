@@ -34,7 +34,7 @@ audit:
 # Check for unused dependencies.
 [group('udeps')]
 udeps:
-  cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets --all-features
+  cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer -p gst-mars-metrics-core --all-targets --all-features
 
 # Run tests with coverage analysis.
 [group('lint')]

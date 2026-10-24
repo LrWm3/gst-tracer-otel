@@ -40,7 +40,10 @@ pub(crate) enum Mode {
     Profiles,
 }
 
-fn initialize(mode: Mode) -> Result<Runtime, String> {
+fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result<Runtime, String> {
+    if let Some(settings) = settings {
+        return initialize_explicit(settings);
+    }
     let profiles_only = mode == Mode::Profiles;
     let instrument = mode == Mode::Instrument;
     // Profiles-only operation must not depend on trace/metric/log settings or
@@ -90,9 +93,115 @@ fn initialize(mode: Mode) -> Result<Runtime, String> {
     Ok(runtime)
 }
 
+fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, String> {
+    #[cfg(not(all(
+        feature = "profiles",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )))]
+    if settings.profiles {
+        return Err(
+            "profiles require the profiles Cargo feature on Linux x86-64 or AArch64".into(),
+        );
+    }
+    let mut config = if settings.traces {
+        Config::from_env()?
+    } else {
+        Config {
+            traces: false,
+            ..Config::default()
+        }
+    };
+    config.logs = settings.logs;
+    if !settings.traces && settings.metrics {
+        if let Ok(value) = std::env::var("GST_OTEL_FLUSH_TIMEOUT_MS") {
+            let ms = value
+                .parse::<u64>()
+                .map_err(|_| "invalid GST_OTEL_FLUSH_TIMEOUT_MS")?;
+            if !(1..=60_000).contains(&ms) {
+                return Err("GST_OTEL_FLUSH_TIMEOUT_MS must be 1..=60000".into());
+            }
+            config.flush_timeout = std::time::Duration::from_millis(ms);
+        }
+    }
+    let resource = export::resource();
+    let exporter = if settings.traces {
+        Some(crate::transport::OtlpExporter::new(&resource)?)
+    } else {
+        None
+    };
+    let metrics = if settings.metrics {
+        Some(crate::shared_metrics::Metrics::new(&settings, &resource)?)
+    } else {
+        None
+    };
+    if settings.logs {
+        crate::otellogbridge::initialize(resource.clone())?;
+    }
+    let mut runtime = Runtime::new(config, export::OptionalExporter(exporter), resource.clone())
+        .map_err(|e| e.to_string())?;
+    runtime.shared_metrics = metrics;
+    if settings.profiles {
+        crate::profiles::initialize(&resource, true)?;
+    }
+    if settings.metrics && (settings.traces || settings.profiles) {
+        gst_mars_metrics_core::set_capture_hooks(gst_mars_metrics_core::CaptureHooks {
+            exemplars: settings.traces,
+            begin: capture_begin,
+            end: |ts, pad, result| {
+                let runtime = crate::tracer::runtime().ok()?;
+                if !runtime.config.traces {
+                    return None;
+                }
+                let token = capture::end(runtime, ts, pad, result)?;
+                Some(gst_mars_metrics_core::exemplars::Exemplar {
+                    trace_id: token.trace_id.to_bytes(),
+                    span_id: token.span_id.to_bytes(),
+                    timestamp_ns: runtime.timestamp(ts),
+                    value: 0.0,
+                })
+            },
+        })?;
+    }
+    Ok(runtime)
+}
+
+fn capture_begin(ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
+    if let Ok(runtime) = runtime() {
+        if runtime.config.traces || runtime.metrics.is_some() {
+            capture::begin(runtime, ts, pad, buffer);
+        } else {
+            #[cfg(feature = "profiles")]
+            crate::profiles::register_thread();
+        }
+    }
+}
+
 static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+fn invalidate_metrics() {
+    if runtime().is_ok_and(|r| r.shared_metrics.is_some()) {
+        gst_mars_metrics_core::MetricsTracerImp::invalidate_topology();
+    }
+}
+
+#[cfg(feature = "profiles")]
 pub(crate) fn activate(mode: Mode) -> bool {
+    activate_with_params(mode, None)
+}
+
+fn activate_with_params(mode: Mode, params: Option<&str>) -> bool {
+    let settings = if mode == Mode::Instrument {
+        match crate::settings::Settings::parse(params, |key| std::env::var(key).ok()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                gst::error!(CAT, "Telemetry tracer disabled: {error}");
+                return false;
+            }
+        }
+    } else {
+        None
+    };
     // Claim ownership before initialization: another mode must not win hook
     // registration while this mode is still creating its runtime.
     if REGISTERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -102,15 +211,26 @@ pub(crate) fn activate(mode: Mode) -> bool {
         );
         return false;
     }
-    if let Err(error) = RUNTIME.get_or_init(|| initialize(mode)) {
+    if let Err(error) = RUNTIME.get_or_init(|| {
+        let result = initialize(mode, settings);
+        if result.is_err() {
+            // Initialization can fail after another selected signal started.
+            // Do not leave its global log/profile worker running unattended.
+            let timeout = std::time::Duration::from_secs(1);
+            let start = std::time::Instant::now();
+            crate::otellogbridge::shutdown(timeout);
+            let _ = crate::profiles::shutdown(timeout.saturating_sub(start.elapsed()));
+        }
+        result
+    }) {
         gst::error!(CAT, "Telemetry tracer disabled: {error}");
         return false;
     }
     true
 }
 
-// The tracing entry points share hooks and the capture stack. Profiles-only
-// hooks live in profiletracer.rs and never enter span capture.
+// The tracing entry points share hooks and the capture stack. An explicit
+// profiles-only configuration, like profiletracer.rs, bypasses span capture.
 macro_rules! tracer_impl {
     ($module:ident, $wrapper:ident, $name:literal, $mode:expr) => {
         mod $module {
@@ -148,14 +268,7 @@ macro_rules! tracer_impl {
                             .to_value(),
                         "metric-stats" => runtime()
                             .ok()
-                            .map(|r| {
-                                r.metrics
-                                    .as_ref()
-                                    .map_or_else(crate::metrics::MetricStats::default, |m| {
-                                        m.stats()
-                                    })
-                                    .to_structure()
-                            })
+                            .map(|r| r.metric_stats().to_structure())
                             .to_value(),
                         _ => unreachable!(),
                     }
@@ -163,12 +276,30 @@ macro_rules! tracer_impl {
 
                 fn constructed(&self) {
                     self.parent_constructed();
-                    if !activate($mode) {
+                    let params = self.obj().property::<Option<String>>("params");
+                    if !activate_with_params($mode, params.as_deref()) {
                         return;
                     }
+                    let runtime = runtime().unwrap();
+                    if runtime.shared_metrics.is_some() {
+                        gst_mars_metrics_core::MetricsTracerImp
+                            .constructed(self.obj().upcast_ref());
+                        self.register_hook(TracerHook::ElementNew);
+                        self.register_hook(TracerHook::ElementChangeStatePre);
+                    } else if runtime.config.traces || runtime.metrics.is_some() {
+                        self.register_hook(TracerHook::PadPushPre);
+                        self.register_hook(TracerHook::PadPushPost);
+                    } else {
+                        #[cfg(feature = "profiles")]
+                        if crate::profiles::active() {
+                            self.register_hook(TracerHook::PadPushPre);
+                        }
+                    }
+                    #[cfg(feature = "profiles")]
+                    if crate::profiles::active() {
+                        self.register_hook(TracerHook::PadPushListPre);
+                    }
                     for hook in [
-                        TracerHook::PadPushPre,
-                        TracerHook::PadPushPost,
                         TracerHook::PadLinkPost,
                         TracerHook::PadUnlinkPost,
                         TracerHook::ElementAddPad,
@@ -188,8 +319,23 @@ macro_rules! tracer_impl {
                 #[cfg(feature = "profiles")]
                 crate::profilecontext::methods!();
                 fn pad_push_pre(&self, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-                    if let Ok(runtime) = runtime() {
-                        capture::begin(runtime, ts, pad, buffer);
+                    capture_begin(ts, pad, buffer);
+                }
+                fn pad_push_list_pre(&self, _: u64, _: &gst::Pad, _: &gst::BufferList) {
+                    #[cfg(feature = "profiles")]
+                    crate::profiles::register_thread();
+                }
+                fn element_new(&self, ts: u64, element: &gst::Element) {
+                    gst_mars_metrics_core::MetricsTracerImp.element_new(ts, element, 0);
+                }
+                fn element_change_state_pre(
+                    &self,
+                    _: u64,
+                    _: &gst::Element,
+                    change: gst::StateChange,
+                ) {
+                    if change == gst::StateChange::ReadyToPaused {
+                        invalidate_metrics();
                     }
                 }
                 fn pad_push_post(
@@ -213,25 +359,31 @@ macro_rules! tracer_impl {
                     sink: &gst::Pad,
                     _: Result<gst::PadLinkSuccess, gst::PadLinkError>,
                 ) {
+                    invalidate_metrics();
                     metadata::invalidate(src);
                     metadata::invalidate(sink);
                 }
                 fn pad_unlink_post(&self, _: u64, src: &gst::Pad, sink: &gst::Pad, _: bool) {
+                    invalidate_metrics();
                     metadata::invalidate(src);
                     metadata::invalidate(sink);
                 }
                 fn element_add_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+                    invalidate_metrics();
                     metadata::invalidate(element);
                     metadata::invalidate(pad);
                 }
                 fn element_remove_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
+                    invalidate_metrics();
                     metadata::invalidate(element);
                     metadata::invalidate(pad);
                 }
                 fn bin_add_post(&self, _: u64, _: &gst::Bin, element: &gst::Element, _: bool) {
+                    invalidate_metrics();
                     metadata::invalidate(element);
                 }
                 fn bin_remove_post(&self, _: u64, bin: &gst::Bin, _: bool) {
+                    invalidate_metrics();
                     // Old weak subscriptions also cover the subtree just removed.
                     metadata::invalidate(bin);
                 }

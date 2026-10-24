@@ -207,7 +207,7 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Receiver)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_'))}
+    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_', 'MARS_'))}
     endpoint = f'http://127.0.0.1:{server.server_port}'
     results = []
     tracer_names = {}

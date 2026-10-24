@@ -47,8 +47,9 @@ cargo clippy --workspace --all-features -- -D warnings
 cargo test
 cargo test -p gst-otel-tracer
 cargo test -p gst-otel-tracer --features profiles
+cargo test -p gst-mars-metrics-core
 cargo audit
-cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets --all-features
+cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer -p gst-mars-metrics-core --all-targets --all-features
 ```
 
 `cargo test` alone covers the default Prometheus member. The explicit OTel
@@ -97,8 +98,9 @@ built from `gst-noop-tracer`. It is not a telemetry collector.
 
 - Reduce OTel capture overhead on stock GStreamer; see the
   [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
-- Extend combined capture to pull mode and buffer lists, and bring over the
-  remaining Prometheus diagnostics.
+- Extend trace spans and exemplars to pull mode and buffer lists. Explicit
+  metrics collection already covers these operations through the shared core.
+- Measure full-metrics signal configurations alongside the compatibility presets.
 - Complete production soak testing and broader platform validation.
 
 Whole-bin elapsed latency across queues and parallel branches is out of scope:

@@ -262,6 +262,7 @@ pub(crate) struct Runtime {
     pub config: Config,
     pub stats: Arc<Counters>,
     pub metrics: Option<crate::metrics::Metrics>,
+    pub shared_metrics: Option<crate::shared_metrics::Metrics>,
     sender: Sender<Message>,
     accepting: AtomicBool,
     submissions: [SubmissionCount; SHARDS],
@@ -310,6 +311,7 @@ impl Runtime {
             config,
             stats,
             metrics: None,
+            shared_metrics: None,
             sender,
             accepting: AtomicBool::new(true),
             submissions: std::array::from_fn(|_| SubmissionCount::default()),
@@ -328,6 +330,21 @@ impl Runtime {
             hook_ts: ts,
             wall: SystemTime::now(),
         });
+    }
+
+    pub fn timestamp(&self, ts: u64) -> u64 {
+        self.anchor(ts);
+        self.anchor.get().unwrap().nanos(ts)
+    }
+
+    pub fn metric_stats(&self) -> crate::metrics::MetricStats {
+        if let Some(metrics) = &self.shared_metrics {
+            metrics.stats()
+        } else {
+            self.metrics
+                .as_ref()
+                .map_or_else(Default::default, |m| m.stats())
+        }
     }
 
     pub fn submit(&self, record: Record) -> bool {
@@ -398,7 +415,11 @@ impl Runtime {
             .metrics
             .as_ref()
             .map_or(Ok(()), |m| m.flush(timeout.saturating_sub(start.elapsed())));
-        traces.and_then(|stats| metrics.map(|()| stats))
+        let shared = self
+            .shared_metrics
+            .as_ref()
+            .map_or(Ok(()), |m| m.flush(timeout.saturating_sub(start.elapsed())));
+        traces.and_then(|stats| metrics.and(shared).map(|()| stats))
     }
 
     pub fn shutdown(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
@@ -406,11 +427,17 @@ impl Runtime {
         if let Some(metrics) = &self.metrics {
             metrics.request_stop();
         }
+        if let Some(metrics) = &self.shared_metrics {
+            metrics.request_stop();
+        }
         let traces = self.shutdown_traces(timeout);
         let metrics = self.metrics.as_ref().map_or(Ok(()), |m| {
             m.shutdown(timeout.saturating_sub(start.elapsed()))
         });
-        traces.and_then(|stats| metrics.map(|()| stats))
+        let shared = self.shared_metrics.as_ref().map_or(Ok(()), |m| {
+            m.shutdown(timeout.saturating_sub(start.elapsed()))
+        });
+        traces.and_then(|stats| metrics.and(shared).map(|()| stats))
     }
 
     fn shutdown_traces(&self, timeout: Duration) -> Result<ExportStats, FlushError> {

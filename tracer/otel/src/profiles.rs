@@ -21,6 +21,11 @@ use std::time::Duration;
 
 use crate::{capture::Token, export::FlushError};
 
+pub(crate) fn setting(suffix: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(format!("MARS_PROFILE_{suffix}"))
+        .or_else(|| std::env::var_os(format!("GST_OTEL_PROFILE_{suffix}")))
+}
+
 /// Sampling counters. `reported_samples` means handed to the Pyroscope SDK,
 /// whose uploader does not expose delivery acknowledgements through Backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,7 +69,7 @@ mod arch;
 mod platform {
     use super::*;
     pub fn initialize(_: &opentelemetry_sdk::Resource, required: bool) -> Result<(), String> {
-        if required || std::env::var_os("GST_OTEL_PROFILE_URL").is_some() {
+        if required || setting("URL").is_some() {
             Err("requires the profiles Cargo feature on Linux x86-64 or AArch64".into())
         } else {
             Ok(())
@@ -1202,8 +1207,7 @@ mod linux {
         resource: &opentelemetry_sdk::Resource,
         required: bool,
     ) -> Result<(), String> {
-        let Some(url) = std::env::var_os("GST_OTEL_PROFILE_URL")
-            .or_else(|| required.then(|| "http://localhost:4040".into()))
+        let Some(url) = setting("URL").or_else(|| required.then(|| "http://localhost:4040".into()))
         else {
             return Ok(());
         };
@@ -1214,16 +1218,19 @@ mod linux {
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
             return Err("GST_OTEL_PROFILE_URL must be an HTTP(S) URL".into());
         }
-        let rate = std::env::var("GST_OTEL_PROFILE_HZ")
-            .unwrap_or_else(|_| "100".into())
+        let rate = setting("HZ")
+            .map(|v| v.into_string().map_err(|_| "profile HZ is not UTF-8"))
+            .transpose()?
+            .unwrap_or_else(|| "100".into())
             .parse::<u32>()
             .map_err(|_| "GST_OTEL_PROFILE_HZ must be 1..=1000")?;
         if !(1..=1000).contains(&rate) {
             return Err("GST_OTEL_PROFILE_HZ must be 1..=1000".into());
         }
         crate::profilecontext::configure()?;
-        let signal = std::env::var("GST_OTEL_PROFILE_SIGNAL")
-            .ok()
+        let signal = setting("SIGNAL")
+            .map(|v| v.into_string().map_err(|_| "profile SIGNAL is not UTF-8"))
+            .transpose()?
             .map(|s| s.parse::<i32>())
             .transpose()
             .map_err(|_| "invalid GST_OTEL_PROFILE_SIGNAL")?

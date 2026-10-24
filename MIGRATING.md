@@ -20,9 +20,29 @@ For retained packages, Cargo package names and shared-library filenames are
 unchanged. For example, build `gst-otel-tracer` and set
 `GST_TRACERS=mars-instrument`.
 
-Configuration variables keep their existing names: `GST_INSTRUMENT_*`,
+Existing configuration variables remain supported: `GST_INSTRUMENT_*`,
 `GST_PROM_LATENCY_*`, `GST_OTEL_*`, and `OTEL_*`. Metric names and the Pyroscope
 protocol attribute `pyroscope.profile.id` are also unchanged.
+
+## Explicit signals and selectable metrics export
+
+New configurations can use
+`GST_TRACERS='mars-instrument(signals="metrics,traces,profiles")'`, or set
+`MARS_SIGNALS` with plain `GST_TRACERS=mars-instrument`. The signal list controls
+collection; endpoint variables do not enable additional signals.
+
+This selects the full shared metrics collector with either OTLP (default) or
+`metrics-exporter="prometheus"`. It includes push/list/pull timing, queue pressure,
+and optional I/O and PTS-age diagnostics. Migrate dashboards from the old four
+`gst.pad.push.*` histograms to the `gst_element_*` families and callee labels in
+the [current guide](tracer/otel/INSTRUMENT.md). Sampling now applies to all timing
+histograms; wall counters still measure every selected call. The old 1024-group
+cap and CPU-only sampling setting apply only to the compatibility collector.
+
+No-parameter `mars-instrument` with no `MARS_SIGNALS`, `mars-metrics`,
+`mars-profiles`, and `mars-otel` preserve their existing behavior. The latter is
+now presented as a compatibility tracing preset. New `MARS_METRIC_*` and
+`MARS_PROFILE_*` variables take precedence over their documented legacy aliases.
 
 ## Standalone profiler replacement
 

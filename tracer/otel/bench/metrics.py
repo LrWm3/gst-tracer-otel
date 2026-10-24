@@ -169,7 +169,7 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Receiver)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_'))}
+    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_', 'MARS_'))}
     base.update(GST_PLUGIN_PATH=str(args.plugin_dir.resolve()), GST_DEBUG='0',
                 GST_REGISTRY=str(workdir / 'registry.bin'),
                 OTEL_EXPORTER_OTLP_ENDPOINT=f'http://127.0.0.1:{server.server_port}',

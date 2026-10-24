@@ -27,6 +27,9 @@ mod profiles;
 #[cfg(feature = "profiles")]
 mod profiletracer;
 mod propagation;
+mod settings;
+mod shared_metrics;
+mod shared_metrics_wire;
 mod tracer;
 mod transport;
 mod wire;
@@ -68,10 +71,7 @@ pub fn stats() -> Result<ExportStats, FlushError> {
 
 /// Metrics accounting, or zero counters when metrics are disabled.
 pub fn metric_stats() -> Result<MetricStats, FlushError> {
-    Ok(tracer::runtime()?
-        .metrics
-        .as_ref()
-        .map_or_else(MetricStats::default, |m| m.stats()))
+    Ok(tracer::runtime()?.metric_stats())
 }
 
 // ───────────────── plugin boilerplate ──────────────────

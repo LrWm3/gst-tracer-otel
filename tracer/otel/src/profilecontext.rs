@@ -25,9 +25,12 @@ struct Descriptions {
 static DESCRIPTIONS: LazyLock<Mutex<Descriptions>> = LazyLock::new(Default::default);
 
 pub(crate) fn configure() -> Result<(), String> {
-    let enabled = match std::env::var("GST_OTEL_PROFILE_ELEMENTS").as_deref() {
-        Err(_) | Ok("true" | "1") => true,
-        Ok("false" | "0") => false,
+    let setting = crate::profiles::setting("ELEMENTS")
+        .map(|v| v.into_string().map_err(|_| "profile ELEMENTS is not UTF-8"))
+        .transpose()?;
+    let enabled = match setting.as_deref() {
+        None | Some("true" | "1") => true,
+        Some("false" | "0") => false,
         _ => return Err("GST_OTEL_PROFILE_ELEMENTS must be true or false".into()),
     };
     ENABLED.store(enabled, Relaxed);

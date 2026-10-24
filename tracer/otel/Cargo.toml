@@ -10,6 +10,8 @@ crate-type  = ["cdylib", "rlib"]
 [dependencies]
 glib.workspace=true
 gstreamer.workspace=true
+gst-mars-metrics-core = { path = "../metrics-core" }
+tiny_http = "0.12"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "reqwest-rustls", "logs"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "logs"] }
@@ -29,7 +31,6 @@ object = { version = "0.40", default-features = false, features = ["read", "std"
 libflate = { version = "2", optional = true }
 [dev-dependencies]
 futures-executor = "0.3"
-tiny_http = "0.12"
 
 [features]
 noop = []

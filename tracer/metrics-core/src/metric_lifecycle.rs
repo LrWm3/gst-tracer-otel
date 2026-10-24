@@ -78,8 +78,10 @@ pub fn with_series<T>(
     create: impl FnOnce() -> T,
 ) -> T {
     MAINTENANCE.get_or_init(|| {
-        std::thread::spawn(|| loop {
-            std::thread::sleep(Duration::from_secs(1));
+        crate::background::spawn(|| loop {
+            if crate::background::wait(Duration::from_secs(1)) {
+                break;
+            }
             prune();
         });
     });

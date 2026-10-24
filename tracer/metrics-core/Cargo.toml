@@ -1,0 +1,11 @@
+[package]
+name = "gst-mars-metrics-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glib.workspace = true
+gstreamer.workspace = true
+libc = "0.2"
+prometheus = "0.14.0"
+tiny_http = "0.12.0"

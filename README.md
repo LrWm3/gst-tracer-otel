@@ -10,13 +10,22 @@ code.
 | --- | --- | --- | --- |
 | Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% expected on video workloads |
 | Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% |
-| Investigate with correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | OpenTelemetry collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
+| Investigate with correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | Prometheus / OTLP collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
 
 Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
 
 Use **mars-profiles** to find CPU hotspots, or **mars-instrument** to connect a
 measurement to a trace and its CPU samples. `mars-otel` remains available as a
 compatibility entry point for existing trace configurations.
+
+With `mars-instrument`, select just what you need:
+
+```sh
+GST_TRACERS='mars-instrument(signals="metrics,traces,profiles")'
+```
+
+Metrics can go to Prometheus or an OTLP collector. The
+[instrumentation guide](tracer/otel/INSTRUMENT.md) has complete launch commands.
 
 For a list of available metrics, see the [prometheus plugin README.md](https://github.com/LrWm3/gst-tracer-otel/blob/main/tracer/prometheus/README.md#metric-semantics).
 
@@ -30,6 +39,8 @@ variation; these are not limits or FPS-loss estimates. `mars-instrument` added
 about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
 [profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
 The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
+These measurements cover the existing defaults; the new explicit full-metrics
+configurations have not yet been benchmarked.
 These x86-64 figures predate element-attributed profiles; see the
 [attribution review](reports/otel/PROFILE_ELEMENT_REVIEW.md) for its additional
 cost and screenshots.
@@ -100,6 +111,8 @@ they share one configuration. Profiling requires Linux x86-64 or arm64, the
 For clickable trace-to-profile links, follow the
 [Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source
 configuration and a local demo that checks real traces and profiles through Grafana.
+The demo also stores metric exemplars: follow a slow measurement to its trace,
+then open the span's CPU profile to see which element and native functions ran.
 
 ## Know what you are measuring
 
@@ -109,7 +122,8 @@ configuration and a local demo that checks real traces and profiles through Graf
   If you see elements you do not recognize from your pipeline, it is possible it is from
   a bin element.
 - **No async support.** `mars-metrics` supports push, pull, and buffer
-  lists; combined instrumentation currently covers ordinary pushes. Regular
+  lists, as does explicit `signals="metrics"` collection in `mars-instrument`.
+  Trace spans and metric exemplars currently cover ordinary pushes. Regular
   `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
   asynchronous boundaries are not handled correctly by the element timings.
   If this is important to you, please open an issue and it can be explored.

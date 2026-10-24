@@ -93,7 +93,7 @@ class Receiver(http.server.BaseHTTPRequestHandler):
 server = http.server.HTTPServer(('127.0.0.1', 0), Receiver)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 base = {key: value for key, value in os.environ.items()
-        if not key.startswith(('GST_', 'OTEL_'))}
+        if not key.startswith(('GST_', 'OTEL_', 'MARS_'))}
 base.update(GST_DEBUG='0',
             GST_PYROSCOPE_SERVER_URL='http://127.0.0.1:9',
             OTEL_EXPORTER_OTLP_ENDPOINT=f'http://127.0.0.1:{server.server_port}',

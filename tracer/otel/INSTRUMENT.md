@@ -1,198 +1,158 @@
-# mars-instrument: correlated push telemetry
+# Correlated telemetry with mars-instrument
 
-`mars-instrument` is the entry point for collecting correlated telemetry. It
-uses one set of push hooks, one nested call stack, and cached pad descriptions
-for OTLP metrics and traces, optional correlated GStreamer logs, and optional
-Pyroscope CPU profiles. `mars-otel` remains a compatibility entry point with
-its existing tracing defaults. For traces alone, set `GST_INSTRUMENT_METRICS=false`.
-For CPU profiles alone, use the [mars-profiles entry point](PROFILES.md) in the
-same plugin, built with `--features profiles`.
-
-This first version covers ordinary `gst_pad_push` calls, including nested
-pushes and propagation across queues. It does not replace the full
-`mars-metrics` feature set: pull mode, buffer lists, queue pressure, per-pad I/O
-counts, and PTS-age diagnostics remain in that plugin. The existing
-[trace propagation boundaries](README.md#correlation-boundaries) still apply.
-
-## Run
+Use `mars-instrument` to connect a slow measurement to its trace, CPU profile,
+and GStreamer logs. Choose the signals you need, then choose a metrics exporter.
 
 ```sh
-cargo build --release -p gst-otel-tracer
-export GST_PLUGIN_PATH="$PWD/target/release"
-export GST_TRACERS=mars-instrument
-export OTEL_SERVICE_NAME=gstreamer-pipeline
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-gst-launch-1.0 videotestsrc num-buffers=300 ! videoconvert ! fakesink
+cargo build --release -p gst-otel-tracer --features profiles
+
+GST_PLUGIN_PATH="$PWD/target/release" \
+GST_TRACERS='mars-instrument(signals="metrics,traces,profiles")' \
+OTEL_SERVICE_NAME=video-pipeline \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
+MARS_PROFILE_URL=http://localhost:4040 \
+  gst-launch-1.0 videotestsrc num-buffers=300 ! videoconvert ! fakesink
 ```
 
-Enable the collector's OTLP/HTTP metrics and traces pipelines. Metrics default
-to `/v1/metrics` and traces to `/v1/traces`. Each signal honors its
-`OTEL_EXPORTER_OTLP_{METRICS,TRACES}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,
-with fallback to the corresponding generic OTLP setting. Signal-specific
-endpoints are used literally. Timeout values are milliseconds; only
-`http/protobuf` without compression is supported. Metrics reuse the existing
-HTTP adapters selected by `GST_OTEL_HTTP_CLIENT=blocking|async`.
+The OTLP endpoint needs metrics and traces receivers; Pyroscope receives profiles.
+For good native stacks, use frame pointers and debug symbols as described in the
+[profiling guide](PROFILES.md). Profiles require Linux x86-64 or arm64, GStreamer
+1.22 or newer, and the `profiles` build feature. Other signals do not.
 
-For CPU profiles, build with `--features profiles` and set
-`GST_OTEL_PROFILE_URL=http://localhost:4040`. Use frame pointers and debug
-symbols for better stack resolution; see the existing
-[profile instructions](README.md#experimental-correlated-cpu-profiles).
-Profiling supports Linux x86-64 and arm64. To include GStreamer logs, set
-`GST_INSTRUMENT_LOGS=true` and select the desired categories with `GST_DEBUG`.
-The standard GStreamer log handler remains enabled.
+## Pick signals and destinations
 
-Profiles also [group CPU by element instance or task owner](PROFILES.md#finding-the-element-that-used-cpu),
-independently of trace and metric sampling. This requires GStreamer 1.22 or newer;
-set `GST_OTEL_PROFILE_ELEMENTS=false` to disable the grouping.
-
-## Signal controls
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `GST_INSTRUMENT_METRICS` | `true` | Collect and export push histograms |
-| `GST_INSTRUMENT_TRACES` | `true` | Capture, propagate, and export trace spans |
-| `GST_INSTRUMENT_LOGS` | Existing `GST_OTEL_LOGS`, otherwise `false` | Enable the GStreamer log bridge |
-| `GST_INSTRUMENT_PROFILES` | `true` | Allow the optional profiler; still requires its feature, platform, and URL |
-| `GST_INSTRUMENT_METRIC_INTERVAL_MS` | `10000` | Export interval, 1–60000 ms |
-| `GST_INSTRUMENT_METRIC_MAX_SERIES` | `1024` | Maximum distinct pad-description groups, 1–16384; each has four histograms |
-| `GST_INSTRUMENT_CPU_SAMPLE_RATE` | `16` | Independently sample approximately one in N calls for CPU/blocked histograms; 1–1048576 |
-
-Boolean settings accept `true`, `false`, `1`, and `0`. Existing `GST_OTEL_*`
-trace queue/batch/flush controls and `OTEL_TRACES_SAMPLER*` settings still apply.
-All signals use the same resource, including `OTEL_SERVICE_NAME` and
-`OTEL_RESOURCE_ATTRIBUTES`. The first telemetry tracer instance selects the
-process-wide configuration. Additional `mars-otel` or `mars-instrument`
-instances warn and do not register duplicate hooks. Select one entry point.
-
-Metrics-only operation (`GST_INSTRUMENT_TRACES=false`, profiles and logs off)
-does not generate trace IDs, attach buffer context, or construct a trace HTTP
-client. Setting a trace sampler to zero instead preserves the trace propagation
-path and parent-based sampling semantics. Neither setting suppresses metrics.
-
-## Measurements and correlation
-
-All four metrics are cumulative OTLP histograms in seconds, with explicit
-buckets from 1 microsecond to 10 seconds plus an overflow bucket:
-
-| Metric | Population and measurement |
+| Task | `GST_TRACERS` |
 | --- | --- |
-| `gst.pad.push.wall` | Every supported push, including nested downstream calls |
-| `gst.pad.push.exclusive.wall` | Every supported push, subtracting all direct nested push durations |
-| `gst.pad.push.exclusive.cpu` | Independently sampled calls, exclusive thread CPU time |
-| `gst.pad.push.exclusive.blocked` | The same sampled calls, exclusive wall minus CPU, clamped to zero |
+| Prometheus metrics | `mars-instrument(signals="metrics",metrics-exporter="prometheus",metrics-port=9188)` |
+| OTLP metrics | `mars-instrument(signals="metrics")` |
+| Traces | `mars-instrument(signals="traces")` |
+| CPU profiles | `mars-instrument(signals="profiles")` |
+| Metrics, traces and profiles | `mars-instrument(signals="metrics,traces,profiles")` |
+| Include GStreamer logs too | `mars-instrument(signals="metrics,traces,profiles,logs")` |
 
-CPU clocks are read for sampled calls and their direct children only. CPU clock
-failures omit the CPU/blocked observations. Their counts and sums describe the
-sampled population; they are not total process CPU or total blocked time. Wall
-histogram counts and sums cover all admitted, balanced calls regardless of trace
-sampling or trace queue losses. Sleeping, scheduling delay, and downstream
-backpressure can all contribute to the blocked estimate. These measurements do
-not measure queue residence, GPU completion, or end-to-end buffer latency.
+Metrics default to OTLP. With `metrics-exporter="prometheus"`, scrape
+`http://localhost:9188/metrics`; the server listens on all interfaces. Both
+exporters use the **same full collector** as `mars-metrics`: synchronous push,
+buffer-list and pull timing, queue pressure, and optional I/O and PTS-age metrics.
+Changing the exporter does not change measurement or sampling semantics.
 
-Each group uses the same six `src_pad.*` / `sink_pad.*` descriptions as traces.
-A source pad push invokes downstream work: the source label names the call
-site, not the element that performed all its work. This avoids claiming that
-inclusive push duration is exclusive source-element processing time. Traces
-retain their inclusive durations; metric timing excludes its own outer capture
-and export bookkeeping, although nested instrumentation still adds noise.
+Instead of tracer parameters, set `GST_TRACERS=mars-instrument` and
+`MARS_SIGNALS=metrics,traces,profiles`. Parameters take precedence over their
+environment equivalents. An explicit signal list is exhaustive: a configured
+profile or log endpoint does not enable that signal. Unselected signals do not
+create their collectors or exporters, and their settings are not validated.
+Duplicate or unknown signals and unknown tracer parameters produce an error in
+`GST_DEBUG=mars-otel:3` and leave the tracer disabled.
 
-Each histogram keeps at most one recent sampled exemplar, following the
-[OTLP exemplar data model](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exemplars).
-The exemplar copies the completed call's trace and span IDs, timestamp, and
-measured value. Its value participates in that histogram. IDs are never metric
-series attributes. Calls whose spans were rejected by the local trace queue
-cannot replace the exemplar; they still update histogram counts and sums.
-Exemplar contention skips only the exemplar, and exported snapshots consume it.
-A failed export may therefore lose that interval's exemplar while retaining
-cumulative measurements for the next attempt.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `MARS_SIGNALS` | Unset: compatibility behavior | Comma-separated `metrics,traces,profiles,logs` |
+| `MARS_METRICS_EXPORTER` | `otlp` | `otlp` or `prometheus`; parameter `metrics-exporter` |
+| `MARS_METRICS_PORT` | `9188` | Prometheus listen port; parameter `metrics-port` |
+| `MARS_METRIC_INTERVAL_MS` | `10000` | OTLP metrics export interval, 1–60000 ms |
+| `MARS_METRIC_SAMPLE_RATE` | `16` | Approximately one in N calls enters timing histograms |
+| `MARS_METRIC_INCLUDE` | `*` | Comma-separated element-name glob filters |
+| `MARS_METRIC_QUEUE_INTERVAL_MS` | `100` | Queue sampling period |
+| `MARS_METRIC_IO_COUNTS` | `false` | Per-pad buffer input/output counters |
+| `MARS_METRIC_PTS_AGE` | `false` | Sample buffer age relative to running time |
+| `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
+| `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
+| `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
+| `MARS_PROFILE_SIGNAL` | `SIGRTMIN+6` | Reserved realtime sampling signal |
 
-The navigation chain is:
+`MARS_METRIC_*` collector controls also work with `mars-metrics`. Their original
+`GST_PROM_LATENCY_*` names remain fallbacks (including
+`GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE` and
+`GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS`). Profile controls fall back to
+`GST_OTEL_PROFILE_*`. The new namespace takes precedence.
 
-1. A metric histogram exemplar identifies a trace and span.
-2. That span can contain `pyroscope.profile.id`, equal to its span ID.
-3. CPU profile samples carry the corresponding `span_id` and `trace_id` labels.
-4. GStreamer logs emitted inside the active push carry native trace/span fields.
+Traces and OTLP metrics retain the standard
+`OTEL_EXPORTER_OTLP_{TRACES,METRICS}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,
+with fallback to generic OTLP settings. Signal-specific endpoint URLs are used
+literally. Use `http/protobuf` without compression. Profiles and OTLP signals
+share `OTEL_SERVICE_NAME`; other OTLP resource fields come from
+`OTEL_RESOURCE_ATTRIBUTES`. Trace sampling and queue controls are described in
+the [trace guide](README.md#configuration).
 
-Configure your metrics backend and Grafana data sources to retain exemplars and
-link their trace-ID label to Tempo, then configure the Tempo-to-Pyroscope link.
-The [Grafana correlation guide](CORRELATION.md) includes concrete provisioning,
-a local trace/profile demo, and the separate setup needed for metrics and logs.
-Backend rejection, trace retention, and short spans with no CPU samples can
-still leave missing counterparts. No exporter can guarantee that every
-exemplar's trace/profile has reached durable storage. The integration tests
-validate the actual OTLP/log/pprof identifiers; Grafana UI navigation has not
-been exercised for this entry point.
+For logs, also select useful `GST_DEBUG` categories. The log bridge preserves
+GStreamer's normal log handler. Profile collection is independent of trace
+sampling; unsampled work still appears in profiles without trace IDs.
 
-## Bounds, lifecycle, and diagnostics
+## Follow a measurement
 
-Streaming threads update cached atomic aggregates. There is no per-event metric
-queue, protobuf allocation, symbolization, or network operation on that path.
-Only cold descriptor registration takes the registry lock. Exemplar updates use
-`try_lock`; a worker never holds registry/exemplar locks across HTTP or GObject
-calls. The profiler's signal handler never accesses this module or its locks.
+1. A histogram exemplar carries the trace and span IDs of an observed push.
+2. Tempo shows the inclusive push call and its downstream spans.
+3. **Profiles for this span** shows CPU samples taken during that span, grouped
+   by element instance. Logs emitted inside the push carry the same IDs.
 
-Series groups are capped, label values are bounded to 256 Unicode characters,
-and export requests contain at most 32 groups. Truncation can merge descriptions
-that become identical. The cap counts retained groups as well as active ones.
-Excess groups increment `dropped_capacity`; their cached rejection avoids
-repeated registration work until retirement frees capacity. An unused group is released after its final successful snapshot once
-no cached descriptor or in-flight call owns it. Failed sends retain cumulative
-aggregates within the same cap, and the next interval retries their snapshot.
-There is one metrics worker, one in-flight request, and one queued control
-command. HTTP response reads are capped at 4 MiB, including partial-success
-responses; rejected metric points increment failure accounting.
+Follow the [Grafana setup and runnable demo](CORRELATION.md) to configure these
+links. Backend addresses alone do not configure Grafana navigation.
 
-Snapshots are concurrent, not atomic transactions across counters. Histogram
-counts are computed from the exported buckets; sums can reflect a slightly
-different instant while producers run. Counts and sums are exact after producers
-stop. Retired/recreated series start a new cumulative interval.
+Full metrics use the names and labels in the
+[metrics reference](../prometheus/README.md#metric-semantics). For example,
+`gst_element_sync_wall_seconds` measures exclusive synchronous time, with
+`element`, `src_pad`, `sink_pad`, and `path` labels. Push labels describe the
+callee. Histograms are sampled; the legacy wall-time counters cover every
+measured call. Queue residence, GPU completion and end-to-end latency are
+different measurements.
 
-`stats()` and the GObject `stats` property retain trace accounting.
-`metric_stats()` and the `metric-stats` property expose `recorded_pushes`,
-`dropped_capacity`, `dropped_invalid`, `skipped_closed`, `skipped_exemplars`,
-`exported_batches`, `failed_exports`, and `active_series`. Unsupported hook
-families are outside these counters. `profile_stats()` retains profiler
-accounting. Logs still use the SDK's separate batch queue and diagnostics.
+OTLP cumulative histograms preserve the same buckets, counts, sums and labels.
+Prometheus export uses OpenMetrics 1.0 so it can carry exemplars. Counter sample
+names use the standard `_total` suffix, as does normal OTLP-to-Prometheus
+translation: for example, the legacy `gst_element_latency_count_count` becomes
+`gst_element_latency_count_count_total`. `mars-metrics` keeps its existing text
+format and names. No trace or span IDs are added to metric-series labels.
 
-Pipeline READY→NULL drains traces and metrics within `GST_OTEL_FLUSH_TIMEOUT_MS`.
-The optional log bridge subsequently uses its existing SDK flush timeout.
-Rust `flush(timeout)` drains traces and metrics under one caller deadline;
-`shutdown(timeout)` additionally closes capture and stops profiles and logs.
-Stop streaming before the final drain. Metrics shutdown is signaled before
-waiting for the trace worker, so a stalled trace backend cannot prevent metric
-cleanup from starting. Timed-out workers may finish in the background. Process
-shutdown is permanent; a bare process exit can lose pending telemetry.
+Only ordinary pushes currently produce trace spans and metric exemplars.
+Buffer lists and pulls still produce full metrics and element-attributed
+profiles, but do not acquire fabricated trace links. A locally rejected trace
+cannot replace an exemplar. Later export failure or backend retention can still
+leave a missing trace, and short spans may have no CPU samples.
 
-## Validation and performance
+## Lifecycle and resource use
 
-For approximate overhead on a video pipeline, see the
-[1080p video comparison](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md). It
-measures the default metrics/traces configuration and profiles/logs enabled,
-against no tracer and `mars-otel` using the same binary and export settings.
-The report includes whole-process CPU cycles, peak RSS, and checks of delivered
-histograms, exemplars, traces, logs, and CPU samples.
+Collection updates cached aggregates. Encoding and network I/O happen on a
+worker. Exemplars use a nonblocking update and retain one recent sample per
+histogram. The profiler's signal handler never touches metric locks.
 
-Tests decode real HTTP requests from subprocesses and cover zero/partial trace
-sampling, metrics-only and traces-only operation, duplicate tracer instances,
-queue boundaries, controlled downstream sleeps, trace queue overflow, metric
-partial rejection, stalled collectors, bounded shutdown, topology refresh, and
-series limits, and both HTTP adapters. Feature-enabled tests connect exemplars to actual exported spans,
-logs, and CPU samples. Unit tests cover sequential child subtraction, CPU clock
-failure propagation, cumulative retry, concurrent producers, and safe series
-retirement when a descriptor is reused during an export.
+Full-metrics cardinality follows live pipeline objects, as in `mars-metrics`;
+it does not use the old four-histogram collector's 1024-group cap. Destroyed or
+renamed objects retire their series. Flush **before dropping the pipeline** if
+you need its final cumulative totals. Failed deliveries retry the next snapshot
+without a growing event queue; totals for retired series are not retained for
+later delivery. Snapshots become exact after streaming stops.
 
-Run the reproducible comparison after building the release plugin:
+READY→NULL flushes traces and OTLP metrics within `GST_OTEL_FLUSH_TIMEOUT_MS`
+(default 10000). Rust `flush(timeout)` and `shutdown(timeout)` share their deadline
+across exporters; shutdown also stops queue sampling and maintenance. Stop
+streaming first. A timed-out worker can finish in the background. Prometheus
+flush does not cause an external scrape; scrape before shutdown. Restarting the
+process is required to restart telemetry after shutdown.
 
-```sh
-python3 tracer/otel/bench/instrument.py --repeats 5 --buffers 10000
-```
+`stats()` reports trace accounting and `profile_stats()` reports sampler
+accounting. For full metrics, `metric_stats()` reports completed measured push
+and buffer-list calls, successful deliveries/scrapes, failed deliveries, and the
+number of series in the latest snapshot. The old capacity/invalid/exemplar-drop
+fields apply only to the compatibility collector and remain zero in this mode.
 
-It compares no tracer, `mars-otel`, metrics-only, combined metrics/traces, and
-combined capture with traces unsampled. Profiles and logs are disabled for this
-comparison. It decodes exports and checks every expected trace and metric count.
-See [measured results](../../reports/otel/INSTRUMENT_RESULTS.md).
+## Existing configurations and measured cost
 
-A separate [metrics-only comparison](../../reports/prometheus/METRICS_RESULTS.md) measures
-`GST_INSTRUMENT_TRACES=false` against `mars-metrics` and no tracer, including
-HTTP delivery, CPU cost per push, and peak memory on longer runs.
+The simpler `mars-metrics` and `mars-profiles` entry points remain available.
+`mars-otel` is a compatibility tracing preset. Choose one telemetry entry point
+per process; adding another does not change the first one's selected signals.
+Do not combine `mars-metrics` with full metrics in `mars-instrument`, which would
+measure the same work twice.
+
+Plain `GST_TRACERS=mars-instrument` without `MARS_SIGNALS` retains its previous
+four OTLP push histograms, defaults, limits and `GST_INSTRUMENT_*` switches.
+See [compatibility configuration](LEGACY_INSTRUMENT.md). Opt into the full
+collector with an explicit signal list, and update dashboards to its metric
+names and labels. The old histogram limits and CPU-only sample setting do not
+configure the full collector.
+
+Existing [video overhead measurements](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md)
+cover those compatibility defaults. Full-metrics signal configurations have not
+yet been benchmarked; their costs should be measured on the target workload.
+Tests exercise both exporters, actual list/pull/queue measurements, trace links,
+disabled settings, collector rejection, and bounded shutdown. Feature-enabled
+tests also match exemplars to real uploaded CPU samples and log records.

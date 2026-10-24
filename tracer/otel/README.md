@@ -1,7 +1,7 @@
 # Trace collection for GStreamer
 
 Use `mars-instrument` for new configurations. To collect traces without metrics,
-set `GST_INSTRUMENT_METRICS=false`; logs and CPU profiles remain optional. The
+set `GST_TRACERS='mars-instrument(signals="traces")'`. The
 [instrumentation guide](INSTRUMENT.md) covers collecting multiple signals.
 
 `mars-otel` is the compatibility entry point for existing tracing configurations.
@@ -15,10 +15,9 @@ Pyroscope delivery backend. It also registers `mars-profiles`, a
 [profiles-only entry point](PROFILES.md) using that same sampler.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
-`mars-instrument` is an additional entry point in the same plugin, with shared
-push capture for metrics, trace exemplars, traces, logs, and CPU profiles.
-Set `GST_TRACERS=mars-instrument` to enable metrics and traces together; logs and
-CPU profiles remain opt-in. See
+`mars-instrument` selects metrics, traces, logs and profiles independently, with
+full metrics over Prometheus or OTLP. Plain `GST_TRACERS=mars-instrument`
+preserves its original metrics/traces preset. See
 [setup, measurements, bounds, and current coverage](INSTRUMENT.md).
 
 ## Run

@@ -82,9 +82,9 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
         }
     });
     let mut command = Command::new(std::env::current_exe().unwrap());
-    for (key, _) in
-        std::env::vars().filter(|(key, _)| key.starts_with("GST_") || key.starts_with("OTEL_"))
-    {
+    for (key, _) in std::env::vars().filter(|(key, _)| {
+        key.starts_with("GST_") || key.starts_with("OTEL_") || key.starts_with("MARS_")
+    }) {
         command.env_remove(key);
     }
     let output = command

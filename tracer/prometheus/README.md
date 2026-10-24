@@ -3,6 +3,13 @@
 This folder contains `mars-metrics`, a GStreamer tracer plugin that exports
 synchronous push/pull cost, queue pressure, and optional I/O counts in Prometheus format.
 
+The same full collector is available through
+[`mars-instrument(signals="metrics")`](../otel/INSTRUMENT.md), with either
+Prometheus or OTLP export and optional correlated traces and profiles.
+`mars-metrics` keeps its existing launch syntax, text format and metric names.
+New `MARS_METRIC_*` collector settings are aliases for the controls documented
+below; see the unified guide for their names and precedence.
+
 The synchronous metrics time `gst_pad_push()` from an upstream source pad until
 the downstream call returns. Direct child pushes are subtracted, including
 multiple sequential tee branches. This is useful for separating CPU work from

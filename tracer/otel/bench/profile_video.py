@@ -218,7 +218,7 @@ def main():
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     endpoint = f'http://127.0.0.1:{server.server_port}'
-    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_'))}
+    base = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_', 'MARS_'))}
     base.update(GST_PLUGIN_PATH='', GST_TRACERS='', GST_DEBUG_NO_COLOR='1',
                 GST_REGISTRY=str(work / 'registry.bin'), OTEL_SERVICE_NAME='gst-profile-bench',
                 OTEL_EXPORTER_OTLP_ENDPOINT=endpoint, OTEL_EXPORTER_OTLP_PROTOCOL='http/protobuf',

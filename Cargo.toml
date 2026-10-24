@@ -4,6 +4,7 @@ members = [
     "tracer/otel",
     "tracer/noop",
     "tracer/prometheus",
+    "tracer/metrics-core",
 ]
 
 default-members = [

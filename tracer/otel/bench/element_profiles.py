@@ -91,7 +91,7 @@ def main():
         for mode in ('off', 'on'):
             payloads.clear()
             service = f'mars-elements-{mode}'
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_'))}
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('GST_', 'OTEL_', 'MARS_'))}
             env.update(GST_TRACERS='', GST_PLUGIN_PATH='', GST_DEBUG='0',
                        GST_OTEL_PROFILE_URL=f'http://127.0.0.1:{server.server_port}',
                        GST_OTEL_PROFILE_ELEMENTS='true' if mode == 'on' else 'false',

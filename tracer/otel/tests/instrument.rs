@@ -127,8 +127,8 @@ fn collect(mode: &str, pipeline: &str) -> Received {
         }
     });
     let mut command = Command::new(std::env::current_exe().unwrap());
-    for (key, _) in
-        std::env::vars().filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_"))
+    for (key, _) in std::env::vars()
+        .filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_") || k.starts_with("MARS_"))
     {
         command.env_remove(key);
     }

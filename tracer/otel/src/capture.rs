@@ -295,7 +295,7 @@ fn publish_profile(state: &ThreadState) -> bool {
     crate::profiles::publish(token)
 }
 
-pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) {
+pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) -> Option<Token> {
     let end = runtime
         .metrics
         .as_ref()
@@ -356,7 +356,9 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
         if let (Some(metrics), Some(timing)) = (&runtime.metrics, frame.timing) {
             metrics.observe(timing, end.unwrap(), cpu, accepted.then_some(&frame.token));
         }
+        return accepted.then_some(frame.token);
     }
+    None
 }
 
 #[cfg(test)]

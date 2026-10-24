@@ -123,8 +123,8 @@ fn collect(mode: &str) -> (Received, String) {
         }
     });
     let mut command = Command::new(std::env::current_exe().unwrap());
-    for (key, _) in
-        std::env::vars().filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_"))
+    for (key, _) in std::env::vars()
+        .filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_") || k.starts_with("MARS_"))
     {
         command.env_remove(key);
     }
@@ -141,10 +141,18 @@ fn collect(mode: &str) -> (Received, String) {
                 "parentbased_always_on"
             },
         );
-    if mode == "instrument" {
+    if matches!(mode, "instrument" | "signals") {
         command
             .env("GST_INSTRUMENT_LOGS", "true")
             .env("GST_DEBUG", "instrument-test:4");
+    }
+    if mode == "signals" {
+        command
+            .env("MARS_SIGNALS", "metrics,traces,profiles,logs")
+            .env("MARS_METRIC_SAMPLE_RATE", "1");
+    }
+    if mode == "profiles-only-signals" {
+        command.env("MARS_PROFILE_URL", format!("http://{address}"));
     }
     if mode.starts_with("profiles-only") {
         // Profiles-only selection must ignore unrelated telemetry settings,
@@ -330,7 +338,12 @@ fn slow_profile_receiver_does_not_extend_shutdown_deadline() {
 
 #[test]
 fn profiles_only_uploads_cpu_samples_without_any_otlp_requests() {
-    for mode in ["profiles-only", "profiles-only-list", "profiles-only-pull"] {
+    for mode in [
+        "profiles-only",
+        "profiles-only-list",
+        "profiles-only-pull",
+        "profiles-only-signals",
+    ] {
         let (received, _) = collect(mode);
         assert!(!received.requests.is_empty(), "{mode}");
         assert!(
@@ -423,7 +436,12 @@ fn profile_child() {
         }
     }
     gst::init().unwrap();
-    let _tracer: gst::Tracer = if profiles_only {
+    let _tracer: gst::Tracer = if mode == "profiles-only-signals" {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("params", "signals=profiles")
+            .build()
+            .upcast()
+    } else if profiles_only {
         if mode.ends_with("legacy-params") {
             glib::Object::builder::<gstoteltracer::ProfilesTracer>()
                 .property("params", "sample-rate=100")
@@ -432,7 +450,7 @@ fn profile_child() {
         } else {
             glib::Object::new::<gstoteltracer::ProfilesTracer>().upcast()
         }
-    } else if mode == "instrument" {
+    } else if matches!(mode.as_str(), "instrument" | "signals") {
         glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()
     } else {
         glib::Object::new::<gstoteltracer::TelemetryTracer>().upcast()
@@ -800,7 +818,16 @@ fn profiles_distinguish_same_factory_instances_and_source_task_work() {
 
 #[test]
 fn instrument_links_metric_exemplars_to_traces_logs_and_real_cpu_samples() {
-    let (received, _) = collect("instrument");
+    check_instrument_correlation("instrument");
+}
+
+#[test]
+fn explicit_signals_link_full_metrics_traces_logs_and_profiles() {
+    check_instrument_correlation("signals");
+}
+
+fn check_instrument_correlation(mode: &str) {
+    let (received, _) = collect(mode);
     assert!(!received.exemplars.is_empty());
     let mut profiles = HashSet::new();
     for profile in &received.profiles {

@@ -1,14 +1,12 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    env,
     os::raw::c_void,
     rc::Rc,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, LazyLock, Mutex, OnceLock,
     },
-    thread,
     time::Duration,
 };
 
@@ -91,7 +89,7 @@ static BUFFER_PTS_AGE_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
     .unwrap()
 });
 static IO_COUNTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    env::var("GST_PROM_LATENCY_IO_COUNTS")
+    crate::setting("MARS_METRIC_IO_COUNTS", "GST_PROM_LATENCY_IO_COUNTS")
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 });
@@ -164,14 +162,17 @@ static PULL_BLOCKED: LazyLock<HistogramVec> = LazyLock::new(|| {
 });
 
 static HISTOGRAM_SAMPLE_RATE: LazyLock<u64> = LazyLock::new(|| {
-    env::var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(16)
+    crate::setting(
+        "MARS_METRIC_SAMPLE_RATE",
+        "GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE",
+    )
+    .ok()
+    .and_then(|v| v.parse::<u64>().ok())
+    .filter(|v| *v > 0)
+    .unwrap_or(16)
 });
 static ELEMENT_INCLUDE_PATTERNS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    env::var("GST_PROM_LATENCY_INCLUDE")
+    crate::setting("MARS_METRIC_INCLUDE", "GST_PROM_LATENCY_INCLUDE")
         .unwrap_or_else(|_| "*".to_string())
         .split(',')
         .map(str::trim)
@@ -180,7 +181,7 @@ static ELEMENT_INCLUDE_PATTERNS: LazyLock<Vec<String>> = LazyLock::new(|| {
         .collect()
 });
 static PTS_AGE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    env::var("GST_PROM_LATENCY_PTS_AGE")
+    crate::setting("MARS_METRIC_PTS_AGE", "GST_PROM_LATENCY_PTS_AGE")
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
 });
@@ -251,11 +252,14 @@ static QUEUE_REGISTRATIONS: LazyLock<Mutex<Vec<QueueRegistration>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static QUEUE_SAMPLER_ONCE: OnceLock<()> = OnceLock::new();
 static QUEUE_SAMPLE_INTERVAL_MS: LazyLock<u64> = LazyLock::new(|| {
-    env::var("GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(100)
+    crate::setting(
+        "MARS_METRIC_QUEUE_INTERVAL_MS",
+        "GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS",
+    )
+    .ok()
+    .and_then(|v| v.parse::<u64>().ok())
+    .filter(|v| *v > 0)
+    .unwrap_or(100)
 });
 
 fn latency_buckets() -> Vec<f64> {
@@ -331,7 +335,7 @@ static PAD_CACHE_QUARK: LazyLock<glib::ffi::GQuark> =
     LazyLock::new(|| Quark::from_str("mars-metrics.pad-cache").into_glib());
 
 static METRICS_SERVER_ONCE: OnceLock<()> = OnceLock::new();
-pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+pub static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "mars-metrics",
         gst::DebugColorFlags::empty(),
@@ -381,6 +385,7 @@ impl IoMetrics {
 
 #[derive(Clone)]
 struct PadMetrics {
+    exemplars: Option<Arc<crate::exemplars::Slots>>,
     last_gauge: IntGauge,
     sum_counter: IntCounter,
     count_counter: IntCounter,
@@ -404,6 +409,13 @@ impl MetricsTracerImp {
             pad: *mut gst::ffi::GstPad,
             buf_ptr: *mut gst::ffi::GstBuffer,
         ) {
+            if let Some(capture) = crate::CAPTURE.get() {
+                (capture.begin)(
+                    ts,
+                    &gst::Pad::from_glib_borrow(pad),
+                    &gst::Buffer::from_glib_borrow(buf_ptr),
+                );
+            }
             MetricsTracerImp::do_send_latency_ts::<false, IO>(ts, pad, buf_ptr, 1);
         }
 
@@ -411,9 +423,9 @@ impl MetricsTracerImp {
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
-            _result: gst::ffi::GstFlowReturn,
+            result: gst::ffi::GstFlowReturn,
         ) {
-            MetricsTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
+            MetricsTracerImp::finish_push::<IO>(ts, pad, result);
         }
 
         unsafe extern "C" fn do_push_list_pre<const IO: bool>(
@@ -594,6 +606,9 @@ impl MetricsTracerImp {
 
     /// Handle the element-new hook
     pub fn element_new(&self, _ts: u64, element: &gst::Element, port: u16) {
+        if crate::background::stopped() {
+            return;
+        }
         if element.is::<gst::Pipeline>() {
             // Watching every element disables GLib's no-handler signal fast
             // path (notably identity's per-buffer handoff). Only root pipeline
@@ -666,7 +681,7 @@ impl MetricsTracerImp {
         (!ptr.is_null()).then(|| Arc::from_raw(ptr.cast::<PadCacheData>()))
     }
 
-    pub(crate) fn invalidate_topology() {
+    pub fn invalidate_topology() {
         TOPOLOGY_GENERATION.fetch_add(1, Ordering::Release);
     }
 
@@ -845,6 +860,8 @@ impl MetricsTracerImp {
                 &[source.upcast_ref(), sink.upcast_ref()],
                 remove,
                 || PadMetrics {
+                    exemplars: (!pull && crate::CAPTURE.get().is_some_and(|h| h.exemplars))
+                        .then(|| crate::exemplars::for_labels(&labels)),
                     last_gauge: if pull {
                         PULL_LAST.with_label_values(&labels)
                     } else {
@@ -947,6 +964,7 @@ impl MetricsTracerImp {
     }
 
     fn remove_push_series(labels: &[&str]) {
+        crate::exemplars::remove(labels);
         let _ = LATENCY_LAST.remove_label_values(labels);
         let _ = LATENCY_SUM.remove_label_values(labels);
         let _ = LATENCY_COUNT.remove_label_values(labels);
@@ -978,7 +996,8 @@ impl MetricsTracerImp {
         buffers: u64,
     ) {
         THREAD_STATE.with(|state| {
-            let cache = Some(Self::current_pad_cache(state, src_pad));
+            let cache =
+                (!crate::background::stopped()).then(|| Self::current_pad_cache(state, src_pad));
             if IO && !PULL {
                 if let Some(io) = cache.as_ref().and_then(|cache| cache.io.as_ref()) {
                     io.observe(buffers);
@@ -1034,6 +1053,23 @@ impl MetricsTracerImp {
         src_pad: *mut gst::ffi::GstPad,
         returned_buffer: bool,
     ) {
+        Self::receive::<PULL, IO>(_ts, src_pad, returned_buffer, None);
+    }
+
+    unsafe fn finish_push<const IO: bool>(
+        ts: u64,
+        pad: *mut ffi::GstPad,
+        result: ffi::GstFlowReturn,
+    ) {
+        Self::receive::<false, IO>(ts, pad, false, Some(result));
+    }
+
+    unsafe fn receive<const PULL: bool, const IO: bool>(
+        ts: u64,
+        src_pad: *mut ffi::GstPad,
+        returned_buffer: bool,
+        push_result: Option<ffi::GstFlowReturn>,
+    ) {
         // Use the same clock at both boundaries, excluding this span's metric
         // export work. Nested tracer bookkeeping still adds measurement noise.
         let wall_end_ns = gst::get_timestamp().nseconds();
@@ -1042,6 +1078,13 @@ impl MetricsTracerImp {
             let measure_cpu = stack.last()?.start_cpu_ns.is_some();
             let cpu_end_ns = measure_cpu.then(Self::thread_cpu_time_ns).flatten();
             Self::complete_span(&mut stack, src_pad, wall_end_ns, cpu_end_ns)
+        });
+        // Finish trace capture even for filtered/unselected metric calls. All
+        // TLS metric borrows have ended, so callbacks cannot reenter that borrow.
+        let exemplar = push_result.and_then(|result| {
+            crate::CAPTURE
+                .get()
+                .and_then(|capture| (capture.end)(ts, &gst::Pad::from_glib_borrow(src_pad), result))
         });
         let Some((completed, cache)) = completed else {
             return;
@@ -1059,10 +1102,16 @@ impl MetricsTracerImp {
             .set(completed.exclusive_wall_ns.try_into().unwrap_or(i64::MAX));
         metrics.sum_counter.inc_by(completed.exclusive_wall_ns);
         metrics.count_counter.inc();
+        if !PULL {
+            crate::record_push();
+        }
         if completed.sampled {
             metrics
                 .wall_histogram
                 .observe(completed.exclusive_wall_ns as f64 / 1_000_000_000f64);
+            if let (Some(slots), Some(example)) = (&metrics.exemplars, exemplar) {
+                slots.observe(0, example, completed.exclusive_wall_ns as f64 / 1e9);
+            }
             if let Some(cpu_ns) = completed.exclusive_cpu_ns {
                 metrics
                     .cpu_histogram
@@ -1070,6 +1119,14 @@ impl MetricsTracerImp {
                 metrics.blocked_histogram.observe(
                     completed.exclusive_wall_ns.saturating_sub(cpu_ns) as f64 / 1_000_000_000f64,
                 );
+                if let (Some(slots), Some(example)) = (&metrics.exemplars, exemplar) {
+                    slots.observe(1, example, cpu_ns as f64 / 1e9);
+                    slots.observe(
+                        2,
+                        example,
+                        completed.exclusive_wall_ns.saturating_sub(cpu_ns) as f64 / 1e9,
+                    );
+                }
             }
         }
     }
@@ -1230,8 +1287,10 @@ impl MetricsTracerImp {
     }
 
     fn start_queue_sampler() {
-        thread::spawn(|| loop {
-            thread::sleep(Duration::from_millis(*QUEUE_SAMPLE_INTERVAL_MS));
+        crate::background::spawn(|| loop {
+            if crate::background::wait(Duration::from_millis(*QUEUE_SAMPLE_INTERVAL_MS)) {
+                break;
+            }
             // Property reads and GObject destruction can reenter tracing. Keep
             // them outside the registration lock, preserving new registrations.
             let mut registrations = std::mem::take(&mut *QUEUE_REGISTRATIONS.lock().unwrap());
@@ -1310,7 +1369,7 @@ impl MetricsTracerImp {
 
     /// Spawn the HTTP server in a new thread on the provided port.
     fn maybe_start_metrics_server(port: u16) {
-        thread::spawn(move || {
+        crate::background::spawn(move || {
             let addr = ("0.0.0.0", port);
             let server = match Server::http(addr) {
                 Ok(server) => server,
@@ -1327,7 +1386,10 @@ impl MetricsTracerImp {
 
             gst::info!(CAT, "Prometheus metrics server listening on {}", port);
 
-            for request in server.incoming_requests() {
+            while !crate::background::stopped() {
+                let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(100)) else {
+                    continue;
+                };
                 let buffer = Self::request_metrics().into_bytes();
 
                 // Build and send HTTP response

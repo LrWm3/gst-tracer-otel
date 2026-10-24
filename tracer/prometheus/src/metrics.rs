@@ -1,7 +1,7 @@
 use glib::prelude::*;
 use gstreamer as gst;
 
-use crate::metricsimp::{MetricsTracerImp, CAT};
+use gst_mars_metrics_core::{MetricsTracerImp, CAT};
 
 mod imp {
     use super::*;

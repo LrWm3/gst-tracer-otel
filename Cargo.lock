@@ -616,6 +616,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-mars-metrics-core"
+version = "0.1.0"
+dependencies = [
+ "glib",
+ "gstreamer",
+ "libc",
+ "prometheus",
+ "tiny_http",
+]
+
+[[package]]
 name = "gst-noop-tracer"
 version = "0.1.0"
 dependencies = [
@@ -635,6 +646,7 @@ dependencies = [
  "crossbeam-channel",
  "futures-executor",
  "glib",
+ "gst-mars-metrics-core",
  "gstreamer",
  "libc",
  "libflate",
@@ -656,11 +668,9 @@ name = "gst-prometheus-tracer"
 version = "0.1.0"
 dependencies = [
  "glib",
+ "gst-mars-metrics-core",
  "gstreamer",
- "libc",
- "prometheus",
  "reqwest 0.12.22",
- "tiny_http",
 ]
 
 [[package]]

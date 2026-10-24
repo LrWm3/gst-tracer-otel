@@ -26,8 +26,13 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 | `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Reserved realtime signal |
 | `OTEL_SERVICE_NAME` | SDK-detected service name | Pyroscope `service_name` |
 
-Selecting `mars-profiles` enables profiling even when the URL is unset. In
-`mars-otel` and `mars-instrument`, the URL remains required to opt into profiles.
+The `MARS_PROFILE_*` equivalents take precedence over the names above.
+`mars-instrument(signals="profiles")` selects the same sampler through the
+[unified interface](INSTRUMENT.md), without enabling metrics, traces or logs.
+
+Selecting `mars-profiles` or an explicit `profiles` signal enables profiling
+even when the URL is unset. With `mars-otel` or the original no-parameter
+`mars-instrument` preset, the URL remains required to opt into profiles.
 Trace, metric, and log configuration is ignored by `mars-profiles`, including
 `GST_INSTRUMENT_PROFILES`. Invalid profiler settings disable the tracer with an
 error; they do not enable another telemetry signal.

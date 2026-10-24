@@ -16,9 +16,7 @@
  * Boston, MA 02110-1301, USA.
  */
 use gstreamer as gst;
-mod metric_lifecycle;
 mod metrics;
-mod metricsimp;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
