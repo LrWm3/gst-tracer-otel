@@ -58,7 +58,7 @@ pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError>
     result.and_then(|stats| profiles.map(|()| stats))
 }
 
-/// Context of the current push, for explicit application instrumentation bridges.
+/// Context of the current push or pull, for explicit application instrumentation bridges.
 /// Capture does not attach a live span to the OpenTelemetry thread-local context.
 pub fn current_span_context() -> Option<opentelemetry::trace::SpanContext> {
     capture::current_context().filter(|context| context.is_valid())

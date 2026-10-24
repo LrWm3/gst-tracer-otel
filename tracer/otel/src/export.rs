@@ -71,7 +71,7 @@ macro_rules! counters {
 counters! {
     started_spans, completed_spans, enqueued_spans, exported_spans,
     dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
-    unsampled_pushes, skipped_closed, propagation_misses, propagation_fallbacks,
+    unsampled_pushes, unsampled_pulls, skipped_closed, propagation_misses, propagation_fallbacks,
     dropped_depth, mismatched_hooks,
 }
 
@@ -265,6 +265,7 @@ pub(crate) struct Runtime {
     pub shared_metrics: Option<crate::shared_metrics::Metrics>,
     sender: Sender<Message>,
     accepting: AtomicBool,
+    worker_done: Receiver<()>,
     submissions: [SubmissionCount; SHARDS],
     worker: Mutex<Option<JoinHandle<()>>>,
     anchor: Arc<OnceLock<Anchor>>,
@@ -289,11 +290,13 @@ impl Runtime {
         let worker_config = config.clone();
         let worker_stats = stats.clone();
         let worker_anchor = anchor.clone();
+        let (finished, worker_done) = bounded(0);
         let worker = if config.traces {
             Some(
                 thread::Builder::new()
                     .name("mars-otel-tx".into())
                     .spawn(move || {
+                        let _finished = finished;
                         worker_loop(
                             exporter,
                             receiver,
@@ -314,6 +317,7 @@ impl Runtime {
             shared_metrics: None,
             sender,
             accepting: AtomicBool::new(true),
+            worker_done,
             submissions: std::array::from_fn(|_| SubmissionCount::default()),
             worker: Mutex::new(worker),
             anchor,
@@ -397,14 +401,21 @@ impl Runtime {
                 FlushError::Closed
             }
         })?;
-        rx.recv_timeout(timeout.saturating_sub(start.elapsed()))
-            .map_err(|e| {
-                if e.is_timeout() {
-                    FlushError::Timeout
-                } else {
-                    FlushError::Closed
+        // A retry may queue another marker while the first shutdown is still
+        // exporting. Crossbeam retains that queued marker (and its reply sender)
+        // after the receiver exits, until all senders are dropped. Also watch
+        // worker completion so retries and concurrent callers cannot wait on a
+        // reply that will never arrive.
+        crossbeam_channel::select! {
+            recv(rx) -> result => result.map_err(|_| FlushError::Closed)??,
+            recv(self.worker_done) -> _ => {
+                if !shutdown {
+                    return Err(FlushError::Closed);
                 }
-            })??;
+                self.stopped.get().cloned().unwrap_or(Err(FlushError::Closed))?;
+            }
+            default(timeout.saturating_sub(start.elapsed())) => return Err(FlushError::Timeout),
+        }
         Ok(self.stats.snapshot())
     }
 
@@ -515,18 +526,17 @@ pub(crate) fn span_data(
         parent_span_id: record.parent,
         parent_span_is_remote: record.parent_is_remote,
         span_kind: SpanKind::Internal,
-        name: "gst.pad.push".into(),
+        name: record.operation.name().into(),
         start_time: anchor.at(record.start),
         end_time: anchor.at(record.end.max(record.start)),
         attributes,
         dropped_attributes_count: dropped as u32,
         events: Default::default(),
         links: Default::default(),
-        status: if record.flow_return < 0 {
-            Status::error("GStreamer push failed")
-        } else {
-            Status::Unset
-        },
+        status: record
+            .operation
+            .error(record.flow_return)
+            .map_or(Status::Unset, Status::error),
         instrumentation_scope: scope.clone(),
     }
 }
@@ -681,6 +691,7 @@ pub(crate) mod tests {
     }
     pub fn record(index: u64) -> Record {
         Record {
+            operation: crate::capture::Operation::Push,
             site: Arc::new(Site {
                 metrics: Default::default(),
                 metric_rejected_epoch: Default::default(),
@@ -762,6 +773,52 @@ pub(crate) mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[test]
+    fn shutdown_retry_observes_completion_of_the_first_marker() {
+        for fail in [false, true] {
+            let (entered, entering) = bounded(1);
+            let (release, waiting) = bounded(1);
+            let runtime = Arc::new(
+                Runtime::new(
+                    Config {
+                        interval: Duration::from_secs(60),
+                        ..Config::default()
+                    },
+                    GatedExporter {
+                        entered,
+                        release: waiting,
+                        fail,
+                    },
+                    Resource::builder_empty().build(),
+                )
+                .unwrap(),
+            );
+            runtime.anchor(100);
+            runtime.submit(record(0));
+            assert_eq!(
+                runtime.shutdown(Duration::from_millis(5)),
+                Err(FlushError::Timeout)
+            );
+            entering.recv_timeout(Duration::from_secs(2)).unwrap();
+            let retry = runtime.clone();
+            let worker = thread::spawn(move || retry.shutdown(Duration::from_secs(2)));
+            // Ensure the retry's marker is queued behind the in-flight shutdown.
+            let start = Instant::now();
+            while runtime.sender.is_empty() {
+                assert!(start.elapsed() < Duration::from_secs(2));
+                thread::yield_now();
+            }
+            release.send(()).unwrap();
+            let result = worker.join().unwrap();
+            if fail {
+                assert_eq!(result, Err(FlushError::ExportFailed));
+            } else {
+                assert_eq!(result.unwrap().exported_spans, 1);
+            }
+            assert_eq!(runtime.stats.snapshot().pending_spans, 0);
         }
     }
 

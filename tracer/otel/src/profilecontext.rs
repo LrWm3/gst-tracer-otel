@@ -202,8 +202,8 @@ pub(crate) fn register(tracer: &impl TracerImpl) {
     if !crate::profiles::active() {
         return;
     }
-    // Retain profiles-only pull-thread registration when attribution is off.
-    tracer.register_hook(TracerHook::PadPullRangePre);
+    // Pull hooks are owned by the tracer (or shared metric collector), which
+    // invokes attribution alongside trace capture without duplicate callbacks.
     if !enabled() {
         return;
     }
@@ -212,7 +212,6 @@ pub(crate) fn register(tracer: &impl TracerImpl) {
         TracerHook::PadChainPost,
         TracerHook::PadChainListPre,
         TracerHook::PadChainListPost,
-        TracerHook::PadPullRangePost,
         TracerHook::ElementPostMessagePre,
     ] {
         tracer.register_hook(hook);
@@ -243,18 +242,6 @@ macro_rules! methods {
             _: Result<gst::FlowSuccess, gst::FlowError>,
         ) {
             crate::profilecontext::end(pad, 1);
-        }
-        fn pad_pull_range_pre(&self, _: u64, pad: &gst::Pad, _: u64, _: u32) {
-            crate::profiles::register_thread();
-            crate::profilecontext::begin(pad, 2);
-        }
-        fn pad_pull_range_post(
-            &self,
-            _: u64,
-            pad: &gst::Pad,
-            _: Result<&gst::Buffer, gst::FlowError>,
-        ) {
-            crate::profilecontext::end(pad, 2);
         }
         fn element_post_message_pre(&self, _: u64, element: &gst::Element, message: &gst::Message) {
             crate::profilecontext::message(element, message);

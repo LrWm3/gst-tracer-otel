@@ -103,9 +103,15 @@ translation: for example, the legacy `gst_element_latency_count_count` becomes
 `gst_element_latency_count_count_total`. `mars-metrics` keeps its existing text
 format and names. No trace or span IDs are added to metric-series labels.
 
-Only ordinary pushes currently produce trace spans and metric exemplars.
-Buffer lists and pulls still produce full metrics and element-attributed
-profiles, but do not acquire fabricated trace links. A locally rejected trace
+Ordinary pushes and pull reads produce trace spans and metric exemplars.
+A top-level `gst.pad.pull_range` span starts a trace before the buffer exists,
+then attaches context to the returned buffer for downstream pushes. This covers
+file sources read by demuxers without adding a queue to force push scheduling.
+Nested reads inherit the active span; EOS ends the read normally. Reads can
+contain part of a frame or several frames, so traces are not guaranteed to map
+one-to-one to video frames. Elements must preserve buffer metadata across
+asynchronous boundaries. Buffer lists produce metrics and element-attributed
+profiles without creating their own spans. A locally rejected trace
 cannot replace an exemplar. Later export failure or backend retention can still
 leave a missing trace, and short spans may have no CPU samples.
 
@@ -128,6 +134,13 @@ across exporters; shutdown also stops queue sampling and maintenance. Stop
 streaming first. A timed-out worker can finish in the background. Prometheus
 flush does not cause an external scrape; scrape before shutdown. Restarting the
 process is required to restart telemetry after shutdown.
+
+With `GST_DEBUG=mars-otel:5`, pipeline stop reports pending spans and the time
+spent draining traces/metrics and logs. A full trace queue can take several
+seconds to drain over a slow connection; `dropped_queue_full` counts spans lost
+before that drain. Reduce trace sampling or improve export throughput if these
+counters grow. Shortening the flush timeout only limits the wait; it does not
+make pending telemetry arrive sooner.
 
 `stats()` reports trace accounting and `profile_stats()` reports sampler
 accounting. For full metrics, `metric_stats()` reports completed measured push

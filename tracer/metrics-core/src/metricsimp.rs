@@ -463,6 +463,9 @@ impl MetricsTracerImp {
             _offset: u64,
             _size: libc::c_uint,
         ) {
+            if let Some(capture) = crate::CAPTURE.get() {
+                (capture.pull_begin)(ts, &gst::Pad::from_glib_borrow(pad));
+            }
             MetricsTracerImp::do_send_latency_ts::<true, IO>(ts, pad, std::ptr::null_mut(), 0);
         }
         unsafe extern "C" fn do_pull_range_post<const IO: bool>(
@@ -472,10 +475,11 @@ impl MetricsTracerImp {
             buffer: *mut gst::ffi::GstBuffer,
             result: gst::ffi::GstFlowReturn,
         ) {
-            MetricsTracerImp::do_receive_and_record_latency_ts::<true, IO>(
+            MetricsTracerImp::receive::<true, IO>(
                 ts,
                 pad,
                 result >= ffi::GST_FLOW_OK && !buffer.is_null(),
+                Some((result, buffer)),
             );
         }
 
@@ -860,8 +864,8 @@ impl MetricsTracerImp {
                 &[source.upcast_ref(), sink.upcast_ref()],
                 remove,
                 || PadMetrics {
-                    exemplars: (!pull && crate::CAPTURE.get().is_some_and(|h| h.exemplars))
-                        .then(|| crate::exemplars::for_labels(&labels)),
+                    exemplars: (crate::CAPTURE.get().is_some_and(|h| h.exemplars))
+                        .then(|| crate::exemplars::for_labels(pull, &labels)),
                     last_gauge: if pull {
                         PULL_LAST.with_label_values(&labels)
                     } else {
@@ -955,6 +959,7 @@ impl MetricsTracerImp {
         let _ = BUFFERS_OUT.remove_label_values(labels);
     }
     fn remove_pull_series(labels: &[&str]) {
+        crate::exemplars::remove(true, labels);
         let _ = PULL_LAST.remove_label_values(labels);
         let _ = PULL_SUM.remove_label_values(labels);
         let _ = PULL_COUNT.remove_label_values(labels);
@@ -964,7 +969,7 @@ impl MetricsTracerImp {
     }
 
     fn remove_push_series(labels: &[&str]) {
-        crate::exemplars::remove(labels);
+        crate::exemplars::remove(false, labels);
         let _ = LATENCY_LAST.remove_label_values(labels);
         let _ = LATENCY_SUM.remove_label_values(labels);
         let _ = LATENCY_COUNT.remove_label_values(labels);
@@ -1061,14 +1066,14 @@ impl MetricsTracerImp {
         pad: *mut ffi::GstPad,
         result: ffi::GstFlowReturn,
     ) {
-        Self::receive::<false, IO>(ts, pad, false, Some(result));
+        Self::receive::<false, IO>(ts, pad, false, Some((result, std::ptr::null_mut())));
     }
 
     unsafe fn receive<const PULL: bool, const IO: bool>(
         ts: u64,
         src_pad: *mut ffi::GstPad,
         returned_buffer: bool,
-        push_result: Option<ffi::GstFlowReturn>,
+        flow_result: Option<(ffi::GstFlowReturn, *mut ffi::GstBuffer)>,
     ) {
         // Use the same clock at both boundaries, excluding this span's metric
         // export work. Nested tracer bookkeeping still adds measurement noise.
@@ -1081,10 +1086,15 @@ impl MetricsTracerImp {
         });
         // Finish trace capture even for filtered/unselected metric calls. All
         // TLS metric borrows have ended, so callbacks cannot reenter that borrow.
-        let exemplar = push_result.and_then(|result| {
-            crate::CAPTURE
-                .get()
-                .and_then(|capture| (capture.end)(ts, &gst::Pad::from_glib_borrow(src_pad), result))
+        let exemplar = flow_result.and_then(|(result, buffer)| {
+            let capture = crate::CAPTURE.get()?;
+            let pad = gst::Pad::from_glib_borrow(src_pad);
+            if PULL {
+                let buffer = returned_buffer.then(|| gst::Buffer::from_glib_borrow(buffer));
+                (capture.pull_end)(ts, &pad, result, buffer.as_deref())
+            } else {
+                (capture.end)(ts, &pad, result)
+            }
         });
         let Some((completed, cache)) = completed else {
             return;

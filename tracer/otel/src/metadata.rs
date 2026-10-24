@@ -211,37 +211,45 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
         return site;
     }
     watch_path(pad.upcast_ref(), state);
-    let parent = pad.parent_element();
     let peer = pad.peer();
     if let Some(peer) = &peer {
         watch_path(peer.upcast_ref(), state);
     }
-    let peer_parent = peer.as_ref().and_then(|p| p.parent_element());
+    // Pull hooks receive the requesting sink pad. Attribute names always follow
+    // buffer flow, so its upstream peer is still src_pad.
+    let (src, sink) = if pad.direction() == gst::PadDirection::Sink {
+        (peer.as_ref(), Some(pad))
+    } else {
+        (Some(pad), peer.as_ref())
+    };
     let values = [
         (
             "src_pad.element",
-            parent
-                .as_ref()
+            src.and_then(|p| p.parent_element())
                 .map(|p| p.name().to_string())
                 .unwrap_or_default(),
         ),
-        ("src_pad.name", pad.name().to_string()),
-        ("src_pad.path", pad.path_string().to_string()),
+        (
+            "src_pad.name",
+            src.map(|p| p.name().to_string()).unwrap_or_default(),
+        ),
+        (
+            "src_pad.path",
+            src.map(|p| p.path_string().to_string()).unwrap_or_default(),
+        ),
         (
             "sink_pad.element",
-            peer_parent
+            sink.and_then(|p| p.parent_element())
                 .map(|p| p.name().to_string())
                 .unwrap_or_default(),
         ),
         (
             "sink_pad.name",
-            peer.as_ref()
-                .map(|p| p.name().to_string())
-                .unwrap_or_default(),
+            sink.map(|p| p.name().to_string()).unwrap_or_default(),
         ),
         (
             "sink_pad.path",
-            peer.map(|p| p.path_string().to_string())
+            sink.map(|p| p.path_string().to_string())
                 .unwrap_or_default(),
         ),
     ];

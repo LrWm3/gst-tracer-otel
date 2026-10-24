@@ -171,7 +171,7 @@ fn count(received: &Received, name: &str) -> u64 {
 #[test]
 fn full_metrics_and_exemplars_survive_otlp_translation() {
     let (received, _) = run("full");
-    assert_eq!(received.spans.len(), 300);
+    assert_eq!(received.spans.len(), 302);
     assert_eq!(count(&received, "gst_element_latency_count_count"), 301);
     assert_eq!(count(&received, "gst_element_sync_wall_seconds"), 301);
     assert_eq!(count(&received, "gst_element_pull_calls_total"), 2);
@@ -183,6 +183,22 @@ fn full_metrics_and_exemplars_survive_otlp_translation() {
         .metrics
         .iter()
         .any(|m| m.name == "gst_element_buffers_in_total"));
+    let pulls: Vec<_> = received
+        .spans
+        .iter()
+        .filter(|s| s.name == "gst.pad.pull_range")
+        .collect();
+    assert_eq!(pulls.len(), 2);
+    for span in &pulls {
+        assert_eq!(span.status.as_ref().map_or(0, |s| s.code), 0);
+        for (key, expected) in [
+            ("src_pad.element", "pull_source"),
+            ("sink_pad.element", "pull_sink"),
+        ] {
+            assert!(span.attributes.iter().any(|a| a.key == key && matches!(a.value.as_ref().and_then(|v| v.value.as_ref()), Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(v)) if v == expected)));
+        }
+    }
+    let mut pull_exemplars = 0;
     let mut exemplars = 0;
     for metric in &received.metrics {
         if let Some(Data::Histogram(hist)) = &metric.data {
@@ -190,6 +206,12 @@ fn full_metrics_and_exemplars_survive_otlp_translation() {
                 assert_eq!(p.bucket_counts.iter().sum::<u64>(), p.count);
                 for e in &p.exemplars {
                     exemplars += 1;
+                    if metric.name.contains("pull") {
+                        assert!(pulls
+                            .iter()
+                            .any(|s| s.trace_id == e.trace_id && s.span_id == e.span_id));
+                        pull_exemplars += 1;
+                    }
                     assert!(received
                         .spans
                         .iter()
@@ -199,6 +221,7 @@ fn full_metrics_and_exemplars_survive_otlp_translation() {
         }
     }
     assert!(exemplars >= 3);
+    assert!(pull_exemplars > 0);
 }
 
 #[test]
@@ -214,7 +237,7 @@ fn disabled_signals_ignore_exporters_and_other_signal_settings() {
         _ => true,
     }));
     let (traces, _) = run("traces");
-    assert_eq!(traces.spans.len(), 300);
+    assert_eq!(traces.spans.len(), 302);
     assert!(traces.metrics.is_empty());
 }
 
@@ -233,7 +256,7 @@ fn prometheus_export_and_otlp_use_the_full_collector() {
     assert_eq!(total("gst_element_pull_calls_total"), 2.0);
     assert!(text.contains("gst_queue_current_level_buffers{"));
     let (received, text) = run("prometheus-linked");
-    assert_eq!(received.spans.len(), 300);
+    assert_eq!(received.spans.len(), 302);
     assert!(text.contains(" # {trace_id=\""));
     for span in &received.spans {
         let id =

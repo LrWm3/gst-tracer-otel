@@ -4,15 +4,20 @@ use opentelemetry_proto::tonic::{
     common::v1::{any_value, AnyValue, KeyValue},
     metrics::v1::{self as otlp, metric::Data},
 };
-use std::{collections::HashMap, fmt::Write};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::fmt::Write;
 
-pub(crate) type Examples = HashMap<Vec<String>, [Option<Exemplar>; 3]>;
+pub(crate) type Examples = gst_mars_metrics_core::exemplars::Snapshot;
 
 fn exemplar(name: &str, metric: &prom::Metric, examples: &Examples) -> Option<Exemplar> {
-    let index = match name {
-        "gst_element_sync_wall_seconds" => 0,
-        "gst_element_sync_cpu_seconds" => 1,
-        "gst_element_sync_blocked_seconds" => 2,
+    let (pull, index) = match name {
+        "gst_element_sync_wall_seconds" => (false, 0),
+        "gst_element_pull_wall_seconds" => (true, 0),
+        "gst_element_sync_cpu_seconds" => (false, 1),
+        "gst_element_pull_cpu_seconds" => (true, 1),
+        "gst_element_sync_blocked_seconds" => (false, 2),
+        "gst_element_pull_blocked_seconds" => (true, 2),
         _ => return None,
     };
     let key: Option<Vec<_>> = ["element", "src_pad", "sink_pad", "path"]
@@ -25,7 +30,7 @@ fn exemplar(name: &str, metric: &prom::Metric, examples: &Examples) -> Option<Ex
                 .map(|l| l.value().to_owned())
         })
         .collect();
-    examples.get(&key?)?[index]
+    examples.get(&(pull, key?))?[index]
 }
 
 fn attributes(metric: &prom::Metric) -> Vec<KeyValue> {
@@ -270,7 +275,10 @@ mod tests {
             timestamp_ns: 1_234_567_890,
             value: 0.25,
         };
-        let examples = HashMap::from([(vec!["a\"b\nc\\d".into(); 4], [Some(example), None, None])]);
+        let examples = HashMap::from([(
+            (false, vec!["a\"b\nc\\d".into(); 4]),
+            [Some(example), None, None],
+        )]);
         let families = vec![family];
         let converted = otlp(&families, &examples, 2_000_000_000);
         let Some(Data::Histogram(hist)) = &converted[0].data else {

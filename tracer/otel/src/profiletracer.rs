@@ -38,7 +38,12 @@ mod imp {
             if !crate::tracer::activate(crate::tracer::Mode::Profiles) {
                 return;
             }
-            for hook in [TracerHook::PadPushPre, TracerHook::PadPushListPre] {
+            for hook in [
+                TracerHook::PadPushPre,
+                TracerHook::PadPushListPre,
+                TracerHook::PadPullRangePre,
+                TracerHook::PadPullRangePost,
+            ] {
                 self.register_hook(hook);
             }
             crate::profilecontext::register(self);
@@ -46,6 +51,18 @@ mod imp {
     }
     impl GstObjectImpl for ProfilesTracer {}
     impl TracerImpl for ProfilesTracer {
+        fn pad_pull_range_pre(&self, _: u64, pad: &gst::Pad, _: u64, _: u32) {
+            crate::profiles::register_thread();
+            crate::profilecontext::begin(pad, 2);
+        }
+        fn pad_pull_range_post(
+            &self,
+            _: u64,
+            pad: &gst::Pad,
+            _: Result<&gst::Buffer, gst::FlowError>,
+        ) {
+            crate::profilecontext::end(pad, 2);
+        }
         fn pad_push_pre(&self, _: u64, _: &gst::Pad, _: &gst::Buffer) {
             crate::profiles::register_thread();
         }

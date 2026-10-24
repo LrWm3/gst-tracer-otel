@@ -61,8 +61,30 @@ pub(crate) struct ThreadInfo {
     pub id: Arc<str>,
     pub name: Arc<str>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Operation {
+    Push,
+    Pull,
+}
+impl Operation {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Push => "gst.pad.push",
+            Self::Pull => "gst.pad.pull_range",
+        }
+    }
+    pub fn error(self, flow_return: i32) -> Option<&'static str> {
+        // A pull at the end of a stream normally returns EOS without a buffer.
+        (flow_return < 0 && !(self == Self::Pull && flow_return == gst::ffi::GST_FLOW_EOS))
+            .then_some(match self {
+                Self::Push => "GStreamer push failed",
+                Self::Pull => "GStreamer pull failed",
+            })
+    }
+}
 #[cfg_attr(test, derive(Clone))]
 pub(crate) struct Record {
+    pub operation: Operation,
     pub site: Arc<Site>,
     pub token: Token,
     pub parent: SpanId,
@@ -77,6 +99,7 @@ pub(crate) struct Record {
 }
 struct Frame {
     pad: usize,
+    operation: Operation,
     token: Token,
     recording: bool,
     timing: Option<crate::metrics::Timing>,
@@ -137,7 +160,11 @@ pub(crate) fn current_context() -> Option<SpanContext> {
 }
 
 pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-    LOCAL.with(|local| begin_local(local, runtime, ts, pad, buffer));
+    LOCAL.with(|local| begin_local(local, runtime, ts, pad, Some(buffer), Operation::Push));
+}
+
+pub(crate) fn begin_pull(runtime: &Runtime, ts: u64, pad: &gst::Pad) {
+    LOCAL.with(|local| begin_local(local, runtime, ts, pad, None, Operation::Pull));
 }
 
 fn begin_local(
@@ -145,7 +172,8 @@ fn begin_local(
     runtime: &Runtime,
     ts: u64,
     pad: &gst::Pad,
-    buffer: &gst::Buffer,
+    buffer: Option<&gst::Buffer>,
+    operation: Operation,
 ) {
     crate::profiles::clear();
     // Resolve TLS once. Individual borrows still end before GStreamer calls,
@@ -167,7 +195,11 @@ fn begin_local(
         return;
     }
     // A real source starts a new buffer journey, even when a buffer was recycled.
-    let is_root = runtime.config.traces && inherited.is_none() && crate::metadata::is_source(pad);
+    // A top-level pull has no input buffer: the caller is asking upstream to
+    // produce one. Nested pulls share the active decision, including rejection.
+    let is_root = runtime.config.traces
+        && inherited.is_none()
+        && (operation == Operation::Pull || crate::metadata::is_source(pad));
     let parent_token = if !runtime.config.traces {
         Token::rejected()
     } else {
@@ -175,14 +207,16 @@ fn begin_local(
             if is_root {
                 root(runtime.config.ratio)
             } else {
-                crate::propagation::read(buffer).unwrap_or_else(|| {
-                    runtime
-                        .stats
-                        .local()
-                        .propagation_misses
-                        .fetch_add(1, Relaxed);
-                    Token::rejected()
-                })
+                buffer
+                    .and_then(crate::propagation::read)
+                    .unwrap_or_else(|| {
+                        runtime
+                            .stats
+                            .local()
+                            .propagation_misses
+                            .fetch_add(1, Relaxed);
+                        Token::rejected()
+                    })
             }
         })
     };
@@ -194,6 +228,7 @@ fn begin_local(
     let series = runtime
         .metrics
         .as_ref()
+        .filter(|_| operation == Operation::Push)
         .and_then(|m| m.series(site.as_ref().unwrap()));
     let record = if token.sampled() && runtime.accepting() {
         let site = site.unwrap();
@@ -222,14 +257,15 @@ fn begin_local(
                 .clone()
         };
         Some(Record {
+            operation,
             site,
             token: token.clone(),
             parent,
             parent_is_remote,
             start: ts,
             end: ts,
-            buffer_id: buffer.as_ptr() as usize,
-            buffer_size: buffer.size(),
+            buffer_id: buffer.map_or(0, |b| b.as_ptr() as usize),
+            buffer_size: buffer.map_or(0, |b| b.size()),
             thread,
             flow_return: 0,
             profiled: false,
@@ -238,12 +274,19 @@ fn begin_local(
         if token.sampled() {
             runtime.stats.local().skipped_closed.fetch_add(1, Relaxed);
         } else if runtime.config.traces {
-            runtime.stats.local().unsampled_pushes.fetch_add(1, Relaxed);
+            let stats = runtime.stats.local();
+            match operation {
+                Operation::Push => &stats.unsampled_pushes,
+                Operation::Pull => &stats.unsampled_pulls,
+            }
+            .fetch_add(1, Relaxed);
         }
         None
     };
     if runtime.config.traces {
-        crate::propagation::write(buffer, &token, is_root, &runtime.stats);
+        if let Some(buffer) = buffer {
+            crate::propagation::write(buffer, &token, is_root, &runtime.stats);
+        }
     }
     {
         let mut state = local.borrow_mut();
@@ -253,6 +296,7 @@ fn begin_local(
         }
         state.frames.push(Frame {
             pad: pad.as_ptr() as usize,
+            operation,
             token,
             recording,
             timing: None,
@@ -296,6 +340,27 @@ fn publish_profile(state: &ThreadState) -> bool {
 }
 
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) -> Option<Token> {
+    finish(runtime, ts, pad, flow_return, Operation::Push, None)
+}
+
+pub(crate) fn end_pull(
+    runtime: &Runtime,
+    ts: u64,
+    pad: &gst::Pad,
+    flow_return: i32,
+    buffer: Option<&gst::Buffer>,
+) -> Option<Token> {
+    finish(runtime, ts, pad, flow_return, Operation::Pull, buffer)
+}
+
+fn finish(
+    runtime: &Runtime,
+    ts: u64,
+    pad: &gst::Pad,
+    flow_return: i32,
+    operation: Operation,
+    buffer: Option<&gst::Buffer>,
+) -> Option<Token> {
     let end = runtime
         .metrics
         .as_ref()
@@ -311,7 +376,7 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
         if state
             .frames
             .last()
-            .is_none_or(|f| f.pad != pad.as_ptr() as usize)
+            .is_none_or(|f| f.pad != pad.as_ptr() as usize || f.operation != operation)
         {
             runtime.stats.local().mismatched_hooks.fetch_add(1, Relaxed);
             state.profile_invalid = !state.frames.is_empty();
@@ -346,9 +411,21 @@ pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) 
         Some((record, frame, cpu))
     });
     if let Some((record, frame, cpu)) = completed {
+        if operation == Operation::Pull && flow_return >= gst::ffi::GST_FLOW_OK {
+            if let Some(buffer) = buffer {
+                // Replace recycled/nested-read context with the completed read's
+                // decision. No thread-local continuation survives this call:
+                // subsequent pushes must receive this buffer's owned metadata.
+                crate::propagation::write(buffer, &frame.token, true, &runtime.stats);
+            }
+        }
         let accepted = if let Some(mut record) = record {
             record.end = ts;
             record.flow_return = flow_return;
+            if let Some(buffer) = buffer {
+                record.buffer_id = buffer.as_ptr() as usize;
+                record.buffer_size = buffer.size();
+            }
             runtime.submit(record)
         } else {
             false
@@ -369,6 +446,145 @@ mod tests {
         Config,
     };
     use std::time::Duration;
+
+    #[test]
+    fn nested_pulls_seed_owned_context_for_downstream_pushes() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc")
+            .name("source")
+            .build()
+            .unwrap();
+        let middle = gst::ElementFactory::make("identity")
+            .name("middle")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("fakesink")
+            .name("sink")
+            .build()
+            .unwrap();
+        gst::Element::link_many([&source, &middle, &sink]).unwrap();
+        let outer = sink.static_pad("sink").unwrap();
+        let inner = middle.static_pad("sink").unwrap();
+        let downstream = middle.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffer = gst::Buffer::with_size(64).unwrap();
+        begin_pull(&runtime, 100, &outer);
+        let root = current_context().unwrap();
+        begin_pull(&runtime, 110, &inner);
+        let child = current_context().unwrap();
+        end_pull(&runtime, 120, &inner, 0, Some(&buffer));
+        assert_eq!(
+            crate::propagation::read(&buffer).unwrap().span_id,
+            child.span_id()
+        );
+        // The outer read must replace nested-read metadata even after sharing.
+        let shared = buffer.clone();
+        end_pull(&runtime, 130, &outer, 0, Some(&buffer));
+        assert!(current_context().is_none());
+        assert_eq!(
+            crate::propagation::read(&shared).unwrap().span_id,
+            root.span_id()
+        );
+        let copied = buffer.copy();
+        begin(&runtime, 140, &downstream, &copied);
+        end(&runtime, 150, &downstream, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.propagation_misses, 0);
+        assert_eq!(stats.mismatched_hooks, 0);
+        let spans = collector.0.lock().unwrap();
+        assert_eq!(spans.len(), 3);
+        for span in spans.iter() {
+            assert_eq!(span.span_context.trace_id(), root.trace_id());
+            assert_eq!(
+                span.parent_span_id,
+                if span.span_context.span_id() == root.span_id() {
+                    SpanId::INVALID
+                } else {
+                    root.span_id()
+                }
+            );
+            if span.span_context.span_id() == child.span_id() {
+                assert_eq!(span.name, "gst.pad.pull_range");
+                assert!(span
+                    .attributes
+                    .contains(&opentelemetry::KeyValue::new("src_pad.element", "source")));
+                assert!(span
+                    .attributes
+                    .contains(&opentelemetry::KeyValue::new("sink_pad.element", "middle")));
+                assert!(span
+                    .attributes
+                    .contains(&opentelemetry::KeyValue::new("buffer.size", 64_i64)));
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_pulls_replace_recycled_context_without_resampling() {
+        gst::init().unwrap();
+        let middle = gst::ElementFactory::make("identity").build().unwrap();
+        let input = middle.static_pad("sink").unwrap();
+        let output = middle.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffer = gst::Buffer::new();
+        begin_pull(&runtime, 1, &input);
+        end_pull(&runtime, 2, &input, 0, Some(&buffer));
+        assert!(crate::propagation::read(&buffer).unwrap().sampled());
+        let parent = SpanContext::new(
+            TraceId::from(42),
+            SpanId::from(9),
+            TraceFlags::default(),
+            true,
+            TraceState::default(),
+        );
+        {
+            let _guard = opentelemetry::Context::new()
+                .with_remote_span_context(parent.clone())
+                .attach();
+            begin_pull(&runtime, 3, &input);
+            begin_pull(&runtime, 4, &input);
+            end_pull(&runtime, 5, &input, 0, Some(&buffer));
+            end_pull(&runtime, 6, &input, 0, Some(&buffer));
+        }
+        assert!(current_context().is_none());
+        let token = crate::propagation::read(&buffer).unwrap();
+        assert!(!token.sampled());
+        assert_eq!(token.trace_id, parent.trace_id());
+        begin(&runtime, 7, &output, &buffer.copy());
+        end(&runtime, 8, &output, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.unsampled_pulls, 2);
+        assert_eq!(stats.unsampled_pushes, 1);
+        assert_eq!(stats.propagation_misses, 0);
+        assert_eq!(collector.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pull_eos_is_normal_but_read_errors_are_reported() {
+        gst::init().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        let pad = sink.static_pad("sink").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        for flow in [gst::ffi::GST_FLOW_EOS, gst::ffi::GST_FLOW_ERROR] {
+            begin_pull(&runtime, 1, &pad);
+            end_pull(&runtime, 2, &pad, flow, None);
+            assert!(current_context().is_none());
+        }
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        let spans = collector.0.lock().unwrap();
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].status, opentelemetry::trace::Status::Unset);
+        assert!(matches!(
+            spans[1].status,
+            opentelemetry::trace::Status::Error { .. }
+        ));
+        assert_ne!(
+            spans[0].span_context.trace_id(),
+            spans[1].span_context.trace_id()
+        );
+    }
 
     #[test]
     fn external_parent_decision_and_trace_state_are_preserved() {

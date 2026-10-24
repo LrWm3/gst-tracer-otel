@@ -176,6 +176,27 @@ fn exports_complete_traces_and_keeps_pad_references_stable() {
     assert_eq!(complete_traces(&spans, 5), 100);
 }
 #[test]
+fn nested_pull_pipeline_exports_reads_including_normal_eos() {
+    let pipeline = "fakesrc num-buffers=3 sizetype=fixed sizemax=64 can-activate-push=false ! identity ! fakesink can-activate-pull=true can-activate-push=false sync=false";
+    let spans = collect(pipeline, "parentbased_always_on", "1", "normal");
+    assert_eq!(spans.len(), 8); // Two pulls per buffer, and two for EOS.
+    let mut traces: HashMap<&[u8], Vec<&Span>> = HashMap::new();
+    for span in &spans {
+        assert_eq!(span.name, "gst.pad.pull_range");
+        assert_eq!(span.status.as_ref().map_or(0, |s| s.code), 0);
+        traces.entry(&span.trace_id).or_default().push(span);
+    }
+    assert_eq!(traces.len(), 4);
+    for trace in traces.values() {
+        assert_eq!(trace.len(), 2);
+        let root = trace.iter().find(|s| s.parent_span_id.is_empty()).unwrap();
+        let child = trace.iter().find(|s| !s.parent_span_id.is_empty()).unwrap();
+        assert_eq!(child.parent_span_id, root.span_id);
+    }
+    assert!(collect(pipeline, "parentbased_always_off", "0", "normal").is_empty());
+}
+
+#[test]
 fn async_transport_delivers_equivalent_traces_and_does_not_retry_failures() {
     for mode in ["async", "async-fail"] {
         assert_eq!(

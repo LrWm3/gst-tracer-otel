@@ -149,7 +149,7 @@ impl Encoder {
             if record.parent != opentelemetry::trace::SpanId::INVALID {
                 bytes(span, 4, &record.parent.to_bytes());
             }
-            bytes(span, 5, b"gst.pad.push");
+            bytes(span, 5, record.operation.name().as_bytes());
             integer(span, 6, 1); // INTERNAL
             fixed64(span, 7, anchor.nanos(record.start));
             fixed64(span, 8, anchor.nanos(record.end.max(record.start)));
@@ -202,9 +202,11 @@ impl Encoder {
                 10,
                 total_attributes.saturating_sub(config.attribute_limit - remaining) as u64,
             );
-            if record.flow_return < 0 {
-                // Status { message: "GStreamer push failed", code: ERROR }.
-                bytes(span, 15, b"\x12\x15GStreamer push failed\x18\x02");
+            if let Some(message) = record.operation.error(record.flow_return) {
+                // Both operation-specific messages have the same fixed length.
+                span.extend_from_slice(b"\x7a\x19\x12\x15");
+                span.extend_from_slice(message.as_bytes());
+                span.extend_from_slice(b"\x18\x02");
             } else {
                 bytes(span, 15, &[]);
             }
@@ -265,7 +267,17 @@ mod tests {
             .build();
         let mut encoder = Encoder::new(&resource);
         for limit in [0, 1, 2, 4, 5, 6, 7, 8, 9, 128] {
-            for (flow, remote) in [(0, false), (-5, true)] {
+            for (operation, flow, remote) in [
+                (crate::capture::Operation::Push, 0, false),
+                (crate::capture::Operation::Push, -5, true),
+                (crate::capture::Operation::Pull, 0, false),
+                (
+                    crate::capture::Operation::Pull,
+                    gstreamer::ffi::GST_FLOW_EOS,
+                    false,
+                ),
+                (crate::capture::Operation::Pull, -5, true),
+            ] {
                 for (profiled, value_length_limit) in [
                     (false, 4096),
                     (true, 0),
@@ -279,10 +291,12 @@ mod tests {
                         ..Config::default()
                     };
                     let mut a = record(1);
+                    a.operation = operation;
                     a.flow_return = flow;
                     a.parent_is_remote = remote;
                     a.profiled = profiled;
                     let mut b = record(1);
+                    b.operation = operation;
                     b.flow_return = flow;
                     b.parent_is_remote = remote;
                     b.profiled = profiled;

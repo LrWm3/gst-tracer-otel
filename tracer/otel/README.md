@@ -8,7 +8,8 @@ set `GST_TRACERS='mars-instrument(signals="traces")'`. The
 It keeps its defaults and uses the same tracing implementation. The settings
 and examples below document that interface.
 
-`mars-otel` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
+`mars-otel` records `gst_pad_push` and `gst_pad_pull_range` calls and exports
+OTLP/HTTP protobuf traces.
 It does not create live SDK spans or install a global tracer provider. An
 optional `profiles` feature adds an experimental embedded CPU sampler and
 Pyroscope delivery backend. It also registers `mars-profiles`, a
@@ -486,7 +487,7 @@ supported runtime setup.
 
 A successful pipeline transition from READY to NULL flushes completed records.
 Stop streaming before requesting the final drain. Flush covers records enqueued
-before its queue marker, not open pushes or concurrent later submissions. Rust
+before its queue marker, not open calls or concurrent later submissions. Rust
 applications can use:
 
 ```rust,ignore
@@ -508,12 +509,12 @@ The same cumulative fields are available through the Rust API:
 - `started_spans`, `completed_spans`, `enqueued_spans`, `exported_spans`.
 - `dropped_queue_full`, `dropped_closed`, `failed_export_spans`, `failed_exports`.
 - `pending_spans`, including queued, batched, and currently exporting records.
-- `unsampled_pushes`, `skipped_closed` (sampled pushes begun after shutdown),
+- `unsampled_pushes`, `unsampled_pulls`, `skipped_closed` (sampled calls begun after shutdown),
   `propagation_misses`, `propagation_fallbacks`,
   `dropped_depth`, `mismatched_hooks`.
 
 At quiescence, completed = exported + failed-export + queue-full + closed +
-pending. Started − completed identifies open pushes. Counters are a concurrent
+pending. Started − completed identifies open calls. Counters are a concurrent
 snapshot, not an atomic transaction. `pending_spans` is derived from enqueued
 minus exported/failed spans and clamps transient inconsistent reads to zero;
 it is exact after producers stop and a successful drain completes.
@@ -536,9 +537,12 @@ retain all failures, including ones already reported during pipeline stop.
   push with missing context is counted and suppressed, never resampled as a root.
 - Elements that strip metadata or create unrelated buffers asynchronously need
   element-specific propagation. Generic fan-in retains the first copied input
-  context and does not reconstruct multi-input links. Buffer lists and pull-mode
-  operations are outside the current push-hook coverage.
-- Capture does not attach SDK contexts per push. Application instrumentation can
+  context and does not reconstruct multi-input links. Buffer lists do not create
+  trace spans. Top-level pull reads create roots and attach their sampling
+  decision to the returned buffer; downstream pushes inherit it when metadata
+  survives. Nested pulls inherit the active span. Pull EOS is normal completion.
+  A read is not necessarily a video frame: demuxers can split or combine reads.
+- Capture does not attach SDK contexts per call. Application instrumentation can
   explicitly bridge `current_span_context()` if it needs a child SDK span. The
   optional log bridge uses native log trace/span fields from the capture stack.
 - Debug log formatting still runs on the caller thread when opted in. Logs use

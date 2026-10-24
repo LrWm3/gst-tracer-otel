@@ -131,7 +131,7 @@ then open the span's CPU profile to see which element and native functions ran.
   a bin element.
 - **No async support.** `mars-metrics` supports push, pull, and buffer
   lists, as does explicit `signals="metrics"` collection in `mars-instrument`.
-  Trace spans and metric exemplars currently cover ordinary pushes. Regular
+  Trace spans and metric exemplars cover ordinary pushes and pull reads. Regular
   `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
   asynchronous boundaries are not handled correctly by the element timings.
   If this is important to you, please open an issue and it can be explored.

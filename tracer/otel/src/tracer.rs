@@ -13,7 +13,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "mars-otel",
         gst::DebugColorFlags::empty(),
-        Some("Bounded OTLP push tracing"),
+        Some("Bounded OTLP push/pull tracing"),
     )
 });
 
@@ -148,6 +148,17 @@ fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, S
         gst_mars_metrics_core::set_capture_hooks(gst_mars_metrics_core::CaptureHooks {
             exemplars: settings.traces,
             begin: capture_begin,
+            pull_begin: capture_pull_begin,
+            pull_end: |ts, pad, result, buffer| {
+                let token = capture_pull_end(ts, pad, result, buffer)?;
+                let runtime = crate::tracer::runtime().ok()?;
+                Some(gst_mars_metrics_core::exemplars::Exemplar {
+                    trace_id: token.trace_id.to_bytes(),
+                    span_id: token.span_id.to_bytes(),
+                    timestamp_ns: runtime.timestamp(ts),
+                    value: 0.0,
+                })
+            },
             end: |ts, pad, result| {
                 let runtime = crate::tracer::runtime().ok()?;
                 if !runtime.config.traces {
@@ -175,6 +186,34 @@ fn capture_begin(ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
             crate::profiles::register_thread();
         }
     }
+}
+
+fn capture_pull_begin(ts: u64, pad: &gst::Pad) {
+    #[cfg(feature = "profiles")]
+    {
+        crate::profiles::register_thread();
+        crate::profilecontext::begin(pad, 2);
+    }
+    if let Ok(runtime) = runtime() {
+        if runtime.config.traces {
+            capture::begin_pull(runtime, ts, pad);
+        }
+    }
+}
+
+fn capture_pull_end(
+    ts: u64,
+    pad: &gst::Pad,
+    result: i32,
+    buffer: Option<&gst::Buffer>,
+) -> Option<capture::Token> {
+    let token = runtime()
+        .ok()
+        .filter(|r| r.config.traces)
+        .and_then(|r| capture::end_pull(r, ts, pad, result, buffer));
+    #[cfg(feature = "profiles")]
+    crate::profilecontext::end(pad, 2);
+    token
 }
 
 static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -295,6 +334,15 @@ macro_rules! tracer_impl {
                             self.register_hook(TracerHook::PadPushPre);
                         }
                     }
+                    let pull_hooks = runtime.config.traces;
+                    #[cfg(feature = "profiles")]
+                    let pull_hooks = pull_hooks || crate::profiles::active();
+                    // Shared metrics invoke capture around their own timing.
+                    // Registering a second typed pull hook would duplicate spans.
+                    if runtime.shared_metrics.is_none() && pull_hooks {
+                        self.register_hook(TracerHook::PadPullRangePre);
+                        self.register_hook(TracerHook::PadPullRangePost);
+                    }
                     #[cfg(feature = "profiles")]
                     if crate::profiles::active() {
                         self.register_hook(TracerHook::PadPushListPre);
@@ -320,6 +368,21 @@ macro_rules! tracer_impl {
                 crate::profilecontext::methods!();
                 fn pad_push_pre(&self, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
                     capture_begin(ts, pad, buffer);
+                }
+                fn pad_pull_range_pre(&self, ts: u64, pad: &gst::Pad, _: u64, _: u32) {
+                    capture_pull_begin(ts, pad);
+                }
+                fn pad_pull_range_post(
+                    &self,
+                    ts: u64,
+                    pad: &gst::Pad,
+                    result: Result<&gst::Buffer, gst::FlowError>,
+                ) {
+                    let (flow, buffer) = match result {
+                        Ok(buffer) => (gst::ffi::GST_FLOW_OK, Some(buffer)),
+                        Err(error) => (error.into_glib(), None),
+                    };
+                    capture_pull_end(ts, pad, flow, buffer);
                 }
                 fn pad_push_list_pre(&self, _: u64, _: &gst::Pad, _: &gst::BufferList) {
                     #[cfg(feature = "profiles")]
@@ -399,6 +462,12 @@ macro_rules! tracer_impl {
                         && result.is_ok()
                     {
                         if let Ok(runtime) = runtime() {
+                            gst::debug!(
+                                CAT,
+                                "Draining telemetry; counters: {:?}",
+                                runtime.stats.snapshot()
+                            );
+                            let start = std::time::Instant::now();
                             if let Err(error) = runtime.flush(runtime.config.flush_timeout) {
                                 gst::warning!(
                                     CAT,
@@ -406,7 +475,15 @@ macro_rules! tracer_impl {
                                     runtime.stats.snapshot()
                                 );
                             }
+                            gst::debug!(
+                                CAT,
+                                "Trace/metric drain took {:?}; counters: {:?}",
+                                start.elapsed(),
+                                runtime.stats.snapshot()
+                            );
+                            let start = std::time::Instant::now();
                             crate::otellogbridge::flush();
+                            gst::debug!(CAT, "Log drain took {:?}", start.elapsed());
                         }
                     }
                 }

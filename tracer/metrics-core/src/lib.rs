@@ -7,12 +7,15 @@ mod metricsimp;
 pub use metricsimp::{MetricsTracerImp, CAT};
 pub use prometheus::proto;
 
-/// Optional push tracing, invoked in a defined order around shared metric timing.
+/// Optional push/pull tracing, invoked in a defined order around shared metric timing.
 /// The finish callback returns IDs only when that span was admitted for export.
 pub struct CaptureHooks {
     pub exemplars: bool,
     pub begin: fn(u64, &gstreamer::Pad, &gstreamer::Buffer),
     pub end: fn(u64, &gstreamer::Pad, i32) -> Option<exemplars::Exemplar>,
+    pub pull_begin: fn(u64, &gstreamer::Pad),
+    pub pull_end:
+        fn(u64, &gstreamer::Pad, i32, Option<&gstreamer::Buffer>) -> Option<exemplars::Exemplar>,
 }
 
 /// Validate the new namespace without changing permissive legacy defaults.
