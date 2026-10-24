@@ -7,6 +7,10 @@ traces to Tempo, and profiles to Pyroscope. `mars-otel` remains supported for
 existing trace/profile configurations. `mars-profiles` alone emits no
 traces, although its element names still appear in flame graphs.
 
+[Watch the recorded walkthrough](../../docs/media/correlation.mp4): a 502 ms
+measurement opens its trace, then the selected element's 500 ms CPU profile.
+The [README animation](../../README.md) previews the same navigation.
+
 ## Configure your existing Grafana
 
 Add Prometheus, Tempo and Pyroscope as data sources. On the Prometheus source,
@@ -20,6 +24,11 @@ jsonData:
       datasourceUid: your-tempo-uid
       urlDisplayLabel: Inspect trace
 ```
+
+Users also need [access to Explore](https://grafana.com/docs/grafana/latest/visualizations/explore/get-started-with-explore/#access-explore):
+an Editor or Administrator role, or the data sources explorer role where RBAC
+is available. A Viewer can query data sources through the API but cannot open
+Explore with the default permissions.
 
 The trace-ID label can differ if a collector renames it; use the label actually
 stored by your backend. See Grafana's
@@ -68,7 +77,8 @@ No additional language-specific profiling bridge is needed for Mars.
 ## Try the local demo
 
 The demo uses Grafana 13.1.1, Prometheus 3.3.0, Tempo 2.10.0 and Pyroscope 2.4.0, with local ephemeral
-storage and anonymous Grafana viewing. All published ports bind to loopback.
+storage and anonymous Editor access so Explore works without a login. All
+published ports bind to loopback; this access setting is for the disposable local demo.
 It requires a Linux x86-64 or arm64 host, Docker Compose, Python 3, and the normal
 Rust/GStreamer development dependencies, including GStreamer 1.22 or newer.
 
@@ -114,10 +124,15 @@ span and inspect `pyroscope.profile.id`, then use **Profiles for this span**.
 The printed **Open trace** URL is also a shortcut to the same trace. The selected
 span in this demo should contain `[element] heavy`; compare its CPU total with
 `queries.span.cpu_ns` in `target/correlation/result.json`.
+If Grafana folds the stack into a single bar, click **Expand all groups** in the
+flame graph toolbar to reveal the element name and native frames.
 
 The automatic checker exercises configuration and backend queries through
-Grafana; it does **not** automate this browser action. See the
-[recorded validation and limits](../../reports/otel/SIGNALS_REVIEW.md).
+Grafana; it does **not** automate this browser action. The linked video was
+recorded separately with `agent-browser` and headless Chrome, following those
+actual UI links. See the [browser validation and limits](../../reports/otel/SIGNALS_REVIEW.md#browser-walkthrough).
+The demo creates fresh IDs each run; the video's Explore URLs expire with
+backend retention.
 
 To remove the demo containers and their temporary data:
 
@@ -159,4 +174,5 @@ Those identifiers do not configure Grafana navigation by themselves:
 See Grafana's [signal-linking overview](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/#connect-traces-to-other-signals)
 and Mars's [exemplar/log semantics](INSTRUMENT.md#follow-a-measurement).
 The local demo checks metric → trace → profile data and provisioning through
-Grafana's APIs. It does not deploy a logs backend or automate the UI links.
+Grafana's APIs, and the recorded walkthrough verifies the UI links. It does not
+deploy a logs backend.

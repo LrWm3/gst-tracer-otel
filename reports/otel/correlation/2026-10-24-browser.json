@@ -1,0 +1,164 @@
+{
+  "date": "2026-10-24",
+  "runtime_commit": "5f9970374f25a4470b5320c6db92336cba663eb2",
+  "browser_clickthrough_verified": true,
+  "tools": {
+    "agent_browser": "0.31.1",
+    "chrome": "148.0.7778.97",
+    "ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers"
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "backend_evidence": "2026-10-24-recording.json",
+  "backend_evidence_sha256": "8cf81494bec3cb4b6f2c333241153851053f5baf75f461fc87043d6c65c7dc94",
+  "configuration_changes_after_backend_check": {
+    "GF_AUTH_ANONYMOUS_ORG_ROLE": "Editor",
+    "metric_legend": "heavy p95 wall time (seconds)"
+  },
+  "service_name": "mars-correlation-1792860546874033304",
+  "selected": {
+    "trace_id": "cb3ddd89f29375d9abe15479809062ee",
+    "span_id": "26e211d035b47311",
+    "cpu_ns": 500000000
+  },
+  "selected_exemplar": {
+    "labels": {
+      "span_id": "26e211d035b47311",
+      "trace_id": "cb3ddd89f29375d9abe15479809062ee"
+    },
+    "value": "0.501814129",
+    "timestamp": 1792860554.158
+  },
+  "navigation": [
+    "Open generated metrics Explore URL",
+    "Click the highest visible exemplar marker and verify trace/span IDs",
+    "Click Inspect trace",
+    "Select the 501.83 ms span and expand Span attributes",
+    "Click Profiles for this span",
+    "Verify Pyroscope query service and span ID",
+    "Expand all groups and visually verify [element] heavy and 500 ms total CPU"
+  ],
+  "resulting_explore_panes": {
+    "azt": {
+      "datasource": "mars-correlation-tempo",
+      "queries": [
+        {
+          "query": "cb3ddd89f29375d9abe15479809062ee",
+          "queryType": "traceql",
+          "datasource": {
+            "uid": "mars-correlation-tempo"
+          },
+          "refId": "A"
+        }
+      ],
+      "range": {
+        "from": "1792860544874",
+        "to": "1792860562962"
+      },
+      "panelsState": {
+        "trace": {
+          "spanId": "26e211d035b47311",
+          "spanFilters": {
+            "spanNameOperator": "=",
+            "serviceNameOperator": "=",
+            "fromOperator": ">",
+            "toOperator": "<",
+            "tags": [
+              {
+                "id": "3d13fca2-dcb",
+                "operator": "="
+              }
+            ]
+          }
+        }
+      },
+      "compact": true
+    },
+    "2o9": {
+      "datasource": "mars-correlation-pyroscope",
+      "queries": [
+        {
+          "groupBy": [],
+          "heatmapType": "individual",
+          "includeExemplars": false,
+          "includeHeatmap": false,
+          "labelSelector": "{service_name=\"mars-correlation-1792860546874033304\"}",
+          "profileIdSelector": [],
+          "spanSelector": [
+            "26e211d035b47311"
+          ],
+          "queryType": "profile",
+          "profileTypeId": "process_cpu:cpu:nanoseconds:cpu:nanoseconds",
+          "refId": "profile",
+          "datasource": {
+            "uid": "mars-correlation-pyroscope"
+          }
+        }
+      ],
+      "range": {
+        "from": "1792860493656",
+        "to": "1792860614158"
+      },
+      "panelsState": {
+        "trace": {
+          "spanId": "26e211d035b47311",
+          "spanFilters": {
+            "spanNameOperator": "=",
+            "serviceNameOperator": "=",
+            "fromOperator": ">",
+            "toOperator": "<",
+            "tags": [
+              {
+                "id": "3d13fca2-dcb",
+                "operator": "="
+              }
+            ]
+          }
+        }
+      },
+      "compact": false
+    }
+  },
+  "observed_profile": {
+    "element": "heavy",
+    "cpu_ns": 500000000,
+    "native_function": "profile_correlation::simulated_cpu_work"
+  },
+  "editing": "Trim 2.4 seconds of initial page setup; add caption band above the unchanged browser viewport; encode H.264 MP4 and a scaled 5 fps GIF.",
+  "media": {
+    "docs/media/correlation.mp4": {
+      "sha256": "e7962e9055888a74d8d74b07eef9341caca0c50c255c7a172186dcb7d553b59f",
+      "programs": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "width": 1440,
+          "height": 996,
+          "r_frame_rate": "10/1"
+        }
+      ],
+      "format": {
+        "duration": "33.400000",
+        "size": "1723824"
+      }
+    },
+    "docs/media/correlation.gif": {
+      "sha256": "6d1a8ac9351eef5895db7e2b9a0afff2337398c82efe07b82e272004b0a82d60",
+      "programs": [],
+      "streams": [
+        {
+          "codec_name": "gif",
+          "width": 1008,
+          "height": 698,
+          "r_frame_rate": "5/1"
+        }
+      ],
+      "format": {
+        "duration": "33.400000",
+        "size": "3153513"
+      }
+    }
+  }
+}

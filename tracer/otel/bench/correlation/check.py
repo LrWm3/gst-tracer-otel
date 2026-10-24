@@ -271,6 +271,7 @@ def main():
     graph = eventually(check_graph, 'nonempty metrics graph through Grafana')
     metric_panes = {'A': {'datasource': METRICS_UID,
                           'queries': [{'refId': 'A', 'expr': expression, 'exemplar': True,
+                                       'legendFormat': 'heavy p95 wall time (seconds)',
                                        'range': True, 'instant': False, 'editorMode': 'code'}],
                           'range': {'from': str(started - 2000), 'to': str(ended + 2000)}}}
     metrics_explore = grafana + '/explore?' + urllib.parse.urlencode({'schemaVersion': '1', 'panes': json.dumps(metric_panes), 'orgId': '1'})

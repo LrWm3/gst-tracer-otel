@@ -86,11 +86,36 @@ last observation. OTLP's explicit final flush captured all observations in the
 main check above. Neither a successful HTTP export nor this test guarantees
 durable production storage.
 
-**Browser navigation and recording remain unverified.** No browser was connected,
-so these are backend/API checks, not a recorded Grafana click-through. There is
-no new GIF or video to embed yet. The local demo generates fresh Explore URLs
-for recording once a browser is connected; archived URLs expire with retention.
-The demo does not deploy a logs backend.
+## Browser walkthrough
+
+On 2026-10-24, a separate fresh run was followed through Grafana with
+`agent-browser` 0.31.1 and headless Chrome. The [MP4](../../docs/media/correlation.mp4)
+and [README GIF](../../docs/media/correlation.gif) record actual UI navigation:
+
+1. Click the heavy element's 0.502-second exemplar, then **Inspect trace**.
+2. Open the 501.83 ms span and its attributes, including `sink_pad.element=heavy`
+   and `pyroscope.profile.id=26e211d035b47311`.
+3. Click **Profiles for this span**. The resulting Pyroscope query retains that
+   span ID and the matching service name. Expand the flame graph's groups.
+4. Observe **500 ms** of sampled CPU beneath `[element] heavy`, including
+   `profile_correlation::simulated_cpu_work`.
+
+The recording uses trace `cb3ddd89f29375d9abe15479809062ee`; its separate backend
+check again matched 192 spans, 6160 ms total CPU, 500 ms for the selected span,
+520 ms for the trace, and zero for an unknown span. This is a deliberately slow
+demo workload, not an overhead measurement.
+
+The browser check exposed a provisioning issue that API checks missed: the
+anonymous Viewer role could query data but could not access Explore. The local
+Compose demo now uses Editor access, with all ports still bound to loopback.
+The generated metric query also has a readable legend.
+
+Evidence: [recording dataset](correlation/2026-10-24-recording.json),
+[browser verification and media hashes](correlation/2026-10-24-browser.json).
+The video trims initial loading and adds captions; the Grafana data and
+navigation are unaltered. The GIF is a smaller, lower-frame-rate version.
+Archived Explore URLs expire with backend retention. The demo does not deploy
+a logs backend.
 
 ## Checks and remaining measurements
 
