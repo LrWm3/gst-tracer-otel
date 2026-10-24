@@ -10,10 +10,13 @@ code.
 | --- | --- | --- | --- |
 | Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% expected on video workloads |
 | Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% |
-| Trace buffer pushes across spans | [mars-otel](tracer/otel/README.md) | OpenTelemetry collector | ~1% for traces; ~3–4% with profiles + logs |
-| Collect correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | OpenTelemetry collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
+| Investigate with correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | OpenTelemetry collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
 
 Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
+
+Use **mars-profiles** to find CPU hotspots, or **mars-instrument** to connect a
+measurement to a trace and its CPU samples. `mars-otel` remains available as a
+compatibility entry point for existing trace configurations.
 
 For a list of available metrics, see the [prometheus plugin README.md](https://github.com/LrWm3/gst-tracer-otel/blob/main/tracer/prometheus/README.md#metric-semantics).
 
@@ -85,8 +88,8 @@ Each guide includes its build command, backend requirements, and configuration:
 
 - [Combined instrumentation](tracer/otel/INSTRUMENT.md): metrics and traces
   together, with optional correlated logs and CPU profiles.
-- [OpenTelemetry traces](tracer/otel/README.md): push-call spans, trace sampling,
-  and optional correlated logs and profiles.
+- [Trace collection](tracer/otel/README.md): push-call spans, trace sampling,
+  traces-only operation, and compatibility with `mars-otel`.
 - [CPU profiles](tracer/otel/PROFILES.md): native stacks grouped by element
   instance or task owner, including frame pointers and debug symbols.
 

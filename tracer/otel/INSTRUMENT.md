@@ -1,9 +1,10 @@
 # mars-instrument: correlated push telemetry
 
-`mars-instrument` is an experimental entry point in `libgstoteltracer.so`. It
+`mars-instrument` is the entry point for collecting correlated telemetry. It
 uses one set of push hooks, one nested call stack, and cached pad descriptions
 for OTLP metrics and traces, optional correlated GStreamer logs, and optional
-Pyroscope CPU profiles. `mars-otel` retains its existing defaults.
+Pyroscope CPU profiles. `mars-otel` remains a compatibility entry point with
+its existing tracing defaults. For traces alone, set `GST_INSTRUMENT_METRICS=false`.
 For CPU profiles alone, use the [mars-profiles entry point](PROFILES.md) in the
 same plugin, built with `--features profiles`.
 

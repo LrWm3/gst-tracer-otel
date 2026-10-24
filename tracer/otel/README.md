@@ -1,4 +1,12 @@
-# mars-otel: OpenTelemetry push tracing for GStreamer
+# Trace collection for GStreamer
+
+Use `mars-instrument` for new configurations. To collect traces without metrics,
+set `GST_INSTRUMENT_METRICS=false`; logs and CPU profiles remain optional. The
+[instrumentation guide](INSTRUMENT.md) covers collecting multiple signals.
+
+`mars-otel` is the compatibility entry point for existing tracing configurations.
+It keeps its defaults and uses the same tracing implementation. The settings
+and examples below document that interface.
 
 `mars-otel` records `gst_pad_push` calls and exports OTLP/HTTP protobuf traces.
 It does not create live SDK spans or install a global tracer provider. An
