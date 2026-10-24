@@ -1,5 +1,9 @@
 # Grafana trace/profile correlation validation
 
+For the 2026-10-24 full metric → trace → profile check, see the
+[explicit-signals review](SIGNALS_REVIEW.md). The record below describes the
+initial trace/profile-only check.
+
 Validated on 2026-10-23 with Grafana 13.1.1, Tempo 2.10.0 and Pyroscope 2.4.0.
 The tracer runtime is `a4bb8fd`; this change adds documentation, provisioning and
 a test workload without changing runtime behavior. The

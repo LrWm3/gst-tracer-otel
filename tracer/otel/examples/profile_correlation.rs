@@ -1,7 +1,10 @@
 //! Small trace/profile demo for bench/correlation/check.py. Deliberately long
 //! CPU work gives each selected push enough samples for a useful span profile.
 use gstreamer::{self as gst, prelude::*};
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 fn thread_cpu() -> u64 {
     let mut value = std::mem::MaybeUninit::<libc::timespec>::uninit();
@@ -27,15 +30,18 @@ fn simulated_cpu_work(milliseconds: u64) {
 
 fn main() {
     gst::init().unwrap();
-    let _tracer = glib::Object::new::<gstoteltracer::TelemetryTracer>();
-    let pipeline = gst::parse::launch(
-        "fakesrc num-buffers=4 ! identity name=light ! queue name=handoff ! \
-         identity name=heavy ! fakesink name=output sync=false",
-    )
+    let showcase = std::env::var("MARS_DEMO_SHOWCASE").as_deref() == Ok("1");
+    let buffers = if showcase { 48 } else { 4 };
+    let _tracer = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+    let pipeline = gst::parse::launch(&format!(
+        "fakesrc num-buffers={buffers} ! identity name=light ! queue name=handoff ! \
+         identity name=heavy ! fakesink name=output sync=false"
+    ))
     .unwrap()
     .downcast::<gst::Pipeline>()
     .unwrap();
     for (name, milliseconds) in [("light", 100), ("heavy", 250)] {
+        let sequence = AtomicU64::new(0);
         pipeline
             .by_name(name)
             .unwrap()
@@ -46,7 +52,20 @@ fn main() {
                     span.trace_id(),
                     span.span_id()
                 );
+                let frame = sequence.fetch_add(1, Ordering::Relaxed);
+                let milliseconds = if showcase {
+                    match name {
+                        "light" => 20,
+                        _ if frame == 24 => 500,
+                        _ => 100,
+                    }
+                } else {
+                    milliseconds
+                };
                 simulated_cpu_work(milliseconds);
+                if showcase && name == "light" {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
                 None
             });
     }
@@ -65,7 +84,7 @@ fn main() {
     pipeline.set_state(gst::State::Null).unwrap();
     let traces = gstoteltracer::shutdown(Duration::from_secs(20)).unwrap();
     let profiles = gstoteltracer::profile_stats();
-    assert_eq!(traces.started_spans, 16);
+    assert_eq!(traces.started_spans, buffers * 4);
     assert_eq!(traces.exported_spans, traces.started_spans);
     assert_eq!(
         traces.pending_spans + traces.dropped_queue_full + traces.failed_export_spans,
@@ -78,6 +97,10 @@ fn main() {
         0
     );
     assert_eq!(profiles.active_threads + profiles.registration_failures, 0);
+    let metrics = gstoteltracer::metric_stats().unwrap();
+    assert_eq!(metrics.recorded_pushes, buffers * 4);
+    assert_eq!(metrics.failed_exports + metrics.dropped_capacity, 0);
     println!("TRACE {traces:?}");
     println!("PROFILE {profiles:?}");
+    println!("METRICS {metrics:?}");
 }

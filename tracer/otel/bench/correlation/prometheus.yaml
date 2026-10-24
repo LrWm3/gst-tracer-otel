@@ -1,0 +1,5 @@
+global:
+  scrape_interval: 1s
+storage:
+  exemplars:
+    max_exemplars: 10000

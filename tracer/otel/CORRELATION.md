@@ -1,14 +1,31 @@
-# Link traces and CPU profiles in Grafana
+# Follow metrics, traces and CPU profiles in Grafana
 
 Mars emits the correlation IDs automatically. Grafana needs a one-time data-source
-configuration to turn them into links. Use `mars-otel` or `mars-instrument` with
-[CPU profiling enabled](README.md#experimental-correlated-cpu-profiles), send
-traces to Tempo, and send profiles to Pyroscope. `mars-profiles` alone emits no
+configuration to turn them into links. Use
+`mars-instrument(signals="metrics,traces,profiles")`, send metrics to Prometheus,
+traces to Tempo, and profiles to Pyroscope. `mars-otel` remains supported for
+existing trace/profile configurations. `mars-profiles` alone emits no
 traces, although its element names still appear in flame graphs.
 
 ## Configure your existing Grafana
 
-Add both Tempo and Pyroscope as data sources. In **Connections → Data sources →
+Add Prometheus, Tempo and Pyroscope as data sources. On the Prometheus source,
+configure an **Exemplars** internal link: label `trace_id`, destination Tempo.
+The metrics backend must retain exemplars. For provisioned data sources:
+
+```yaml
+jsonData:
+  exemplarTraceIdDestinations:
+    - name: trace_id
+      datasourceUid: your-tempo-uid
+      urlDisplayLabel: Inspect trace
+```
+
+The trace-ID label can differ if a collector renames it; use the label actually
+stored by your backend. See Grafana's
+[Prometheus exemplar settings](https://grafana.com/docs/grafana/latest/datasources/prometheus/configure/).
+
+In **Connections → Data sources →
 your Tempo data source → Traces to profiles**, select:
 
 | Setting | Value for Mars |
@@ -38,7 +55,7 @@ jsonData:
 
 A UID is not the data source's display name or plugin type. Apply the updated
 provisioning file and restart Grafana as needed. The demo's
-[complete provisioning file](bench/correlation/datasources.yaml) configures both
+[complete provisioning file](bench/correlation/datasources.yaml) configures all three
 data sources. Grafana documents the [configuration and UI steps](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/configure-trace-to-profiles/)
 and [YAML provisioning](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/provision/).
 
@@ -50,7 +67,7 @@ No additional language-specific profiling bridge is needed for Mars.
 
 ## Try the local demo
 
-The demo uses Grafana 13.1.1, Tempo 2.10.0 and Pyroscope 2.4.0, with local ephemeral
+The demo uses Grafana 13.1.1, Prometheus 3.3.0, Tempo 2.10.0 and Pyroscope 2.4.0, with local ephemeral
 storage and anonymous Grafana viewing. All published ports bind to loopback.
 It requires a Linux x86-64 or arm64 host, Docker Compose, Python 3, and the normal
 Rust/GStreamer development dependencies, including GStreamer 1.22 or newer.
@@ -65,36 +82,42 @@ RUSTFLAGS="-C force-frame-pointers=yes" \
   --example profile_correlation
 
 python3 tracer/otel/bench/correlation/check.py \
-  --binary target/release/examples/profile_correlation
+  --binary target/release/examples/profile_correlation --showcase
 ```
 
-The checker waits for service readiness, runs a four-buffer pipeline with two
-CPU-heavy `identity` elements on different threads, and forwards the actual
-trace/profile exports to Tempo and Pyroscope. The artificial CPU work gives
-short demo spans enough samples to inspect; this is not an overhead benchmark.
-It prints a selected span ID and a Grafana Explore URL, and saves the results
+The checker waits for service readiness, runs 48 buffers through two `identity`
+elements on different threads, and forwards actual exports to Prometheus,
+Tempo and Pyroscope. One deliberately slower frame creates a visible spike.
+The artificial CPU work gives spans enough samples to inspect; this is not an
+overhead benchmark. Omit `--showcase` for the shorter four-buffer check.
+It prints a selected exemplar/span and Grafana Explore URLs, and saves the results
 and workload log under `target/correlation/`.
 
 The automatic checks verify:
 
 - Grafana loaded the expected data-source UIDs, service mapping and CPU type.
-- All 16 emitted spans decode correctly, and samples match the exported span IDs.
+- All 192 emitted spans (16 in the short check) decode correctly, and samples
+  match the exported span IDs.
+- Stored Prometheus exemplars match exported IDs and histogram observations;
+  the metric graph returns nonempty data through Grafana.
 - The selected trace and its `pyroscope.profile.id` marker can be queried through
   Grafana's Tempo proxy.
 - Grafana's Pyroscope proxy returns exactly the decoded CPU totals for the
   service, selected span and selected trace. An unknown span returns zero.
 - The selected span's profile includes the `[element] heavy` root.
 
-For the **browser check**, open the printed Explore URL (or open
-[Grafana](http://localhost:43002), choose **Mars traces**, and query the printed
-trace ID). Expand the selected span and inspect its `pyroscope.profile.id`.
-Use **Profiles for this span** and check the resulting flame graph. The selected
+For the **browser check**, open the printed **Open metrics** URL (or open
+[Grafana](http://localhost:43002) and choose **Mars metrics**). Exemplars are
+enabled in the generated query. Select the exemplar matching
+`selected_exemplar` in the result JSON and follow **Inspect trace**. Expand its
+span and inspect `pyroscope.profile.id`, then use **Profiles for this span**.
+The printed **Open trace** URL is also a shortcut to the same trace. The selected
 span in this demo should contain `[element] heavy`; compare its CPU total with
 `queries.span.cpu_ns` in `target/correlation/result.json`.
 
 The automatic checker exercises configuration and backend queries through
 Grafana; it does **not** automate this browser action. See the
-[recorded validation and limits](../../reports/otel/CORRELATION_REVIEW.md).
+[recorded validation and limits](../../reports/otel/SIGNALS_REVIEW.md).
 
 To remove the demo containers and their temporary data:
 
@@ -134,6 +157,6 @@ Those identifiers do not configure Grafana navigation by themselves:
 | Trace → logs | Configure the Tempo data source's **Trace to logs** mapping for your log schema. |
 
 See Grafana's [signal-linking overview](https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/#connect-traces-to-other-signals)
-and Mars's [exemplar/log semantics](INSTRUMENT.md#measurements-and-correlation).
-The local demo above covers trace/profile correlation only; it does not deploy
-a metrics or logs backend or validate those UI links.
+and Mars's [exemplar/log semantics](INSTRUMENT.md#follow-a-measurement).
+The local demo checks metric → trace → profile data and provisioning through
+Grafana's APIs. It does not deploy a logs backend or automate the UI links.

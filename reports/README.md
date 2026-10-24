@@ -27,6 +27,7 @@ and original source/binary checksums are retained.
 - [Current CPU profiling and log overhead on 1080p video](otel/PROFILE_VIDEO_RESULTS.md)
 - [Element-attributed profiles: Grafana screenshots and validation](otel/PROFILE_ELEMENT_REVIEW.md)
 - [Grafana trace/profile correlation: provisioning and backend validation](otel/CORRELATION_REVIEW.md)
+- [Explicit signals and metric → trace → profile correlation validation](otel/SIGNALS_REVIEW.md)
 - [Linux arm64 profiling: validation on an integrated memory nvidia device, CPU costs, and lifecycle checks](otel/ARM64_PROFILES.md)
 
 Historical correlated-profile measurements are described in the

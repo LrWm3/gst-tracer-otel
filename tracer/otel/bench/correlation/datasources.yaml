@@ -1,5 +1,17 @@
 apiVersion: 1
 datasources:
+  - name: Mars metrics
+    uid: mars-correlation-metrics
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    jsonData:
+      httpMethod: POST
+      timeInterval: 1s
+      exemplarTraceIdDestinations:
+        - datasourceUid: mars-correlation-tempo
+          name: trace_id
+          urlDisplayLabel: Inspect trace
   - name: Mars traces
     uid: mars-correlation-tempo
     type: tempo
