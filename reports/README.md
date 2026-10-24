@@ -3,6 +3,10 @@
 Reviews, measured results, and supporting data are grouped by implementation.
 Run reproduction commands from the repository root.
 
+Device descriptions use "an integrated memory nvidia device". Identifying host
+and hardware inventory has been removed from archived metadata; measurements
+and original source/binary checksums are retained.
+
 ## Metrics
 
 - [Metrics-only CPU and memory comparison](prometheus/METRICS_RESULTS.md)

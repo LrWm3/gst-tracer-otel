@@ -5,8 +5,8 @@ sample rings, element/task attribution, background symbolizer, and Pyroscope
 uploader as x86-64. Architecture-specific code is isolated in
 [profilearch.rs](../../tracer/otel/src/profilearch.rs).
 
-Validation used an integrated memory nvidia device. The host's GStreamer 1.16.3 is below the existing
-1.22 minimum. Tests and benchmarks ran natively in a Debian 12 container with
+Validation used an integrated memory nvidia device. The host's GStreamer 1.16.3
+is below the existing 1.22 minimum. Tests and benchmarks ran natively in a Debian 12 container with
 GStreamer 1.22.0 and Rust 1.89.0; the host installation was not changed. No GPU
 plugins, inference workloads, or production services were used.
 
@@ -51,7 +51,8 @@ containing two known Rust callers in leaf-first order under the correct element
 root. It is explicitly run with `-C force-frame-pointers=yes`, since builds that
 omit those frames cannot satisfy that check.
 
-Native architecture tests verified the backwards-compatible HINT behavior. A separate QEMU 7.2.22 `-cpu max` run
+Native architecture tests verified the backwards-compatible HINT behavior.
+A separate QEMU 7.2.22 `-cpu max` run
 exercised **actual changed signatures with both instruction keys A and B** and
 verified that stripping recovers each original callsite. This is emulated PAC
 instruction coverage, not native PAC-hardware or profiler-timer validation.
@@ -140,8 +141,8 @@ overhead for production video decoding, inference, or GPU workloads.
 
 ## Deadlock and memory-growth check
 
-A follow-up on an integrated memory nvidia device tested runtime code from `128b002`. Source hashes matched
-the checkout. No deadlock or sustained memory growth was observed in these
+A follow-up on an integrated memory nvidia device tested runtime code from
+`128b002`. Source hashes matched the checkout. No deadlock or sustained memory growth was observed in these
 finite runs; this is not proof that every production workload is free of leaks
 or hangs.
 

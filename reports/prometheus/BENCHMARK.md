@@ -11,7 +11,8 @@ instrumentation cost. Final-build RTSP throughput was 120.08 FPS.
 
 Measurements used an integrated memory nvidia device.
 The installed processor and tracer were not replaced. Existing monitoring
-services remained running. All measured runs use the same locally supplied benchmark container image.
+services remained running. All measured runs use the same locally supplied
+benchmark container image.
 
 Tracer variants:
 
@@ -181,6 +182,12 @@ reviewed build was rebuilt in an independent target directory.
 
 ## Reproduction and artifacts
 
+Set `BENCH_IMAGE` to your benchmark container image and `BENCH_PROCESSOR_ROOT`
+to your local processor checkout before running the scripts. The capacity script
+also requires `BENCH_PLATFORM`, the platform selector accepted by the external
+processor benchmark. These scripts depend on that separately staged processor,
+its inputs, and the tracer variants described below.
+
 - `bench_matched.py`: rotated variants, exact commands, plugin hashes, subprocess
   elapsed/CPU time, scrape counts and logs.
 - `run_device_matched.sh`: full-path capacity test.
@@ -231,8 +238,8 @@ per source buffer, including GStreamer and startup/teardown, not tracer-only CPU
 
 The sampled workloads use about 1.9–2.5% less CPU per buffer. Observing every
 buffer is approximately unchanged (0.8% lower median CPU). These are local
-synthetic measurements on a shared desktop; they do not establish an integrated memory nvidia device or
-production-video speedup. Wall times are also recorded but include process-wait
+synthetic measurements on a shared desktop; they do not establish a speedup on
+an integrated memory nvidia device or in production video. Wall times are also recorded but include process-wait
 polling overhead, so CPU is the primary comparison.
 
 Raw observations, commands, build identities and workload metadata are in
