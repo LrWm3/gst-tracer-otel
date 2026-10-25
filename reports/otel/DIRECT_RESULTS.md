@@ -278,3 +278,60 @@ cc -O2 -Wall -Wextra tracer/otel/bench/pipeline.c -o target/otel-bench/pipeline 
 python3 tracer/otel/bench/export_throughput.py \
   --output reports/otel/export-throughput/recheck
 ```
+
+
+## Queue residence investigation — 2026-10-25
+
+A generic pad-hook measurement should be called **queue boundary delay**, not
+exact queue residence. An input timestamp precedes admission and can include
+waiting for space. An output timestamp follows dequeue and scheduling. The
+synchronous input call measures admission/backpressure, not subsequent residence.
+The [GStreamer 1.24.2 queue implementation](https://github.com/GStreamer/gstreamer/blob/1.24.2/subprojects/gstreamer/plugins/elements/gstqueue.c)
+places admission, dequeue, drops, and flush handling inside the element; pad
+callbacks do not expose those exact transitions. Its
+[documented level and pressure properties](https://gstreamer.freedesktop.org/documentation/coreelements/queue.html)
+remain useful independent diagnostics.
+
+A reproducible [probe experiment](../../tracer/otel/bench/queue_boundaries.py)
+uses stock GStreamer 1.24.2, a three-buffer queue, 100 one-byte buffers, and a
+10 ms downstream sleep. Single-run observations, milliseconds:
+
+| Queue case | Delivered / input | Median input push | Median arrival → output | Removed without an output |
+| --- | ---: | ---: | ---: | ---: |
+| Blocking | 100 / 100 | 10.23 | 41.02 | 0 |
+| Leak new buffers | 4 / 100 | 0.0032 | 15.30 | 96 |
+| Leak old buffers | 4 / 100 | 0.0035 | 14.09 | 96 |
+| Flush and restart segment halfway | 97 / 100 | 10.17 | 40.82 | 3 at flush |
+
+The blocking case's roughly 41 ms includes approximately 10 ms of admission
+waiting plus three downstream service intervals. Exact internal residence was
+not measured. Python callbacks and scheduler overhead affect these values;
+this is a semantic experiment, not a tracer overhead benchmark. Every leaky
+input push returned success, including inputs that never appeared at the output.
+A successful push is therefore insufficient evidence for a completed residence
+observation.
+
+A separate real flushing seek on `audiotestsrc` reused timestamps after seeking
+to zero: 100 inputs, 96 outputs, four pending observations invalidated at flush,
+no unmatched outputs, and zero retained records after teardown. The explicit
+flush experiment also reused timestamps. A generation boundary prevented old
+records from matching new buffers. [Raw observations](queue-boundaries/2026-10-25/results.json)
+include input durations, output delays, and seek generations.
+
+**Decision:** retain the existing queue levels/overrun/underrun metrics for now.
+Do not silently rename synchronous latency or media-duration occupancy as
+residence. A future optional boundary-delay collector needs a bounded per-queue
+matching table, unique passage IDs (PTS and buffer addresses are not generally
+unique), separate handling of lists, invalidation on flush/seek/teardown, and
+explicit counts for unmatched/expired observations. It must not retain buffers
+just to match them, since that changes writability and pool behavior. Leaky
+queues need drop-aware metadata cleanup or bounded expiry; pad callbacks alone
+cannot identify every internal drop. Exact enqueue-to-dequeue residence needs
+queue-specific instrumentation. The synthetic probe retains at most 100 scalar
+records and is deliberately not installed in the production collector.
+
+Run the experiment with:
+
+```sh
+/usr/bin/python3 tracer/otel/bench/queue_boundaries.py --output /tmp/queue-boundaries.json
+```

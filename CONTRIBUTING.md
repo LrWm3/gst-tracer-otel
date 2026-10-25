@@ -208,8 +208,12 @@ profiling optimizations.
   merges and buffer lists preserve up to eight other input contexts; custom Rust
   aggregators can explicitly propagate their inputs. Tests cover deduplication,
   loss counts, rejected sampling, shared/recycled buffers, and wire encoding.
-- [ ] Investigate per-buffer queue residence measurements separately from
+- [x] Investigate per-buffer queue residence measurements separately from
   synchronous call duration, including matching and cleanup on flush/seek/drop.
+  [Measured blocking/leaky/flush/seek cases](reports/otel/DIRECT_RESULTS.md#queue-residence-investigation--2026-10-25)
+  show that generic hooks expose boundary delay including admission wait, not
+  exact internal residence. Keep existing queue diagnostics; an optional bounded
+  boundary-delay collector remains a separate follow-up with explicit semantics.
 
 GPU execution timing is out of scope. Revisit it only as a separate extension
 after delivery, lifecycle, instrumentation health, and CPU profiling are solid.
