@@ -1,4 +1,6 @@
 target
 *.code-workspace
+__pycache__/
+*.py[cod]
 *.mp4
 !docs/media/correlation.mp4
