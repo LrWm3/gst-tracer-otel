@@ -149,12 +149,30 @@ impl Encoder {
             if record.parent != opentelemetry::trace::SpanId::INVALID {
                 bytes(span, 4, &record.parent.to_bytes());
             }
-            bytes(span, 5, record.operation.name().as_bytes());
+            bytes(span, 5, record.site.span_name(record.operation).as_bytes());
             integer(span, 6, 1); // INTERNAL
             fixed64(span, 7, anchor.nanos(record.start));
             fixed64(span, 8, anchor.nanos(record.end.max(record.start)));
-            let total_attributes = record.site.attributes.len() + 7 + usize::from(record.profiled);
+            let total_attributes = record.site.attributes.len() + 8 + usize::from(record.profiled);
             let mut remaining = config.attribute_limit;
+            static OPERATIONS: std::sync::LazyLock<[EncodedAttributes; 2]> =
+                std::sync::LazyLock::new(|| {
+                    [
+                        crate::capture::Operation::Push,
+                        crate::capture::Operation::Pull,
+                    ]
+                    .map(|op| EncodedAttributes::new([KeyValue::new("gst.operation", op.name())]))
+                });
+            if config.value_length_limit >= record.operation.name().len() {
+                OPERATIONS[record.operation as usize].append(span, &mut remaining);
+            } else {
+                EncodedAttributes::new([KeyValue::new(
+                    "gst.operation",
+                    crate::export::text_value(record.operation.name(), config.value_length_limit)
+                        .to_string(),
+                )])
+                .append(span, &mut remaining);
+            }
             record
                 .site
                 .encoded
@@ -318,7 +336,7 @@ mod tests {
                         .find(|a| a.key == "pyroscope.profile.id");
                     assert_eq!(
                         profile_id.is_some(),
-                        profiled && limit >= 9 && value_length_limit >= 16
+                        profiled && limit >= 10 && value_length_limit >= 16
                     );
                 }
             }
@@ -362,6 +380,7 @@ mod tests {
             r.buffer_size = 0;
             r.flow_return = i32::MIN;
             r.site = std::sync::Arc::new(crate::capture::Site {
+                span_names: Default::default(),
                 metrics: Default::default(),
                 metric_rejected_epoch: Default::default(),
                 attributes: vec![KeyValue::new("src_pad.name", "é🙂")],
@@ -423,6 +442,7 @@ mod tests {
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
         let site = std::sync::Arc::new(crate::capture::Site {
+            span_names: Default::default(),
             metrics: Default::default(),
             metric_rejected_epoch: Default::default(),
             attributes: [

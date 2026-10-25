@@ -186,7 +186,7 @@ fn full_metrics_and_exemplars_survive_otlp_translation() {
     let pulls: Vec<_> = received
         .spans
         .iter()
-        .filter(|s| s.name == "gst.pad.pull_range")
+        .filter(|s| s.name.starts_with("gst.pad.pull_range"))
         .collect();
     assert_eq!(pulls.len(), 2);
     for span in &pulls {

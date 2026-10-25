@@ -170,6 +170,36 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
         String::from_utf8_lossy(&output.stderr)
     );
     let spans = spans.lock().unwrap().clone();
+    for span in &spans {
+        let attribute = |key| {
+            span.attributes
+                .iter()
+                .find(|a| a.key == key)
+                .and_then(|a| a.value.as_ref())
+                .and_then(|v| v.value.as_ref())
+                .and_then(|v| match v {
+                    opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(s) => {
+                        Some(s.as_str())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let operation = attribute("gst.operation");
+        let factory = attribute(if operation == "gst.pad.push" {
+            "sink_pad.factory"
+        } else {
+            "src_pad.factory"
+        });
+        assert_eq!(
+            span.name,
+            if factory.is_empty() {
+                operation.to_owned()
+            } else {
+                format!("{operation} {factory}")
+            }
+        );
+    }
     if !spans.is_empty() {
         assert!(resource_seen.load(Ordering::Relaxed));
     }
@@ -203,7 +233,7 @@ fn complete_traces(spans: &[Span], size: usize) -> usize {
             assert_eq!(span.flags & 1, 1);
             assert_eq!(span.flags & 0x300, 0x100, "expected a local parent");
             assert!(span.parent_span_id.is_empty() || ids.contains(span.parent_span_id.as_slice()));
-            assert_eq!(span.name, "gst.pad.push");
+            assert!(span.name.starts_with("gst.pad.push"), "{}", span.name);
         }
     }
     traces.len()
@@ -221,7 +251,11 @@ fn nested_pull_pipeline_exports_reads_including_normal_eos() {
     assert_eq!(spans.len(), 8); // Two pulls per buffer, and two for EOS.
     let mut traces: HashMap<&[u8], Vec<&Span>> = HashMap::new();
     for span in &spans {
-        assert_eq!(span.name, "gst.pad.pull_range");
+        assert!(
+            span.name.starts_with("gst.pad.pull_range "),
+            "{}",
+            span.name
+        );
         assert_eq!(span.status.as_ref().map_or(0, |s| s.code), 0);
         traces.entry(&span.trace_id).or_default().push(span);
     }

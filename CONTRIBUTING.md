@@ -140,7 +140,7 @@ profiling optimizations.
 
 ### Readable spans and the correlation demo
 
-- [ ] Include the element factory in span names by default, for example
+- [x] Include the element factory in span names by default, for example
   `gst.pad.push videoconvert` and `gst.pad.pull_range filesrc`. Use the callee:
   the downstream receiving element for a push and the upstream serving element
   for a pull. Do not add an element-instance-name mode. Keep instance names,

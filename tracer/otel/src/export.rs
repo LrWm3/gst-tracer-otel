@@ -521,7 +521,11 @@ pub(crate) fn span_data(
         trace_state,
         is_remote,
     } = record.token;
-    let mut attributes = Vec::with_capacity(record.site.attributes.len() + 8);
+    let mut attributes = Vec::with_capacity(record.site.attributes.len() + 9);
+    attributes.push(KeyValue::new(
+        "gst.operation",
+        text_value(record.operation.name(), config.value_length_limit).to_string(),
+    ));
     attributes.extend(record.site.attributes.iter().cloned());
     attributes.extend([
         KeyValue::new("ts.start", record.start as i64),
@@ -550,7 +554,7 @@ pub(crate) fn span_data(
         parent_span_id: record.parent,
         parent_span_is_remote: record.parent_is_remote,
         span_kind: SpanKind::Internal,
-        name: record.operation.name().into(),
+        name: record.site.span_name(record.operation).to_owned().into(),
         start_time: anchor.at(record.start),
         end_time: anchor.at(record.end.max(record.start)),
         attributes,
@@ -733,6 +737,7 @@ pub(crate) mod tests {
         Record {
             operation: crate::capture::Operation::Push,
             site: Arc::new(Site {
+                span_names: Default::default(),
                 metrics: Default::default(),
                 metric_rejected_epoch: Default::default(),
                 encoded: Default::default(),
@@ -790,7 +795,7 @@ pub(crate) mod tests {
         assert!(!span.span_context.is_remote());
         assert_eq!(span.span_context.trace_state().get("vendor"), Some("value"));
         assert_eq!(span.attributes.len(), 2);
-        assert_eq!(span.dropped_attributes_count, 6);
+        assert_eq!(span.dropped_attributes_count, 7);
         assert_eq!(
             span.end_time.duration_since(span.start_time).unwrap(),
             Duration::from_nanos(50)

@@ -505,7 +505,11 @@ mod tests {
                 }
             );
             if span.span_context.span_id() == child.span_id() {
-                assert_eq!(span.name, "gst.pad.pull_range");
+                assert!(
+                    span.name.starts_with("gst.pad.pull_range "),
+                    "{}",
+                    span.name
+                );
                 assert!(span
                     .attributes
                     .contains(&opentelemetry::KeyValue::new("src_pad.element", "source")));

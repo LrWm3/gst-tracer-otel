@@ -244,13 +244,21 @@ The SDK conversion remains a test oracle for decoded message equivalence.
 The worker reuses its encoding buffers and sends reference-counted `Bytes`
 bodies, without cloning the encoded payload. A single request is in flight at a
 time. Both blocking and worker-owned asynchronous reqwest adapters are available;
-neither depends on an application Tokio runtime. Logs retain the upstream SDK
-exporter. Producer handoffs remain individual records: a measured batching
+neither depends on an application Tokio runtime. Logs use a separate bounded
+worker with the same HTTP transport. Producer handoffs remain individual records: a measured batching
 experiment increased streaming CPU and was removed.
 The first sampled hook anchors GStreamer's monotonic clock to wall time; later
 wall-clock adjustments do not change recorded durations.
 
-Spans are named `gst.pad.push`, with `src_pad.*`, `sink_pad.*`, `buffer.id`,
+Spans include the callee's factory name, such as `gst.pad.push videoconvert` or
+`gst.pad.pull_range filesrc`. Pushes name the downstream receiving factory;
+pulls name the upstream serving factory. If no factory is available, the name
+falls back to the operation. There is no instance-name mode. `gst.operation`
+retains `gst.pad.push` or `gst.pad.pull_range` for operation-level queries;
+`src_pad.factory` and `sink_pad.factory` identify both endpoint factories.
+Instance names and paths remain in `src_pad.*` and `sink_pad.*` attributes.
+Durations remain inclusive synchronous call durations, not exclusive CPU time.
+Other attributes include `buffer.id`,
 `buffer.size`, `thread.id`, `thread.name`, `ts.start`, `ts.end`, and
 `gst.flow_return` attributes. A negative flow return sets error status. Duration
 is the inclusive push call, including synchronous downstream work; it is not

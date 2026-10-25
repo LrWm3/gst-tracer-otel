@@ -11,11 +11,22 @@ use std::sync::{
 use crate::export::text_value;
 
 pub(crate) struct Site {
+    pub span_names: [Arc<str>; 2],
     pub attributes: Vec<KeyValue>,
     pub metrics: OnceLock<Arc<crate::metrics::Series>>,
     pub metric_rejected_epoch: AtomicU64,
     pub encoded: OnceLock<crate::wire::EncodedAttributes>,
     pub(crate) epoch: u64,
+}
+impl Site {
+    pub fn span_name(&self, operation: crate::capture::Operation) -> &str {
+        let name = &self.span_names[operation as usize];
+        if name.is_empty() {
+            operation.name()
+        } else {
+            name
+        }
+    }
 }
 struct PadState {
     epoch: AtomicU64,
@@ -222,7 +233,28 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
     } else {
         (Some(pad), peer.as_ref())
     };
+    let factory = |pad: Option<&gst::Pad>| {
+        pad.and_then(|p| p.parent_element())
+            .and_then(|e| e.factory())
+            .map(|f| text_value(f.name().as_str(), 128).to_string())
+            .unwrap_or_default()
+    };
+    let source_factory = factory(src);
+    let sink_factory = factory(sink);
+    let span_name = |operation: crate::capture::Operation, factory: &str| -> Arc<str> {
+        if factory.is_empty() {
+            operation.name().into()
+        } else {
+            format!("{} {factory}", operation.name()).into()
+        }
+    };
+    let span_names = [
+        span_name(crate::capture::Operation::Push, &sink_factory),
+        span_name(crate::capture::Operation::Pull, &source_factory),
+    ];
     let values = [
+        ("src_pad.factory", source_factory),
+        ("sink_pad.factory", sink_factory),
         (
             "src_pad.element",
             src.and_then(|p| p.parent_element())
@@ -254,6 +286,7 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
         ),
     ];
     let descriptor = Arc::new(Site {
+        span_names,
         encoded: OnceLock::new(),
         metrics: OnceLock::new(),
         metric_rejected_epoch: AtomicU64::new(0),
@@ -275,6 +308,61 @@ pub(crate) fn has_description(pad: &gst::Pad) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod factoryless {
+        use gst::subclass::prelude::*;
+        use gstreamer as gst;
+        #[derive(Default)]
+        pub struct Element;
+        #[glib::object_subclass]
+        impl ObjectSubclass for Element {
+            const NAME: &'static str = "MarsFactorylessTestElement";
+            type Type = super::Factoryless;
+            type ParentType = gst::Element;
+        }
+        impl ObjectImpl for Element {}
+        impl GstObjectImpl for Element {}
+        impl ElementImpl for Element {}
+    }
+    glib::wrapper! {
+        pub struct Factoryless(ObjectSubclass<factoryless::Element>) @extends gst::Element, gst::Object;
+    }
+
+    #[test]
+    fn names_use_the_callee_factory_and_fall_back_without_a_factory() {
+        use crate::capture::Operation::{Pull, Push};
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc")
+            .name("unstable-instance-123")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("identity")
+            .name("another-instance-456")
+            .build()
+            .unwrap();
+        let src = source.static_pad("src").unwrap();
+        assert_eq!(site(&src, 4096).span_name(Push), "gst.pad.push");
+        source.link(&sink).unwrap();
+        invalidate(&src);
+        let descriptor = site(&src, 4096);
+        assert_eq!(descriptor.span_name(Push), "gst.pad.push identity");
+        let sink_pad = sink.static_pad("sink").unwrap();
+        assert_eq!(
+            site(&sink_pad, 4096).span_name(Pull),
+            "gst.pad.pull_range fakesrc"
+        );
+        sink.set_property("name", "renamed");
+        assert_eq!(site(&src, 4096).span_name(Push), descriptor.span_name(Push));
+        source.unlink(&sink);
+        let bin = glib::Object::new::<Factoryless>();
+        assert!(bin.factory().is_none());
+        let pad = gst::Pad::builder(gst::PadDirection::Sink)
+            .name("sink")
+            .build();
+        bin.add_pad(&pad).unwrap();
+        src.link(&pad).unwrap();
+        invalidate(&src);
+        assert_eq!(site(&src, 4096).span_name(Push), "gst.pad.push");
+    }
 
     #[cfg(feature = "profiles")]
     #[test]
@@ -338,7 +426,7 @@ mod tests {
             .name("one")
             .build()
             .unwrap();
-        let two = gst::ElementFactory::make("fakesink")
+        let two = gst::ElementFactory::make("identity")
             .name("two")
             .build()
             .unwrap();
@@ -350,6 +438,14 @@ mod tests {
         source.link(&two).unwrap();
         invalidate(&pad);
         let after = site(&pad, 4096);
+        assert_eq!(
+            before.span_name(crate::capture::Operation::Push),
+            "gst.pad.push fakesink"
+        );
+        assert_eq!(
+            after.span_name(crate::capture::Operation::Push),
+            "gst.pad.push identity"
+        );
         assert_ne!(before.attributes, after.attributes);
         assert!(after
             .attributes
