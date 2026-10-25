@@ -177,6 +177,14 @@ fn snapshot() -> Vec<proto::MetricFamily> {
         metrics.exported_batches,
         &[],
     );
+    sample(
+        &mut families,
+        "mars_instrument_export_failures_total",
+        "Failed export requests including partial rejection",
+        false,
+        profiles.failed_exports,
+        &[("signal", "profiles")],
+    );
     for (reason, count) in [
         ("capacity", metrics.dropped_capacity),
         ("invalid", metrics.dropped_invalid),
@@ -193,6 +201,8 @@ fn snapshot() -> Vec<proto::MetricFamily> {
     for (outcome, count) in [
         ("collected", profiles.samples),
         ("reported", profiles.reported_samples),
+        ("accepted", profiles.accepted_samples),
+        ("export_failed", profiles.failed_samples),
         ("ring_full", profiles.dropped_full),
         ("processing_drop", profiles.dropped_processing),
         ("upload_queue_drop", profiles.dropped_upload),
@@ -200,14 +210,37 @@ fn snapshot() -> Vec<proto::MetricFamily> {
         sample(
             &mut families,
             "mars_instrument_profile_samples_total",
-            "Profile sample counts by stage; reported means handed to SDK, not server acceptance",
+            "Profile sample counts by stage; accepted means HTTP acknowledgement",
             false,
             count,
             &[("outcome", outcome)],
         );
     }
+    for (name, help, count) in [
+        (
+            "mars_instrument_profile_pending_samples",
+            "Samples queued or awaiting HTTP acknowledgement",
+            profiles.pending_samples,
+        ),
+        (
+            "mars_instrument_profile_pending_uploads",
+            "Profiles queued or awaiting HTTP acknowledgement; at most 11",
+            profiles.pending_profiles,
+        ),
+    ] {
+        sample(&mut families, name, help, true, count, &[]);
+    }
+    sample(
+        &mut families,
+        "mars_instrument_profile_uploads_total",
+        "Acknowledged profile requests",
+        false,
+        profiles.accepted_profiles,
+        &[],
+    );
     for (reason, count) in [
         ("registration", profiles.registration_failures),
+        ("export", profiles.failed_exports),
         ("attribution_capacity", profiles.context_capacity_rejections),
         ("stack_read", profiles.failed_stack_reads),
         ("timer_overrun", profiles.timer_overruns),

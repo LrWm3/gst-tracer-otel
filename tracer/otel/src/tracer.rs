@@ -549,6 +549,7 @@ macro_rules! tracer_impl {
                                 metrics,
                                 logs,
                                 profiles: None,
+                                profile_delivery_confirmed: false,
                             });
                         }
                     }

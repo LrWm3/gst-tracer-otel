@@ -155,10 +155,15 @@ def main():
     assert final['log']['exported']+final['log']['failed']+final['log']['dropped_queue_full']+final['log']['dropped_closed']==final['cycles']*4
     assert final['profile']['context_descriptions']==0
     assert final['profile']['samples']==final['profile']['reported_samples']
+    assert final['profile']['reported_samples']==final['profile']['accepted_samples']+final['profile']['failed_samples']
+    assert final['profile']['pending_samples']==final['profile']['pending_profiles']==0
+    assert final['profile']['accepted_samples']==counts['/push.v1.PusherService/Push:status200:units']//10_000_000
+    assert final['profile']['failed_samples']==counts['/push.v1.PusherService/Push:status503:units']//10_000_000
     assert final['profile']['dropped_full']+final['profile']['dropped_processing']+final['profile']['dropped_upload']==0
     if args.seconds >= 30:
         assert trace['failed_export_spans']>0 and trace['exported_spans']>0
         assert final['log']['failed']>0 and final['log']['exported']>0
+        assert final['profile']['failed_samples']>0 and final['profile']['accepted_samples']>0
         assert final['metric']['failed_exports']>0 and final['metric']['exported_batches']>0
         assert phase_counts['reject']>0 and phase_counts['slow']>0
         assert counts['profiles_with_loader_fixture']>0, 'loader-lock fixture was not observed in actual profiles'

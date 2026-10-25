@@ -4,6 +4,10 @@ The [2026-10-25 matched signal matrix](INSTRUMENT_VIDEO_RESULTS.md#current-full-
 contains the current element-attributed profiling results. The earlier
 comparisons below remain for historical context.
 
+The [acknowledged-delivery validation](#acknowledged-profile-delivery--2026-10-25)
+below covers the newer uploader and its failure accounting; it is a functional
+check, not a replacement for the video overhead measurements.
+
 Measured 2026-10-23. This report checks the current `mars-profiles` entry point
 and `mars-otel` with profiles and logs enabled, including actual delivery and
 correlation. It replaced the older prototype figures at the time; the newer matrix above
@@ -417,3 +421,61 @@ settings and binary hashes ([x86-64](lifecycle/2026-10-25/x86_64/metadata.json),
 [arm64](lifecycle/2026-10-25/aarch64/result.json)), and compressed stdout/stderr
 ([x86-64](lifecycle/2026-10-25/x86_64/logs.tar.gz),
 [arm64](lifecycle/2026-10-25/aarch64/logs.tar.gz)).
+
+
+## Acknowledged profile delivery — 2026-10-25
+
+The uploader in `tracer/otel/src/profileupload.rs` replaces the SDK session
+worker while preserving gzip pprof delivery to Pyroscope's existing push API.
+The ten-profile queue and 8 MiB per-profile limit remain. Processing and HTTP
+run on separate background threads. HTTP 200 with a valid bounded protobuf
+response counts as acceptance; rejection, malformed response and timeout count
+as failure. Timeouts can leave server acceptance uncertain. Requests are not
+automatically retried.
+
+`reported_samples` counts queued samples. After draining, it equals
+`accepted_samples + failed_samples`; pending counts are zero. A failed explicit
+flush reports its upload failures and leaves sampling available for subsequent
+profiles. Cumulative loss counters retain failures across later successful
+drains. The C/Python acknowledgement flag requires successful delivery without
+previous processing/upload loss; it does not promise durable backend storage.
+The new request timeout setting is `MARS_PROFILE_TIMEOUT_MS` (default 10000).
+
+The [two-minute native x86-64 run](delivery/2026-10-25/soak.json) exercised
+**931 pipeline lifetimes** with native thread churn, a loader-lock fixture,
+collector rejection and recovery, slow OTLP replies, four concurrent shutdown
+callers, and 100 subsequent shutdown calls. All **3,138 samples** were queued:
+**2,569 samples in 100 profiles** were acknowledged, and **569 samples in 20
+profiles** failed on deliberate HTTP 503 responses. Both sample totals exactly
+matched the decoded receiver totals. Pending samples/uploads, active sampler
+threads and retained descriptions were zero after shutdown; all 2,793 element
+descriptions were retired. Ring, processing and upload-queue drops, timer
+overruns, truncated stacks, failed reads and registration failures were zero.
+Final shutdown took **4 ms** after the healthy recovery window.
+
+Process RSS was **66.65 MiB** at the settled snapshots and **38.29 MiB** after
+shutdown, with an observed **70.32 MiB** peak. This short run warmed up during
+pipeline recreation and cannot establish long-term memory stability. It ran
+alongside the functional Grafana check on a shared host; these are process
+memory observations, not an overhead comparison. The earlier 30-minute results
+above describe the prior uploader implementation.
+
+The [real backend check](delivery/2026-10-25/backend.json) retained all 192 spans,
+98 logs and 616 CPU samples. Grafana returned 6160 ms for the whole run, 500 ms
+for the selected span, 520 ms for its trace, and zero for an unknown span.
+[Browser assertions](delivery/2026-10-25/browser.json) followed the actual
+metric → trace → matching log → same trace → profile links and checked empty
+results for unrelated IDs. This revalidated the existing demo without replacing
+its recording.
+
+Receiver tests also exercise HTTP 429/503, invalid/oversized success bodies,
+request timeout, queue pressure, and recovery after a failed flush. Existing
+native sampling, attribution, pipeline recreation and deadline tests pass.
+Formatting, workspace all-feature Clippy/tests, audit and nightly dependency-use
+checks passed; Tokio 1.53.3 removes the earlier audit warning. Prometheus alert
+fixtures include profile HTTP loss, and all-target OTel Clippy passed.
+
+Evidence: [soak build/source metadata](delivery/2026-10-25/soak-metadata.json),
+[snapshots](delivery/2026-10-25/soak-snapshots.json),
+[soak output](delivery/2026-10-25/soak.log), and
+[backend workload output](delivery/2026-10-25/backend.log).

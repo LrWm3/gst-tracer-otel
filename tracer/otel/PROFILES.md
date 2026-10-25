@@ -22,6 +22,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 | --- | --- | --- |
 | `GST_OTEL_PROFILE_URL` | `http://localhost:4040` | Pyroscope base URL |
 | `GST_OTEL_PROFILE_HZ` | `100` | CPU samples per second per registered thread; 1–1000 |
+| `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-upload HTTP timeout, 1–60000 ms; fallback `GST_OTEL_PROFILE_TIMEOUT_MS` |
 | `GST_OTEL_PROFILE_ELEMENTS` | `true` | Group native stacks by element execution context or task owner |
 | `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Reserved realtime signal |
 | `OTEL_SERVICE_NAME` | SDK-detected service name | Pyroscope `service_name` |
@@ -190,9 +191,28 @@ samples with those contexts; `context_capacity_rejections` counts descriptions
 rejected by the registry limit. `context_descriptions` is the current retained
 count and `context_retired` is the cumulative reclaimed count. The `core` health
 metrics expose both when metrics are selected. Trace and metric counters remain
-zero in profiles-only mode. The SDK does
-not expose delivery acknowledgements; a drained upload queue does not prove
-successful server ingestion.
+zero in profiles-only mode.
+
+The separate [uploader](src/profileupload.rs) exposes `reported_samples` (queued),
+`accepted_samples` (HTTP acknowledged), `failed_samples` (rejected or unconfirmed),
+`accepted_profiles`, `failed_exports`, `pending_samples`, and `pending_profiles`.
+After producers stop and a drain completes, reported samples equal accepted plus
+failed samples and pending counts are zero. A timeout can leave delivery uncertain;
+HTTP acknowledgement does not promise durable backend storage.
+
+The queue holds ten profiles, plus one in flight. Requests use gzip and the
+existing Pyroscope push endpoint. Responses must be HTTP 200 with a valid bounded
+protobuf body. Failed uploads are not retried automatically, avoiding an extra
+retry queue and duplicate requests after ambiguous timeouts. Subsequent profiles
+continue normally after an error, including after a failed explicit flush.
+A forwarding proxy can provide authentication or its own retry policy.
+
+Flush/shutdown return `export-failed` for unsuccessful uploads since the previous
+profile drain. Cumulative counters retain older failures. The C/Python drain
+structure's `profile-delivery-confirmed` is true only when profiles were uploaded,
+all queued samples were acknowledged, and no processing/upload loss has occurred;
+it stays false after earlier losses, for disabled profiling, and after a timeout.
+Capture losses such as full sample rings remain separate counters.
 
 ## Measured overhead
 

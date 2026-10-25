@@ -168,6 +168,34 @@
           "exp_alerts": []
         }
       ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_profile_samples_total{job=\"demo\",instance=\"a\",outcome=\"export_failed\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "MarsProfileLoss",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "outcome": "export_failed",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars CPU samples were dropped"
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

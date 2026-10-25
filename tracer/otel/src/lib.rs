@@ -55,7 +55,7 @@ pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
 
 /// Stop accepting records, drain exporters and stop the optional CPU profiler.
 /// The timeout covers all cleanup; timed-out workers may continue in background.
-/// Profile HTTP delivery acknowledgements are not exposed by the Pyroscope SDK.
+/// Profile failures include unsuccessful HTTP acknowledgements, not just queue loss.
 pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     shutdown_report(timeout).result()
 }

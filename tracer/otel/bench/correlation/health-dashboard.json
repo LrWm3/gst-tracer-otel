@@ -123,7 +123,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "CPU sample loss per second",
-      "description": "Core: sample loss before or during processing/upload handoff.",
+      "description": "Core: sample loss during capture, processing, queuing or HTTP delivery.",
       "gridPos": {
         "x": 12,
         "y": 8,
@@ -137,7 +137,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (outcome) (rate(mars_instrument_profile_samples_total{outcome=~\"ring_full|processing_drop|upload_queue_drop\"}[$__rate_interval]))",
+          "expr": "sum by (outcome) (rate(mars_instrument_profile_samples_total{outcome=~\"ring_full|processing_drop|upload_queue_drop|export_failed\"}[$__rate_interval]))",
           "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
         }
       ],

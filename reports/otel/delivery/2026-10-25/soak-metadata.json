@@ -1,0 +1,43 @@
+{
+  "architecture": "x86_64",
+  "duration_seconds": 120,
+  "binary_sha256": "1d7aa2cfacf11114dfc95140d178346386446ce4335b95a5ac2d729d2e9899cc",
+  "gstreamer": "1.24.2",
+  "environment": {
+    "GST_PLUGIN_PATH": "",
+    "GST_TRACERS": "",
+    "MARS_SIGNALS": "metrics,traces,profiles,logs",
+    "MARS_MONITORING": "all",
+    "MARS_PROFILE_URL": "http://127.0.0.1:42687",
+    "MARS_PROFILE_HZ": "100",
+    "MARS_METRIC_INTERVAL_MS": "1000",
+    "MARS_METRIC_SAMPLE_RATE": "16",
+    "OTEL_SERVICE_NAME": "mars-lifecycle-soak",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:42687",
+    "OTEL_EXPORTER_OTLP_TIMEOUT": "100",
+    "GST_OTEL_FLUSH_TIMEOUT_MS": "1000",
+    "GST_OTEL_QUEUE_CAPACITY": "256",
+    "GST_OTEL_BATCH_SIZE": "64",
+    "OTEL_BLRP_MAX_QUEUE_SIZE": "256",
+    "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE": "64",
+    "OTEL_BLRP_SCHEDULE_DELAY": "200",
+    "GST_DEBUG": "0,mars-soak-work:4",
+    "GST_DEBUG_NO_COLOR": "1"
+  },
+  "phase_period_seconds": 40.0,
+  "request_delay_ms": 350,
+  "timeout_ms": 100,
+  "pipeline_buffers": 4,
+  "producer_sleep_ms": 80,
+  "native_producer_threads": "one new thread per cycle",
+  "module_loads": "one constructor/destructor pair per cycle, each doing 15 ms thread CPU under loader lock",
+  "final_shutdown_callers": 4,
+  "subsequent_shutdown_calls": 100,
+  "source_sha256": {
+    "tracer/otel/src/profiles.rs": "142bbe6977272c18c1832ac7067a2bdc607764b72223412ae958f75ce3a48649",
+    "tracer/otel/src/profileupload.rs": "fc9bae6b05a25901d9437fc4bb4af51893f9214ede33beaa70873f6eb8d4c225",
+    "tracer/otel/examples/lifecycle_soak.rs": "9254b584f61cbdf9ba0b8e5b61e25bda93535fa33a3d679d386120813dc3e605",
+    "tracer/otel/bench/lifecycle_soak.py": "8f49d6b0b8f613c00fec45e5ccfb764e5d224c60750de72e9b66c8c9e67e553e",
+    "Cargo.lock": "3b1fffe71a4a105483f6c362ed1f91679cbbce6221a5067bad35b403cb79e2df"
+  }
+}

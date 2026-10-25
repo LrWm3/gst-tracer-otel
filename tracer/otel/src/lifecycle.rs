@@ -9,8 +9,12 @@ pub struct DrainReport {
     pub metrics: Result<(), FlushError>,
     pub logs: Result<(), FlushError>,
     /// `None` when this operation did not request a profile drain.
-    /// Completion means local processing/upload queues drained, not server acknowledgement.
+    /// Completion includes HTTP acknowledgement; failures since the previous
+    /// profile drain are returned even if subsequent requests succeeded.
     pub profiles: Option<Result<(), FlushError>>,
+    /// Every profile queued through this drain was acknowledged, with no
+    /// processing or upload loss. This does not promise durable backend storage.
+    pub profile_delivery_confirmed: bool,
 }
 impl DrainReport {
     pub fn to_structure(&self) -> gstreamer::Structure {
@@ -32,7 +36,10 @@ impl DrainReport {
                 "profiles",
                 self.profiles.as_ref().map_or("not-requested", status),
             )
-            .field("profile-delivery-confirmed", false)
+            .field(
+                "profile-delivery-confirmed",
+                self.profile_delivery_confirmed,
+            )
             .build()
     }
     pub fn result(self) -> Result<ExportStats, FlushError> {
@@ -70,11 +77,19 @@ fn drain(timeout: Duration, shutdown: bool) -> DrainReport {
     } else {
         crate::profiles::flush(remaining())
     });
+    let stats = crate::profile_stats();
+    let profile_delivery_confirmed = profiles.as_ref().is_some_and(Result::is_ok)
+        && stats.reported_samples > 0
+        && stats.reported_samples == stats.accepted_samples
+        && stats.failed_samples == 0
+        && stats.dropped_processing == 0
+        && stats.dropped_upload == 0;
     let report = DrainReport {
         traces,
         metrics,
         logs,
         profiles,
+        profile_delivery_confirmed,
     };
     crate::health::cleanup(&report);
     report

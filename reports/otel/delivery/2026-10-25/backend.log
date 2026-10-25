@@ -1,0 +1,198 @@
+SPAN element=light trace_id=ba559f5bc4223573434ec499bc033444 span_id=26981436075846ff
+SPAN element=light trace_id=f7308f0cc1e549b233735336f91663b4 span_id=30d21a903f4c78d6
+SPAN element=heavy trace_id=ba559f5bc4223573434ec499bc033444 span_id=d6621f53dd16a218
+SPAN element=heavy trace_id=f7308f0cc1e549b233735336f91663b4 span_id=6cccb6d0d18bc565
+SPAN element=light trace_id=af493554d431aeceb25f23a280e053ff span_id=b35b1eccd20cfd80
+SPAN element=light trace_id=24d294d279ff6c248766f63f99e527a7 span_id=e1d034e3c0d99990
+SPAN element=heavy trace_id=af493554d431aeceb25f23a280e053ff span_id=6d6a14d4fc6cff09
+SPAN element=heavy trace_id=24d294d279ff6c248766f63f99e527a7 span_id=ff58397842ba1f4a
+SPAN element=light trace_id=ed2498b2657780b82539916ee723cdc8 span_id=38c51dfe5986290a
+SPAN element=light trace_id=edcf3fb3be826b324c87ea6d7e0ae3ec span_id=6ceef3abc64eb5e3
+SPAN element=heavy trace_id=ed2498b2657780b82539916ee723cdc8 span_id=f4678933424a01f5
+SPAN element=heavy trace_id=edcf3fb3be826b324c87ea6d7e0ae3ec span_id=61bc6797e7816397
+SPAN element=light trace_id=b987b33ab268c5ed13ac9cbd3c2367c5 span_id=64579fd4dcda1058
+SPAN element=light trace_id=297989f1af702d13e284582e8b044e28 span_id=285ab57a9dd7744e
+SPAN element=heavy trace_id=b987b33ab268c5ed13ac9cbd3c2367c5 span_id=73793a5886d25ffb
+SPAN element=light trace_id=399a339f4c706e184aabb378e71e1015 span_id=a9215340d6636bc5
+SPAN element=heavy trace_id=297989f1af702d13e284582e8b044e28 span_id=ef4657e8d6edfc4c
+SPAN element=light trace_id=4d1f61bc3a6f5fa459aefdb87b3dd421 span_id=4ac490437d4b6384
+SPAN element=heavy trace_id=399a339f4c706e184aabb378e71e1015 span_id=1d8f35021b52cb06
+SPAN element=light trace_id=bfeb8a64f12dcd8e2fb1558605b06459 span_id=741b573249a7e76b
+SPAN element=heavy trace_id=4d1f61bc3a6f5fa459aefdb87b3dd421 span_id=87aa96e15bd17052
+SPAN element=light trace_id=feb373b59ecd2b2e85a58e17f024dff6 span_id=7d7a5a9e089c1b8d
+SPAN element=heavy trace_id=bfeb8a64f12dcd8e2fb1558605b06459 span_id=62728eddb5d4f7ad
+SPAN element=light trace_id=65fdd0b5ac48769f303d43533e5bd10a span_id=0dfc5e236be5a870
+SPAN element=heavy trace_id=feb373b59ecd2b2e85a58e17f024dff6 span_id=950600721e7c0bc1
+SPAN element=light trace_id=2d0052dada58bbe665fe98f6fd60699b span_id=6efac4fceac87187
+SPAN element=heavy trace_id=65fdd0b5ac48769f303d43533e5bd10a span_id=4c0a9b3c96c8e992
+SPAN element=light trace_id=cd1af7bffe7d0247cdba8a527ff4aa1f span_id=8aa324fd0341d293
+SPAN element=heavy trace_id=2d0052dada58bbe665fe98f6fd60699b span_id=aeb73dbd4eaa6de7
+SPAN element=light trace_id=8b1d87c855ea2cecf270033a854cbbc7 span_id=64a86ec10dbd2965
+SPAN element=heavy trace_id=cd1af7bffe7d0247cdba8a527ff4aa1f span_id=2030725de28c1e45
+SPAN element=light trace_id=71ce6afe649248af8be82f5cc0ae90fc span_id=9480fa05958edd3c
+SPAN element=heavy trace_id=8b1d87c855ea2cecf270033a854cbbc7 span_id=c747689e6268d2cf
+SPAN element=light trace_id=7022a2774cdfca0b81be4e49652482a4 span_id=a9901bf3bf5b18e0
+SPAN element=heavy trace_id=71ce6afe649248af8be82f5cc0ae90fc span_id=3ba96f96ad43eaf8
+SPAN element=light trace_id=364712702ceba86a978beb059977b016 span_id=4ad23d8ec7ad7348
+SPAN element=heavy trace_id=7022a2774cdfca0b81be4e49652482a4 span_id=00afa8fc6026badc
+SPAN element=light trace_id=2d65953aeb63b4a34721a3801f840949 span_id=b1b22923f55350ae
+SPAN element=heavy trace_id=364712702ceba86a978beb059977b016 span_id=69d2e10dd6ce14d9
+SPAN element=light trace_id=2c2f9df355576b34358004edbcb736f7 span_id=f7a84bd35f78ad9d
+SPAN element=heavy trace_id=2d65953aeb63b4a34721a3801f840949 span_id=512810cbb2f8256c
+SPAN element=light trace_id=22aa393ec237a35124df1049447b436d span_id=bcdabf4e4c55d9f6
+SPAN element=heavy trace_id=2c2f9df355576b34358004edbcb736f7 span_id=28acd036d8d0be89
+SPAN element=light trace_id=c57a6dd1944e36b617cc6033f22347bd span_id=822701cc75036b35
+SPAN element=heavy trace_id=22aa393ec237a35124df1049447b436d span_id=6063d24bc58d0f90
+SPAN element=light trace_id=e550f4491398fb6d24e23516c633badb span_id=7dcc6a813558af94
+SPAN element=heavy trace_id=c57a6dd1944e36b617cc6033f22347bd span_id=0e166c0f90a4e8ee
+SPAN element=light trace_id=dab2a188dc46804f8a268aff09552f55 span_id=323661dd6cab55a0
+SPAN element=heavy trace_id=e550f4491398fb6d24e23516c633badb span_id=6cb507c41c618056
+SPAN element=light trace_id=bc973ee9df5ad4b07c6a53ed137e39f2 span_id=1e1c118b78486324
+SPAN element=heavy trace_id=dab2a188dc46804f8a268aff09552f55 span_id=b8f5c15ab36f8f3e
+SPAN element=light trace_id=4488993da1c24bc9508c3b9d05905faa span_id=a40f83c34736df7d
+SPAN element=heavy trace_id=bc973ee9df5ad4b07c6a53ed137e39f2 span_id=778c3b37d18d1b56
+SPAN element=light trace_id=9b91f5b66b9c1d3a0914864d70a82346 span_id=246d83868e3e6f54
+SPAN element=heavy trace_id=4488993da1c24bc9508c3b9d05905faa span_id=740ba0d1920ae494
+SPAN element=heavy trace_id=9b91f5b66b9c1d3a0914864d70a82346 span_id=1e6d0c135ac188a6
+SPAN element=light trace_id=ea04f362f6418674819208ec3df7df1a span_id=7af8906a28e0c7fd
+SPAN element=light trace_id=9a502ff9a5686c602dc2a320dbf77181 span_id=efa1712e7510a905
+SPAN element=heavy trace_id=ea04f362f6418674819208ec3df7df1a span_id=4dc6e944ea881b80
+SPAN element=light trace_id=ba9c0db83237dcfc4375343c0742edfa span_id=9138a5db31dea5da
+SPAN element=heavy trace_id=9a502ff9a5686c602dc2a320dbf77181 span_id=49f9fa867500a909
+SPAN element=light trace_id=a6d5f994aa4e33fd4f549836dce95370 span_id=c6c7cbf4a233dde5
+SPAN element=heavy trace_id=ba9c0db83237dcfc4375343c0742edfa span_id=88b82ee52e9d20ee
+SPAN element=light trace_id=b169cdecc29b8b55fb19cf9669f19491 span_id=550d7b92434a4692
+SPAN element=heavy trace_id=a6d5f994aa4e33fd4f549836dce95370 span_id=b1d8184ce5c1a180
+SPAN element=light trace_id=85acb139c0302e398ad171b9cb7451f1 span_id=b898cfffc5b25426
+SPAN element=heavy trace_id=b169cdecc29b8b55fb19cf9669f19491 span_id=d8720cd369936f6d
+SPAN element=light trace_id=664151f98ba3ded882b08bb1477b468d span_id=6934b1f98d3206b3
+SPAN element=heavy trace_id=85acb139c0302e398ad171b9cb7451f1 span_id=2cd0dcaee0dc0a34
+SPAN element=light trace_id=93fc61cf90c7d3d015ddabc242859b2a span_id=1d72edcb58cdce5a
+SPAN element=heavy trace_id=664151f98ba3ded882b08bb1477b468d span_id=f0f35cc4105869cf
+SPAN element=light trace_id=993e3aa9ad4d906b621a63a294570a4a span_id=5dc9783d7f6ea50b
+SPAN element=heavy trace_id=93fc61cf90c7d3d015ddabc242859b2a span_id=abbc433081516e70
+SPAN element=light trace_id=4e3a7dc68d4505bfbeabcae750bcb6fd span_id=f1d208b8b91c5db7
+SPAN element=heavy trace_id=993e3aa9ad4d906b621a63a294570a4a span_id=5c3c03274fb5dbf9
+SPAN element=light trace_id=02685a6365313e1787e8f6ac5aeaedb2 span_id=f7b52595ca54538d
+SPAN element=heavy trace_id=4e3a7dc68d4505bfbeabcae750bcb6fd span_id=4d7d6a3ac79b1249
+SPAN element=heavy trace_id=02685a6365313e1787e8f6ac5aeaedb2 span_id=fb6f930a02943e42
+SPAN element=light trace_id=d1307d1d570fab9471fc28406a4189b5 span_id=836017e8cfe51bc1
+SPAN element=light trace_id=27cda7414ec7311d5f944134892a79c8 span_id=14a7d618f9645b2c
+SPAN element=heavy trace_id=d1307d1d570fab9471fc28406a4189b5 span_id=e301f329bb41f978
+SPAN element=light trace_id=d9bae7ed23d83d9dc1509d00d1e8168c span_id=66d6255091c5b028
+SPAN element=heavy trace_id=27cda7414ec7311d5f944134892a79c8 span_id=db57eb6cb1c880f2
+SPAN element=light trace_id=699364cbd72f5d1103952761e88f2eda span_id=5aaecbfd3fe69be2
+SPAN element=heavy trace_id=d9bae7ed23d83d9dc1509d00d1e8168c span_id=9b0233d06148b0a0
+SPAN element=light trace_id=562dee686795bb0025bc3d459a9dc282 span_id=f70706db1abb4d5b
+SPAN element=heavy trace_id=699364cbd72f5d1103952761e88f2eda span_id=30581ce69a5aee1e
+SPAN element=light trace_id=fcd305286da976146b905014b6519814 span_id=39ff2236acc3b0ae
+SPAN element=heavy trace_id=562dee686795bb0025bc3d459a9dc282 span_id=9a32601a285aacb4
+SPAN element=light trace_id=a5d362e995725e50ee8e5270d7fd9706 span_id=67b5a9bb8576becc
+SPAN element=heavy trace_id=fcd305286da976146b905014b6519814 span_id=e69a7569ac8738ea
+SPAN element=heavy trace_id=a5d362e995725e50ee8e5270d7fd9706 span_id=8f411946964f2916
+SPAN element=light trace_id=feb2a8e32606c6e065e5fd07b2ba489d span_id=15a72fac1dc8ab2c
+SPAN element=light trace_id=783c5f72e584cbb84cefa955e4e99f54 span_id=50043e688366e4c5
+SPAN element=heavy trace_id=feb2a8e32606c6e065e5fd07b2ba489d span_id=17ea173c81465f3d
+SPAN element=heavy trace_id=783c5f72e584cbb84cefa955e4e99f54 span_id=cb35f551838cd59b
+TRACE ExportStats { started_spans: 192, completed_spans: 192, enqueued_spans: 192, exported_spans: 192, dropped_queue_full: 0, dropped_closed: 0, failed_export_spans: 0, failed_exports: 0, rejected_spans: 0, export_warnings: 0, unsampled_pushes: 0, unsampled_pulls: 0, unsampled_lists: 0, skipped_closed: 0, propagation_misses: 0, propagation_fallbacks: 0, dropped_depth: 0, mismatched_hooks: 0, pending_spans: 0 }
+PROFILE ProfileStats { samples: 616, correlated_samples: 615, element_samples: 616, task_samples: 0, context_capacity_rejections: 0, context_descriptions: 5, context_retired: 0, dropped_full: 0, timer_overruns: 0, failed_stack_reads: 0, truncated_stacks: 0, registration_failures: 0, reported_samples: 616, dropped_processing: 0, dropped_upload: 0, active_threads: 0, accepted_samples: 616, failed_samples: 0, accepted_profiles: 14, failed_exports: 0, pending_samples: 0, pending_profiles: 0 }
+METRICS MetricStats { recorded_pushes: 192, dropped_capacity: 0, dropped_invalid: 0, skipped_closed: 0, skipped_exemplars: 0, exported_batches: 68, failed_exports: 0, export_warnings: 0, active_series: 29 }
+LOGS LogStats { capacity: 2048, enqueued: 98, exported: 98, failed: 0, rejected: 0, dropped_queue_full: 0, dropped_closed: 0, failed_exports: 0, warnings: 0, pending: 0 }
+0:00:00.020837571 229979 0x63a74ec7b8c0 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:43:profile_correlation::main: demo started outside a sampled span
+0:00:00.042800216 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=1 cpu_work_ms=20
+0:00:00.313531298 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=2 cpu_work_ms=20
+0:00:00.393638258 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=1 cpu_work_ms=100
+0:00:00.583692279 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=3 cpu_work_ms=20
+0:00:00.663711327 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=2 cpu_work_ms=100
+0:00:00.855014844 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=4 cpu_work_ms=20
+0:00:00.934024439 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=3 cpu_work_ms=100
+0:00:01.125205479 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=5 cpu_work_ms=20
+0:00:01.205163295 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=4 cpu_work_ms=100
+0:00:01.395369753 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=6 cpu_work_ms=20
+0:00:01.475448563 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=5 cpu_work_ms=100
+0:00:01.665546223 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=7 cpu_work_ms=20
+0:00:01.745727355 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=6 cpu_work_ms=100
+0:00:01.935738264 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=8 cpu_work_ms=20
+0:00:02.015768005 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=7 cpu_work_ms=100
+0:00:02.205992916 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=9 cpu_work_ms=20
+0:00:02.285977112 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=8 cpu_work_ms=100
+0:00:02.476273111 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=10 cpu_work_ms=20
+0:00:02.556314846 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=9 cpu_work_ms=100
+0:00:02.746433003 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=11 cpu_work_ms=20
+0:00:02.826449922 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=10 cpu_work_ms=100
+0:00:03.016597068 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=12 cpu_work_ms=20
+0:00:03.096657733 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=11 cpu_work_ms=100
+0:00:03.286837428 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=13 cpu_work_ms=20
+0:00:03.366925268 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=12 cpu_work_ms=100
+0:00:03.557148541 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=14 cpu_work_ms=20
+0:00:03.637258277 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=13 cpu_work_ms=100
+0:00:03.827315211 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=15 cpu_work_ms=20
+0:00:03.907384167 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=14 cpu_work_ms=100
+0:00:04.097558230 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=16 cpu_work_ms=20
+0:00:04.177616496 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=15 cpu_work_ms=100
+0:00:04.367724736 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=17 cpu_work_ms=20
+0:00:04.447819468 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=16 cpu_work_ms=100
+0:00:04.637981969 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=18 cpu_work_ms=20
+0:00:04.718092915 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=17 cpu_work_ms=100
+0:00:04.908156072 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=19 cpu_work_ms=20
+0:00:04.988222266 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=18 cpu_work_ms=100
+0:00:05.178386856 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=20 cpu_work_ms=20
+0:00:05.258454368 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=19 cpu_work_ms=100
+0:00:05.448519810 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=21 cpu_work_ms=20
+0:00:05.528609043 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=20 cpu_work_ms=100
+0:00:05.718719996 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=22 cpu_work_ms=20
+0:00:05.798893528 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=21 cpu_work_ms=100
+0:00:05.988852398 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=23 cpu_work_ms=20
+0:00:06.068882753 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=22 cpu_work_ms=100
+0:00:06.258987168 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=24 cpu_work_ms=20
+0:00:06.339255450 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=23 cpu_work_ms=100
+0:00:06.529202652 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=25 cpu_work_ms=20
+0:00:06.609368491 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=24 cpu_work_ms=100
+0:00:06.799522195 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=26 cpu_work_ms=20
+0:00:07.279600837 229979 0x710f3c000b70 WARN        mars-correlation tracer/otel/examples/profile_correlation.rs:77:profile_correlation::main::{{closure}}: slow frame: element=heavy frame=25 cpu_work_ms=500
+0:00:07.552629580 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=27 cpu_work_ms=20
+0:00:07.632671669 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=26 cpu_work_ms=100
+0:00:07.822834016 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=28 cpu_work_ms=20
+0:00:07.903061547 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=27 cpu_work_ms=100
+0:00:08.093001485 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=29 cpu_work_ms=20
+0:00:08.173422184 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=28 cpu_work_ms=100
+0:00:08.363163312 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=30 cpu_work_ms=20
+0:00:08.443323429 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=29 cpu_work_ms=100
+0:00:08.633554817 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=31 cpu_work_ms=20
+0:00:08.713560534 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=30 cpu_work_ms=100
+0:00:08.903889094 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=32 cpu_work_ms=20
+0:00:08.984016244 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=31 cpu_work_ms=100
+0:00:09.174334420 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=33 cpu_work_ms=20
+0:00:09.254969609 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=32 cpu_work_ms=100
+0:00:09.444562587 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=34 cpu_work_ms=20
+0:00:09.525239945 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=33 cpu_work_ms=100
+0:00:09.714724689 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=35 cpu_work_ms=20
+0:00:09.795582442 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=34 cpu_work_ms=100
+0:00:09.984919346 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=36 cpu_work_ms=20
+0:00:10.065641669 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=35 cpu_work_ms=100
+0:00:10.255358669 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=37 cpu_work_ms=20
+0:00:10.335971948 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=36 cpu_work_ms=100
+0:00:10.525491187 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=38 cpu_work_ms=20
+0:00:10.606194605 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=37 cpu_work_ms=100
+0:00:10.795659109 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=39 cpu_work_ms=20
+0:00:10.876227172 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=38 cpu_work_ms=100
+0:00:11.065859387 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=40 cpu_work_ms=20
+0:00:11.146384408 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=39 cpu_work_ms=100
+0:00:11.336293904 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=41 cpu_work_ms=20
+0:00:11.416924346 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=40 cpu_work_ms=100
+0:00:11.606589569 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=42 cpu_work_ms=20
+0:00:11.687310241 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=41 cpu_work_ms=100
+0:00:11.876768925 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=43 cpu_work_ms=20
+0:00:11.957100764 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=42 cpu_work_ms=100
+0:00:12.146894654 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=44 cpu_work_ms=20
+0:00:12.226934610 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=43 cpu_work_ms=100
+0:00:12.417104785 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=45 cpu_work_ms=20
+0:00:12.497759654 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=44 cpu_work_ms=100
+0:00:12.687299274 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=46 cpu_work_ms=20
+0:00:12.767802797 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=45 cpu_work_ms=100
+0:00:12.957678009 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=47 cpu_work_ms=20
+0:00:13.038414146 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=46 cpu_work_ms=100
+0:00:13.227877029 229979 0x710f3c000d50 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=light frame=48 cpu_work_ms=20
+0:00:13.307993898 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=47 cpu_work_ms=100
+0:00:13.578830831 229979 0x710f3c000b70 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:84:profile_correlation::main::{{closure}}: processed frame: element=heavy frame=48 cpu_work_ms=100
+0:00:13.585988552 229979 0x63a74ec7b8c0 INFO        mars-correlation tracer/otel/examples/profile_correlation.rs:118:profile_correlation::main: demo completed outside a sampled span

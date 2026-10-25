@@ -57,6 +57,7 @@ pub enum Stage {
     Logs,
     Profiles,
     Collection,
+    ProfileUpload,
 }
 impl Stage {
     fn name(self) -> &'static str {
@@ -66,15 +67,17 @@ impl Stage {
             Self::Logs => "log_export",
             Self::Profiles => "profile_processing",
             Self::Collection => "metric_collection",
+            Self::ProfileUpload => "profile_export",
         }
     }
 }
-const STAGES: [Stage; 5] = [
+const STAGES: [Stage; 6] = [
     Stage::Traces,
     Stage::Metrics,
     Stage::Logs,
     Stage::Profiles,
     Stage::Collection,
+    Stage::ProfileUpload,
 ];
 const BOUNDS: [f64; 6] = [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0];
 struct WorkStats {
@@ -85,7 +88,7 @@ struct WorkStats {
     records: AtomicU64,
     high_water: AtomicU64,
 }
-static WORK: [WorkStats; 5] = [const {
+static WORK: [WorkStats; 6] = [const {
     WorkStats {
         calls: AtomicU64::new(0),
         nanos: AtomicU64::new(0),
@@ -94,7 +97,7 @@ static WORK: [WorkStats; 5] = [const {
         records: AtomicU64::new(0),
         high_water: AtomicU64::new(0),
     }
-}; 5];
+}; 6];
 pub struct Work {
     start: Instant,
     stage: Stage,

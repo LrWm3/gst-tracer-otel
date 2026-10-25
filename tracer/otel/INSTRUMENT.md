@@ -58,6 +58,7 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 | `MARS_METRIC_PTS_AGE` | `false` | Sample buffer age relative to running time |
 | `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
 | `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
+| `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-profile HTTP timeout, 1–60000 ms |
 | `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
 | `MARS_PROFILE_SYMBOLIZATION` | `full` | `full` source/inline resolution or `functions` using ELF symbols only |
 | `MARS_PROFILE_SIGNAL` | `SIGRTMIN+6` | Reserved realtime sampling signal |
@@ -100,9 +101,11 @@ Health series use the `mars_instrument_` prefix. Labels have fixed values such a
 signal, outcome, stage, and failure reason; they never contain element paths,
 trace IDs, or raw error messages. Core reuses existing counters and creates its
 metric snapshots off streaming threads. Detailed timing and queue observations
-are collected only in `all`. Profile `reported` samples mean handoff to the SDK,
-not acknowledgement by the server; symbol-cache bytes exclude temporary debug
-parsing and total process memory.
+are collected only in `all`. Profile `reported` samples mean queued for upload;
+`accepted` means acknowledged by the server, and `export_failed` includes rejected
+requests and uncertain delivery after timeout. Pending sample/upload gauges show
+unacknowledged work. Symbol-cache bytes exclude temporary debug parsing and total
+process memory.
 
 Health data follows the selected metrics exporter. With metrics disabled,
 monitoring is inactive and does not create an exporter or listener. Standalone

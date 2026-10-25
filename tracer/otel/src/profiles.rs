@@ -9,7 +9,7 @@
 //! using process_vm_readv, walks frame pointers in that COPY, and snapshots IDs.
 //! It never borrows Rust TLS, allocates, locks, symbolizes or calls Pyroscope.
 //! A report worker drains rings, symbolizes files with a bounded cache, and
-//! supplies compact pprof to Pyroscope's bounded SDK upload queue.
+//! supplies compact pprof to the bounded uploader in profileupload.rs.
 //!
 //! Slots are retained for process lifetime because deleted timers can leave
 //! pending signals. GStreamer makes loaded plugin modules resident. The reserved
@@ -26,8 +26,8 @@ pub(crate) fn setting(suffix: &str) -> Option<std::ffi::OsString> {
         .or_else(|| std::env::var_os(format!("GST_OTEL_PROFILE_{suffix}")))
 }
 
-/// Sampling counters. `reported_samples` means handed to the Pyroscope SDK,
-/// whose uploader does not expose delivery acknowledgements through Backend.
+/// Sampling and delivery counters. `reported_samples` means queued for upload;
+/// `accepted_samples` counts samples in acknowledged Pyroscope HTTP requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProfileStats {
     pub samples: u64,
@@ -46,6 +46,12 @@ pub struct ProfileStats {
     pub dropped_processing: u64,
     pub dropped_upload: u64,
     pub active_threads: u64,
+    pub accepted_samples: u64,
+    pub failed_samples: u64,
+    pub accepted_profiles: u64,
+    pub failed_exports: u64,
+    pub pending_samples: u64,
+    pub pending_profiles: u64,
 }
 
 #[cfg(all(
@@ -70,6 +76,14 @@ mod arch;
 ))]
 #[path = "profilesymbols.rs"]
 mod symbols;
+
+#[cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "profileupload.rs"]
+mod upload;
 
 #[cfg(not(all(
     feature = "profiles",
@@ -132,7 +146,6 @@ mod linux {
         },
         error::PyroscopeError,
         pyroscope::PyroscopeConfig,
-        session::{Session, SessionManager, SessionSignal},
     };
     use std::{
         cell::{RefCell, UnsafeCell},
@@ -310,14 +323,13 @@ mod linux {
         failed_stack_reads: AtomicU64,
         truncated_stacks: AtomicU64,
         registration_failures: AtomicU64,
-        reported_samples: AtomicU64,
         dropped_processing: AtomicU64,
-        dropped_upload: AtomicU64,
     }
     struct Sampler {
         slots: Box<[Slot]>,
         registration: Mutex<()>,
         counters: Counters,
+        delivery: Arc<super::upload::Counters>,
         signal: i32,
         rate: u32,
         pid: i32,
@@ -330,6 +342,7 @@ mod linux {
                 slots: (0..MAX_THREADS).map(|_| Slot::new()).collect(),
                 registration: Mutex::new(()),
                 counters: Counters::default(),
+                delivery: Arc::new(super::upload::Counters::default()),
                 rate,
                 signal,
                 // SAFETY: getpid has no preconditions.
@@ -576,7 +589,7 @@ mod linux {
             };
             crate::profilecontext::after_report(retired);
             Ok(ReportBatch {
-                // Processing bytes are distinct from SDK upload acknowledgement.
+                // Processing bytes are distinct from server acknowledgement.
                 profile_type: "process_cpu".into(),
                 data: {
                     gst_mars_metrics_core::monitoring::record_size(
@@ -609,28 +622,30 @@ mod linux {
         done: crossbeam_channel::Receiver<()>,
         handle: std::thread::JoinHandle<Result<(), FlushError>>,
     }
-    fn drain_uploads(manager: SessionManager) -> Result<(), FlushError> {
-        // Closing the only sender drains the SDK's bounded upload queue. The
-        // SDK does not expose individual HTTP acknowledgements through this API.
-        drop(manager.tx);
-        manager
-            .handle
-            .unwrap()
-            .join()
-            .map_err(|_| FlushError::ExportFailed)?
-            .map_err(|_| FlushError::ExportFailed)
-    }
     impl Worker {
-        fn start(sampler: Arc<Sampler>, config: PyroscopeConfig) -> Result<Self, String> {
+        fn start(
+            sampler: Arc<Sampler>,
+            config: PyroscopeConfig,
+            timeout: Duration,
+        ) -> Result<Self, String> {
             let (command, wake) = crossbeam_channel::bounded(1);
             let (finished, done) = crossbeam_channel::bounded::<()>(0);
+            let (ready, started) = crossbeam_channel::bounded(1);
             let handle = std::thread::Builder::new()
                 .name("mars-profile".into())
                 .spawn(move || {
                     let _finished = finished;
-                    let mut backend = ProfileBackend::new(sampler);
-                    let mut manager =
-                        Some(SessionManager::new().map_err(|_| FlushError::ExportFailed)?);
+                    let create = || {
+                        super::upload::Uploader::start(
+                            config.clone(),
+                            timeout,
+                            sampler.delivery.clone(),
+                        )
+                    };
+                    let initial = create();
+                    let _ = ready.send(initial.as_ref().map(|_| ()).map_err(Clone::clone));
+                    let mut uploader = Some(initial?);
+                    let mut backend = ProfileBackend::new(sampler.clone());
                     let mut next = std::time::Instant::now() + config.upload_interval;
                     let result = loop {
                         let command = match wake
@@ -642,76 +657,49 @@ mod linux {
                                 Some(ProfileCommand::Stop)
                             }
                         };
-                        let result = (|| {
-                            let batch = backend.report().map_err(|_| FlushError::ExportFailed)?;
-                            if backend.pending != 0 {
-                                let session = Session {
-                                    config: config.clone(),
-                                    batch,
-                                    from: 0,
-                                    until: 0,
-                                };
-                                let tx = &manager.as_ref().unwrap().tx;
-                                if command.is_some() {
-                                    // Explicit drains preserve the last report even if the
-                                    // upload queue is full. Only this worker can wait; the
-                                    // calling application still has its own deadline.
-                                    match tx.send(SessionSignal::Session(Box::new(session))) {
-                                        Ok(()) => {
-                                            backend
-                                                .sampler
-                                                .counters
-                                                .reported_samples
-                                                .fetch_add(backend.pending, Relaxed);
-                                        }
-                                        Err(_) => {
-                                            backend
-                                                .sampler
-                                                .counters
-                                                .dropped_upload
-                                                .fetch_add(backend.pending, Relaxed);
-                                            return Err(FlushError::ExportFailed);
-                                        }
-                                    }
-                                } else {
-                                    enqueue(
-                                        tx,
-                                        session,
+                        let report = backend
+                            .report()
+                            .map_err(|_| FlushError::ExportFailed)
+                            .and_then(|batch| {
+                                if backend.pending != 0 {
+                                    uploader.as_ref().unwrap().submit(
+                                        batch,
                                         backend.pending,
-                                        &backend.sampler.counters,
+                                        command.is_some(),
                                     )?;
                                 }
-                            }
-                            if command.is_some() {
-                                drain_uploads(manager.take().unwrap())?;
-                            }
-                            Ok(())
-                        })();
+                                Ok(())
+                            });
                         match command {
                             Some(ProfileCommand::Flush(reply)) => {
-                                // Reopen delivery without stopping sampling in any pipeline.
-                                let result = result.and_then(|()| {
-                                    manager = Some(
-                                        SessionManager::new()
-                                            .map_err(|_| FlushError::ExportFailed)?,
-                                    );
-                                    Ok(())
-                                });
-                                let _ = reply.send(result.clone());
-                                if result.is_err() {
-                                    break result;
+                                let delivered = uploader.take().unwrap().finish();
+                                // Failed deliveries end this drain epoch, not sampling.
+                                // Reopen even after rejection so a recovered server can
+                                // accept later profiles; cumulative counters retain loss.
+                                match create() {
+                                    Ok(new) => uploader = Some(new),
+                                    Err(error) => {
+                                        let _ = reply.send(Err(error.clone()));
+                                        break Err(error);
+                                    }
                                 }
+                                let _ = reply.send(report.and(delivered));
                             }
-                            Some(ProfileCommand::Stop) => break result,
-                            None if result.is_err() => break result,
+                            Some(ProfileCommand::Stop) => break report,
+                            None if report.is_err() => break report,
                             None => {}
                         }
                         next = std::time::Instant::now() + config.upload_interval;
                     };
-                    let uploaded = manager.map_or(Ok(()), drain_uploads);
-                    result.and(uploaded)
+                    sampler.stop();
+                    let delivered = uploader.map_or(Ok(()), |uploader| uploader.finish());
+                    result.and(delivered)
                 })
                 .map_err(|e| e.to_string())?;
+            if started.recv().map_err(|e| e.to_string())?.is_err() {
+                let _ = handle.join();
+                return Err("profile uploader initialization failed".into());
+            }
             Ok(Self {
                 command,
                 done,
@@ -721,26 +709,6 @@ mod linux {
         fn stop(self) -> Result<(), FlushError> {
             let _ = self.command.send(ProfileCommand::Stop);
             self.handle.join().map_err(|_| FlushError::ExportFailed)?
-        }
-    }
-    fn enqueue(
-        tx: &std::sync::mpsc::SyncSender<SessionSignal>,
-        session: Session,
-        count: u64,
-        counters: &Counters,
-    ) -> Result<(), FlushError> {
-        match tx.try_send(SessionSignal::Session(Box::new(session))) {
-            Ok(()) => {
-                counters.reported_samples.fetch_add(count, Relaxed);
-                Ok(())
-            }
-            Err(error) => {
-                counters.dropped_upload.fetch_add(count, Relaxed);
-                match error {
-                    std::sync::mpsc::TrySendError::Full(_) => Ok(()),
-                    std::sync::mpsc::TrySendError::Disconnected(_) => Err(FlushError::ExportFailed),
-                }
-            }
         }
     }
 
@@ -1078,6 +1046,18 @@ mod linux {
         if !(1..=1000).contains(&rate) {
             return Err("GST_OTEL_PROFILE_HZ must be 1..=1000".into());
         }
+        let timeout = setting("TIMEOUT_MS")
+            .map(|v| {
+                v.into_string()
+                    .map_err(|_| "profile TIMEOUT_MS is not UTF-8")
+            })
+            .transpose()?
+            .unwrap_or_else(|| "10000".into())
+            .parse::<u64>()
+            .map_err(|_| "profile TIMEOUT_MS must be 1..=60000")?;
+        if !(1..=60000).contains(&timeout) {
+            return Err("profile TIMEOUT_MS must be 1..=60000".into());
+        }
         crate::profilecontext::configure()?;
         let symbolization = setting("SYMBOLIZATION")
             .map(|v| {
@@ -1134,7 +1114,11 @@ mod linux {
                 env!("CARGO_PKG_VERSION"),
             )
             .upload_interval(Duration::from_secs(1));
-            *WORKER.lock().unwrap() = Some(Worker::start(state, config)?);
+            *WORKER.lock().unwrap() = Some(Worker::start(
+                state,
+                config,
+                Duration::from_millis(timeout),
+            )?);
             ACTIVE.store(true, Release);
         }
         Ok(())
@@ -1178,7 +1162,7 @@ mod linux {
         ACTIVE.store(false, SeqCst);
         if !STOPPING.swap(true, std::sync::atomic::Ordering::AcqRel) {
             let worker = WORKER.lock().unwrap().take();
-            // SDK uploads can wait for queued HTTP requests. Never impose
+            // Uploads can wait for queued HTTP requests. Never impose
             // that unbounded wait on the caller of our deadline-based API.
             std::thread::spawn(move || {
                 // Registration and handler quiescence also run off the caller:
@@ -1219,9 +1203,20 @@ mod linux {
             failed_stack_reads: s.counters.failed_stack_reads.load(Relaxed),
             truncated_stacks: s.counters.truncated_stacks.load(Relaxed),
             registration_failures: s.counters.registration_failures.load(Relaxed),
-            reported_samples: s.counters.reported_samples.load(Relaxed),
+            reported_samples: s.delivery.reported_samples.load(Relaxed),
             dropped_processing: s.counters.dropped_processing.load(Relaxed),
-            dropped_upload: s.counters.dropped_upload.load(Relaxed),
+            dropped_upload: s.delivery.dropped_upload.load(Relaxed),
+            accepted_samples: s.delivery.accepted_samples.load(Relaxed),
+            failed_samples: s.delivery.failed_samples.load(Relaxed),
+            accepted_profiles: s.delivery.accepted_profiles.load(Relaxed),
+            failed_exports: s.delivery.failed_exports.load(Relaxed),
+            pending_samples: s.delivery.reported_samples.load(Relaxed).saturating_sub(
+                s.delivery.accepted_samples.load(Relaxed) + s.delivery.failed_samples.load(Relaxed),
+            ),
+            pending_profiles: s.delivery.reported_profiles.load(Relaxed).saturating_sub(
+                s.delivery.accepted_profiles.load(Relaxed)
+                    + s.delivery.failed_exports.load(Relaxed),
+            ),
             active_threads: s
                 .slots
                 .iter()
@@ -1233,35 +1228,6 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        #[test]
-        fn full_or_failed_upload_queue_never_blocks_processing() {
-            let (tx, rx) = std::sync::mpsc::sync_channel(1);
-            let counters = Counters::default();
-            let session = || Session {
-                config: PyroscopeConfig::new("http://localhost", "test", 100, "test", "test"),
-                batch: ReportBatch {
-                    profile_type: "process_cpu".into(),
-                    data: ReportData::RawPprof(vec![]),
-                },
-                from: 0,
-                until: 0,
-            };
-            enqueue(&tx, session(), 3, &counters).unwrap();
-            let start = std::time::Instant::now();
-            for _ in 0..1000 {
-                enqueue(&tx, session(), 5, &counters).unwrap();
-            }
-            assert!(start.elapsed() < Duration::from_secs(1));
-            assert_eq!(counters.reported_samples.load(Relaxed), 3);
-            assert_eq!(counters.dropped_upload.load(Relaxed), 5000);
-            drop(rx);
-            assert_eq!(
-                enqueue(&tx, session(), 7, &counters),
-                Err(FlushError::ExportFailed)
-            );
-            assert_eq!(counters.dropped_upload.load(Relaxed), 5007);
-        }
 
         #[test]
         fn capture_context_edges_thread_retirement_and_shutdown_are_isolated() {

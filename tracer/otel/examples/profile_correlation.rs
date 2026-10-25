@@ -118,6 +118,14 @@ fn main() {
     gst::info!(LOG, "demo completed outside a sampled span");
     let traces = gstoteltracer::shutdown(Duration::from_secs(20)).unwrap();
     let profiles = gstoteltracer::profile_stats();
+    assert_eq!(profiles.accepted_samples, profiles.reported_samples);
+    assert_eq!(
+        profiles.failed_samples
+            + profiles.failed_exports
+            + profiles.pending_samples
+            + profiles.pending_profiles,
+        0
+    );
     assert_eq!(traces.started_spans, buffers * 4);
     assert_eq!(traces.exported_spans, traces.started_spans);
     assert_eq!(

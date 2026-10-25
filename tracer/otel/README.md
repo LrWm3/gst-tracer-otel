@@ -12,7 +12,7 @@ and examples below document that interface.
 OTLP/HTTP protobuf traces.
 It does not create live SDK spans or install a global tracer provider. An
 optional `profiles` feature adds an experimental embedded CPU sampler and
-Pyroscope delivery backend. It also registers `mars-profiles`, a
+bounded Pyroscope uploader. It also registers `mars-profiles`, a
 [profiles-only entry point](PROFILES.md) using that same sampler.
 Normal builds use stock GStreamer; no GStreamer core patch is required or applied.
 
@@ -135,8 +135,8 @@ without trace capture or span correlation. See its
 [configuration and migration guide](PROFILES.md).
 
 A dedicated report worker drains rings every second, aggregates raw stacks,
-reuses a bounded symbol cache, and interns frames directly into pprof. The SDK
-upload queue holds at most ten encoded profiles, each capped at 8 MiB. A full
+reuses a bounded symbol cache, and interns frames directly into pprof. The
+[HTTP uploader](src/profileupload.rs) queue holds at most ten encoded profiles, each capped at 8 MiB. A full
 queue drops the new profile without blocking sampling or report processing.
 Oversized reports are dropped before enqueueing. These bounds exclude the
 current report, compression/HTTP scratch space and transient debug-file parsing.
@@ -175,18 +175,21 @@ failures, reported samples and active timers. `element_samples`, `task_samples`,
 and `context_capacity_rejections` expose element attribution coverage and its
 bounded registry. `dropped_processing` counts samples
 discarded by the encoded-size limit; `dropped_upload` counts samples discarded
-when the upload queue is full or disconnected. `reported_samples` counts samples
-successfully enqueued to the SDK, **not successful delivery**: the SDK does not expose HTTP
-acknowledgements or failures through the backend interface. A successful
-`shutdown` therefore cannot guarantee profile delivery.
+when the upload queue is full or disconnected. `reported_samples` counts queued
+samples; `accepted_samples` counts HTTP-acknowledged samples and `failed_samples`
+counts rejected or unconfirmed deliveries. `pending_samples` and `pending_profiles`
+include queued/in-flight work. Failed responses, bounded response decoding, and
+HTTP timeouts are reported by the uploader. Requests are not automatically retried.
+See the [delivery counters and semantics](PROFILES.md#sampling-and-shutdown).
 
-Stop streaming, then call `gstoteltracer::shutdown(timeout)` to stop the timers,
-drain a final profile and finish SDK shutdown. It shares the existing caller
-deadline; background cleanup continues after timeout and shutdown may be
-retried. `flush()` and the automatic pipeline-NULL drain cover traces only.
-`gst-launch-1.0` relies on periodic profile uploads and may lose the final
-interval when it exits. Applications needing a final profile drain must use the
-explicit Rust shutdown API. Pending timer signals require keeping the small
+Stop streaming, then call `gstoteltracer::shutdown(timeout)` to stop timers,
+drain a final profile and finish uploads. It shares the caller deadline;
+background cleanup continues after timeout and shutdown may be retried.
+`flush(timeout)` drains every enabled signal while preserving profiling for later
+pipelines. Pipeline NULL automatically drains traces, metrics and logs; profiles
+require an explicit flush or shutdown through Rust or the C/Python action signals.
+`gst-launch-1.0` relies on periodic uploads and may lose its final interval.
+Pending timer signals require keeping the small
 handler and sampler storage resident after shutdown. GStreamer's normal plugin
 loader does this; unloading an rlib's hosting DSO and forking after profiler
 initialization are unsupported. Applications must reserve the chosen signal
@@ -287,8 +290,8 @@ exclusive element processing time or end-to-end buffer latency.
 
 Invalid tracing configuration disables hooks and emits an `mars-otel` error.
 Non-parent-based and custom samplers are not supported. `OTEL_BSP_*` does not
-configure this worker; there is no SDK batch span processor. No events or links
-are currently produced. SDK span processors and custom global tracer providers
+configure this worker; there is no SDK batch span processor. Events are not currently produced; bounded span links preserve observed fan-in
+contexts as described in the [instrumentation guide](INSTRUMENT.md#follow-a-measurement). SDK span processors and custom global tracer providers
 do not intercept this export path.
 
 With the default serialized export, the memory bound is a queue plus one export
@@ -353,7 +356,7 @@ The [combined video comparison](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md)
 also measures `mars-otel` with default trace-export settings alongside
 `mars-instrument`, both with and without profiles and logs.
 
-**Current profiles-only, trace, and log comparison, 2026-10-23.** See the
+**Historical profiles-only, trace, and log comparison, 2026-10-23.** See the
 [matched 1080p video results](../../reports/otel/PROFILE_VIDEO_RESULTS.md) for
 `mars-profiles` and `mars-otel` with profiles and logs enabled. The new runner
 includes an untraced baseline, actual per-frame logs, explicit final shutdown,
@@ -576,8 +579,10 @@ gst_structure_free(report);
 
 Statuses are `ok`, `timeout`, `export-failed`, `closed`, or `not-initialized`.
 Invalid timeout arguments return `success=false` with an `error` field without
-starting cleanup. `profile-delivery-confirmed` is always false, reflecting the
-SDK acknowledgement limitation. A timeout can be retried; workers continue
+starting cleanup. `profile-delivery-confirmed` reflects acknowledgement of all
+queued profile samples without processing/upload loss; it is false when profiling
+is disabled, after previous losses, or when the drain times out. It does not
+guarantee durable backend storage. A timeout can be retried; workers continue
 bounded processing in the background. Pipeline NULL transitions flush traces,
 metrics, and logs, but applications must request the final profile flush.
 

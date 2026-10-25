@@ -21,7 +21,7 @@ groups:
         annotations:
           summary: Mars profiling has exhausted attribution or thread capacity
       - alert: MarsProfileLoss
-        expr: increase(mars_instrument_profile_samples_total{outcome=~"ring_full|processing_drop|upload_queue_drop"}[5m]) > 0
+        expr: increase(mars_instrument_profile_samples_total{outcome=~"ring_full|processing_drop|upload_queue_drop|export_failed"}[5m]) > 0
         labels:
           severity: warning
         annotations:

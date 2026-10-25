@@ -46,7 +46,9 @@ fn collect(mode: &str) -> (Received, String) {
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = stop.clone();
     let fail = mode.ends_with("slow");
+    let recover = mode == "profiles-only-recovery";
     let worker = std::thread::spawn(move || {
+        let mut profiles = 0;
         while !stopping.load(Ordering::Relaxed) {
             let Some(mut request) = server.recv_timeout(Duration::from_millis(10)).unwrap() else {
                 continue;
@@ -109,6 +111,11 @@ fn collect(mode: &str) -> (Received, String) {
                             .profiles
                             .push(Profile::decode(sample.raw_profile.as_slice()).unwrap());
                     }
+                }
+                profiles += 1;
+                if recover && profiles == 1 {
+                    request.respond(tiny_http::Response::empty(503)).unwrap();
+                    continue;
                 }
                 if fail {
                     // Keep accepting traces while the profile upload stalls.
@@ -388,6 +395,13 @@ fn slow_profile_receiver_does_not_extend_shutdown_deadline() {
 }
 
 #[test]
+fn profile_delivery_failure_is_visible_and_flush_recovers_without_stopping_sampling() {
+    let (received, _) = collect("profiles-only-recovery");
+    assert!(!received.profiles.is_empty());
+    assert!(received.spans.is_empty());
+}
+
+#[test]
 fn profiles_only_uploads_cpu_samples_without_any_otlp_requests() {
     for mode in [
         "profiles-only",
@@ -630,6 +644,37 @@ fn profile_child() {
         assert_eq!(metrics.failed_exports, 0);
         assert_eq!(gstoteltracer::profile_stats().correlated_samples, 0);
     }
+    if mode == "profiles-only-recovery" {
+        let report = gstoteltracer::flush_report(Duration::from_secs(5));
+        assert_eq!(
+            report.profiles,
+            Some(Err(gstoteltracer::FlushError::ExportFailed))
+        );
+        assert!(!report.profile_delivery_confirmed);
+        let lost = gstoteltracer::profile_stats().failed_samples;
+        assert!(lost > 0);
+        profile_push_work();
+        let report = gstoteltracer::flush_report(Duration::from_secs(5));
+        assert_eq!(report.profiles, Some(Ok(())));
+        assert!(
+            !report.profile_delivery_confirmed,
+            "earlier losses remain visible"
+        );
+        let report = gstoteltracer::shutdown_report(Duration::from_secs(5));
+        assert_eq!(report.profiles, Some(Ok(())));
+        let stats = gstoteltracer::profile_stats();
+        assert_eq!(stats.failed_samples, lost);
+        assert!(stats.accepted_samples > 0);
+        assert_eq!(
+            stats.reported_samples,
+            stats.accepted_samples + stats.failed_samples
+        );
+        assert_eq!(
+            stats.pending_samples + stats.pending_profiles + stats.active_threads,
+            0
+        );
+        return;
+    }
     let invalid: gst::Structure = _tracer.emit_by_name("flush", &[&60001u64]);
     assert!(!invalid.get::<bool>("success").unwrap());
     if slow {
@@ -644,7 +689,10 @@ fn profile_child() {
         let samples = gstoteltracer::profile_stats().samples;
         let report: gst::Structure = _tracer.emit_by_name("flush", &[&5000u64]);
         assert!(report.get::<bool>("success").unwrap(), "{report:?}");
-        assert!(!report.get::<bool>("profile-delivery-confirmed").unwrap());
+        assert_eq!(
+            report.get::<bool>("profile-delivery-confirmed").unwrap(),
+            samples > 0
+        );
         assert!(gstoteltracer::profile_stats().reported_samples >= samples);
         if mode == "profiles-only-flush" {
             profile_push_work();
@@ -657,7 +705,9 @@ fn profile_child() {
         assert_eq!(shutdown, Err(gstoteltracer::FlushError::Timeout));
         assert!(start.elapsed() < Duration::from_secs(1));
         // Cleanup is asynchronous after timeout; a retry must finish it.
-        gstoteltracer::shutdown(Duration::from_secs(10)).unwrap();
+        let finished = gstoteltracer::shutdown(Duration::from_secs(10));
+        assert!(finished.is_ok() || finished == Err(gstoteltracer::FlushError::ExportFailed));
+        assert!(gstoteltracer::profile_stats().failed_samples > 0);
     } else {
         shutdown.unwrap();
     }

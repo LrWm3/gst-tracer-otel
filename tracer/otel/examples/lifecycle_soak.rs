@@ -154,7 +154,7 @@ fn check_drain(report: &gstoteltracer::DrainReport) {
     acceptable(report.traces.clone().map(|_| ()));
     acceptable(report.metrics.clone());
     acceptable(report.logs.clone());
-    assert_eq!(report.profiles, Some(Ok(())));
+    acceptable(report.profiles.clone().unwrap());
 }
 
 fn main() {
@@ -214,6 +214,11 @@ fn main() {
     assert_eq!(trace.pending_spans, 0);
     assert_eq!(profile.active_threads, 0);
     assert_eq!(profile.samples, profile.reported_samples);
+    assert_eq!(
+        profile.reported_samples,
+        profile.accepted_samples + profile.failed_samples
+    );
+    assert_eq!(profile.pending_samples + profile.pending_profiles, 0);
     assert_eq!(profile.context_descriptions, 0);
     println!(
         "DONE cycles={cycles} shutdown_ms={}",
