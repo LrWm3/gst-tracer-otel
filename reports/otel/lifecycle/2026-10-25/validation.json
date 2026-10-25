@@ -1,0 +1,41 @@
+{
+  "implementation_revision": "36c2ea9",
+  "native_arm64": {
+    "profiles_feature_tests_passed": 102,
+    "profiles_feature_tests_failed": 0,
+    "explicit_native_caller_chain": "passed",
+    "qemu_pac_keys_a_and_b": "changed signed addresses and recovered original callsites",
+    "plugin_factories_loaded": [
+      "mars-instrument",
+      "mars-otel",
+      "mars-profiles"
+    ],
+    "plugin_scanner": "container denied helper file-descriptor setup; in-process fallback succeeded"
+  },
+  "local_checks": [
+    "cargo fmt --all",
+    "cargo clippy --workspace --all-features -- -D warnings",
+    "cargo test",
+    "cargo test --workspace --all-features",
+    "cargo audit",
+    "cargo +nightly udeps -p gst-otel-tracer -p gst-prometheus-tracer --all-targets --all-features"
+  ],
+  "audit_allowed_warning": "Tokio 1.47.1 RUSTSEC-2026-0386",
+  "github_checks": [
+    {
+      "name": "build-and-test-gst-otel",
+      "result": "success",
+      "url": "https://github.com/LrWm3/gst-tracer-otel/actions/runs/40233757929"
+    },
+    {
+      "name": "Native ARM64 profiles",
+      "result": "success",
+      "url": "https://github.com/LrWm3/gst-tracer-otel/actions/runs/40233757934"
+    },
+    {
+      "name": "Security Audit",
+      "result": "success",
+      "url": "https://github.com/LrWm3/gst-tracer-otel/actions/runs/40233757957"
+    }
+  ]
+}

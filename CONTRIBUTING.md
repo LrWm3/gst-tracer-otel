@@ -196,10 +196,13 @@ profiling optimizations.
   workloads. Keep private application validation outside the repository. The
   [18-configuration video matrix](reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
   includes 90 validated measured runs and 18 warm-ups.
-- [ ] Complete long-running soak tests covering pipeline recreation, thread
+- [x] Complete long-running soak tests covering pipeline recreation, thread
   churn, plugin loading, collector outages/recovery, and repeated teardown on
   x86-64 and ARM64. Check settled memory, attribution capacity, queue bounds,
-  and shutdown progress, alongside broader platform validation.
+  and shutdown progress, alongside broader platform validation. Both
+  [30-minute native runs](reports/otel/PROFILE_VIDEO_RESULTS.md#thirty-minute-lifecycle-soaks--2026-10-25)
+  passed with more than 13,000 lifetimes each; the report includes memory ranges,
+  intentional delivery failures, sampler diagnostics and platform limitations.
 
 ### Trace coverage
 

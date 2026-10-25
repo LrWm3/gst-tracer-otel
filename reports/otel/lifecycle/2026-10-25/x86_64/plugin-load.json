@@ -1,0 +1,14 @@
+[
+  {
+    "factory": "mars-instrument",
+    "loaded": true
+  },
+  {
+    "factory": "mars-otel",
+    "loaded": true
+  },
+  {
+    "factory": "mars-profiles",
+    "loaded": true
+  }
+]

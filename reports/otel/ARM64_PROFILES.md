@@ -141,6 +141,13 @@ overhead for production video decoding, inference, or GPU workloads.
 
 ## Deadlock and memory-growth check
 
+These are historical results from before description reclamation. The newer
+[30-minute native lifecycle soaks](PROFILE_VIDEO_RESULTS.md#thirty-minute-lifecycle-soaks--2026-10-25)
+exercise the current implementation beyond 4096 cumulative descriptions, with
+collector outages, native thread churn and shared-library loading. Descriptions
+are now reclaimed after queued samples drain; the limit applies to live and
+pending descriptions.
+
 A follow-up on an integrated memory nvidia device tested runtime code from
 `128b002`. Source hashes matched the checkout. No deadlock or sustained memory growth was observed in these
 finite runs; this is not proof that every production workload is free of leaks

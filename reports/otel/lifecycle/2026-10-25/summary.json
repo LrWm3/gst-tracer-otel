@@ -1,0 +1,82 @@
+{
+  "x86_64": {
+    "cycles": 13939,
+    "retired": 41817,
+    "samples": 46945,
+    "timer_overruns": 0,
+    "truncated_stacks": 0,
+    "rss_5_to_10_minutes_median_mib": 64.3515625,
+    "rss_25_to_30_minutes_median_mib": 66.1796875,
+    "rss_25_to_30_minutes_range_mib": [
+      66.171875,
+      66.2421875
+    ],
+    "peak_rss_mib": 70.00390625,
+    "shutdown_rss_mib": 40.1015625,
+    "shutdown_ms": 7,
+    "post_shutdown_threads": 3,
+    "post_shutdown_fds": 4,
+    "running_threads": [
+      13,
+      14,
+      15
+    ],
+    "running_fds": [
+      13,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21
+    ],
+    "loader_fixture_profiles": 427,
+    "accepted_spans": 131928,
+    "failed_spans": 35340,
+    "accepted_logs": 43976,
+    "failed_logs": 11780,
+    "accepted_metric_batches": 11136,
+    "failed_metric_batches": 2992,
+    "profile_http200_cpu_seconds": 385.2,
+    "profile_http503_cpu_seconds": 84.25
+  },
+  "aarch64": {
+    "cycles": 13764,
+    "retired": 41292,
+    "samples": 43423,
+    "timer_overruns": 3,
+    "truncated_stacks": 123,
+    "rss_5_to_10_minutes_median_mib": 21.87109375,
+    "rss_25_to_30_minutes_median_mib": 19.2578125,
+    "rss_25_to_30_minutes_range_mib": [
+      19.2421875,
+      21.375
+    ],
+    "peak_rss_mib": 22.6796875,
+    "shutdown_rss_mib": 18.40625,
+    "shutdown_ms": 9,
+    "post_shutdown_threads": 2,
+    "post_shutdown_fds": 4,
+    "running_threads": [
+      12,
+      13
+    ],
+    "running_fds": [
+      13,
+      16,
+      17,
+      19,
+      20,
+      21
+    ],
+    "loader_fixture_profiles": 358,
+    "accepted_spans": 130128,
+    "failed_spans": 35040,
+    "accepted_logs": 43380,
+    "failed_logs": 11676,
+    "accepted_metric_batches": 10987,
+    "failed_metric_batches": 2966,
+    "profile_http200_cpu_seconds": 356.79,
+    "profile_http503_cpu_seconds": 77.44
+  }
+}

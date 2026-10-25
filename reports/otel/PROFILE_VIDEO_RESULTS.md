@@ -270,3 +270,150 @@ cargo test --profile profiling -p gst-otel-tracer --features profiles --lib --no
 python3 tracer/otel/bench/symbolization.py --binary PATH_TO_TEST_EXECUTABLE \
   --output reports/otel/symbolization/recheck
 ```
+
+## Thirty-minute lifecycle soaks — 2026-10-25
+
+Both native runs completed 30 minutes of pipeline and thread recreation, sampled
+library loading/unloading, collector outages and recovery, and final concurrent
+shutdown. No deadlock occurred. Profile descriptions were reclaimed at every
+drained observation, with more than 41,000 retired on each platform and no
+exhaustion of the 4096-live-description limit. These finite
+synthetic runs establish progress and bounded observed state under this workload;
+they do not prove that every production workload is leak- or deadlock-free.
+
+| Native platform | Pipeline lifetimes / new producer threads | Descriptions retired | CPU samples | Uploads containing loader fixture | Final shutdown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| x86-64 | 13,939 | 41,817 | 46,945 | 427 | 7 ms |
+| arm64 | 13,764 | 41,292 | 43,423 | 358 | 9 ms |
+
+“Final shutdown” includes four concurrent callers followed by 100 repeated calls.
+It occurs after pipelines have stopped and a six-second healthy drain window.
+No call timed out. Historical export failures remain visible in the returned
+per-signal results; an outage run is not expected to return a clean delivery
+status. Sampler registrations, live descriptions, pending traces and pending
+logs were all zero after shutdown. The pipeline and source weak references had
+to expire within one second on every cycle.
+
+### Memory and resource lifetime
+
+All figures are whole-process MiB, including GStreamer, code, caches, sampler
+storage and allocator retention. There is no uninstrumented memory control.
+
+| Platform | RSS median, minutes 5–10 | RSS median, minutes 25–30 | RSS range, minutes 25–30 | Observed peak | RSS after shutdown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| x86-64 | 64.35 | 66.18 | 66.17–66.24 | 70.00 | 40.10 |
+| arm64 | 21.87 | 19.26 | 19.24–21.38 | 22.68 | 18.41 |
+
+![Observed process RSS and high-water marks during the two native lifecycle soaks](lifecycle/2026-10-25/memory.svg)
+
+The x86-64 run retained some additional memory while warming: its final five
+minutes varied by about 0.07 MiB. Zero live descriptions at each drained snapshot
+and successful weak-reference checks rule out retained pipeline objects and an
+ever-growing description registry in this test. They do not identify every
+remaining allocation. The arm64 and x86-64 library/debug environments differ;
+their RSS levels are not an architecture efficiency comparison. Sampling rings
+are deliberately retained for process lifetime to protect against late signals.
+
+The x86-64 process used 13–15 threads and 13–21 file descriptors at running snapshots, then 3 threads and 4 descriptors after shutdown.
+
+The arm64 process used 12–13 threads and 13–21 file descriptors at running snapshots, then 2 threads and 4 descriptors after shutdown.
+
+Some process/library threads remain until exit; zero active sampler threads does
+not mean that every process thread has terminated. Resource counts are sampled
+after drains, not continuously observed high-water marks. RSS comes from
+`smaps_rollup`; the recorded peak takes the larger of `VmHWM` and current RSS.
+
+### Outage accounting
+
+The receiver deliberately returned HTTP 503 for 20 seconds every two minutes.
+Another 12-second phase delayed OTLP responses by 350 ms, exceeding the configured
+100 ms request timeout. Profiles were not delayed in that phase. The final five
+seconds and settling window used a healthy receiver.
+
+| Platform | Accepted / failed spans | Accepted / failed logs | Accepted / failed metric batches | Profile CPU seconds in HTTP 200 / 503 requests |
+| --- | ---: | ---: | ---: | ---: |
+| x86-64 | 131,928 / 35,340 | 43,976 / 11,780 | 11,136 / 2,992 | 385.20 / 84.25 |
+| arm64 | 130,128 / 35,040 | 43,380 / 11,676 | 10,987 / 2,966 | 356.79 / 77.44 |
+
+Every completed span and emitted log was accounted for as accepted or failed;
+there were no trace/log queue overflows. Acceptance resumed after outages.
+There were no profile ring, processing or upload-queue drops, failed stack reads,
+registration failures, or attribution capacity rejections. Trace hook mismatches,
+depth drops and propagation misses were also zero. x86-64 recorded no timer
+overruns or truncated stacks. Arm64 recorded **three timer overruns and 123
+truncated stacks** (about 0.28% of samples). Truncation retains the interrupted
+instruction and available frames; it does not discard the original sample.
+These diagnostics are reported separately from queue losses.
+
+All collected CPU samples reached the profile uploader. This is local handoff,
+not proof of backend acceptance: the fake receiver intentionally rejected some
+profile requests, and the Pyroscope SDK does not expose individual delivery
+acknowledgements. The profile column decodes the actual CPU weights received
+under each HTTP status. An HTTP 200 written after a client timeout can appear in
+receiver totals while the OTLP exporter correctly reports failure; those raw
+request counts must not be substituted for client acknowledgement counts.
+
+### Workload, validation and reproduction
+
+The [driver](../../tracer/otel/examples/lifecycle_soak.rs) creates a new native
+producer thread and pipeline for each cycle. Four buffers cross a queue and an
+identity handoff that does about 2 ms of CPU work and emits an INFO log. This
+creates 12 spans and four logs per cycle. After its first push arms sampling, the
+producer loads and unloads a [C shared-library fixture](../../tracer/otel/bench/soak_module.c)
+whose constructor and destructor each perform 15 ms of thread CPU work while
+holding the loader lock. Actual decoded profiles must contain the fixture's
+function. This exercises dynamic-loader contention; it does not repeatedly
+rescan the GStreamer plugin registry. Each cycle ends with 80 ms idle time.
+
+All four signals and `MARS_MONITORING=all` are enabled. Profiling uses the default
+full symbolizer at 100 Hz, trace/log queues hold 256 records with 64-record
+batches, and the metrics interval is one second with one-in-16 detailed sampling.
+Every approximately ten seconds the driver drains the signals and records
+resource/counter snapshots. The HTTP receiver stores aggregate counters, not
+the complete payload stream. A parent watchdog bounds the entire test.
+
+Both binaries are release builds with Rust 1.89.0 and frame pointers. x86-64 uses
+GStreamer 1.24.2; native arm64 uses GStreamer 1.22.0 inside a container on an
+integrated memory nvidia device. The container has a two-CPU quota. Other work,
+including compilation, could run concurrently; these are correctness and memory
+soaks, not CPU-overhead or throughput measurements. No production application or
+backend was part of this test.
+
+The native arm64 profiles-feature suite passed 102 tests, followed by the explicit
+real-timer caller-chain test. A separate QEMU check changed PAC return addresses
+with both keys A and B and recovered the original callsites. QEMU was not used
+for the native sampler or soak. Fresh GStreamer registries also loaded all three
+OTel plugin factories on both platforms. The arm64 container blocked the external
+scanner helper's file-descriptor setup with `Operation not permitted`; GStreamer
+loaded the factories through its in-process fallback. This check therefore does
+not validate external scanner isolation in that container. The release-only
+loader-lock regression test now compares against the source detail available in
+that build; debug test builds still require file/line resolution.
+
+All required formatting, Clippy, workspace tests and dependency-use checks passed.
+The audit exited zero with the existing allowed Tokio `RUSTSEC-2026-0386` warning.
+GitHub build/test, native arm64 and audit jobs passed for implementation revision
+`36c2ea9`. [Source hashes](lifecycle/2026-10-25/source-hashes.json) matched between
+the native environments. The earlier x86 executable predates the test-only
+release-symbol assertion adjustment; runtime code and the soak harness match.
+
+Reproduce from the repository root on native Linux x86-64 or arm64 with a C
+compiler and the project's GStreamer prerequisites installed:
+
+```sh
+RUSTFLAGS='-C force-frame-pointers=yes' cargo build --locked --release \
+  -p gst-otel-tracer --features profiles --example lifecycle_soak
+python3 tracer/otel/bench/lifecycle_soak.py --seconds 1800 \
+  --output target/lifecycle-soak
+```
+
+Retained data includes [summary statistics](lifecycle/2026-10-25/summary.json),
+[validation results](lifecycle/2026-10-25/validation.json),
+settings and binary hashes ([x86-64](lifecycle/2026-10-25/x86_64/metadata.json),
+[arm64](lifecycle/2026-10-25/aarch64/metadata.json)), complete snapshots
+([x86-64](lifecycle/2026-10-25/x86_64/snapshots.json),
+[arm64](lifecycle/2026-10-25/aarch64/snapshots.json)), final receiver/counter results
+([x86-64](lifecycle/2026-10-25/x86_64/result.json),
+[arm64](lifecycle/2026-10-25/aarch64/result.json)), and compressed stdout/stderr
+([x86-64](lifecycle/2026-10-25/x86_64/logs.tar.gz),
+[arm64](lifecycle/2026-10-25/aarch64/logs.tar.gz)).
