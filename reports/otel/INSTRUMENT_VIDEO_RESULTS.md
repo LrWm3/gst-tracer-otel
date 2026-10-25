@@ -1,5 +1,112 @@
 # Combined instrumentation on 1080p video
 
+## Current full-metrics signal matrix — 2026-10-25
+
+This series includes the current element-attributed profiler, bounded log
+worker, factory span names, and explicit full-metrics configurations. It
+supersedes the earlier planning estimates below for this implementation.
+
+Five-run medians relative to the same no-tracer control. CPU overhead means
+**additional process CPU cycles**, not FPS loss. All profiles use 100 Hz;
+traces are fully sampled; log modes emit one INFO message per frame through
+both the native GStreamer handler and the OTLP bridge. Health monitoring is
+shown in parentheses. A negative small estimate is measurement variation,
+not evidence that instrumentation speeds up the pipeline.
+
+| Mode | Added cycles | Added instructions | Process CPU (s) | FPS | RSS at EOS / peak (MiB) | Final drain (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| No tracer | +0.00% | +0.00% | 6.026 | 99.7 | 26.6 / 26.6 | 1.2 |
+| `mars-noop` | -0.50% | +0.02% | 6.365 | 94.3 | 26.9 / 26.9 | 1.4 |
+| `mars-metrics` (core) | -0.46% | +0.03% | 6.175 | 97.3 | 27.7 / 27.7 | 0.9 |
+| `mars-otel` traces | +0.54% | +0.06% | 6.141 | 98.4 | 32.3 / 32.3 | 2.0 |
+| `mars-profiles` | +1.61% | +0.74% | 6.241 | 97.3 | 55.5 / 68.7 | 4.2 |
+| Compatibility four-histogram instrumentation | +1.09% | +0.09% | 6.158 | 98.0 | 33.1 / 33.1 | 2.4 |
+| `mars-otel` + profiles + logs | +3.58% | +1.19% | 6.399 | 96.5 | 58.7 / 71.3 | 4.6 |
+| Full metrics (none) | -0.23% | +0.05% | 6.236 | 96.3 | 31.3 / 31.3 | 2.4 |
+| Full metrics (core) | +1.68% | +0.06% | 6.352 | 94.6 | 31.3 / 31.3 | 1.9 |
+| Full metrics (all) | +0.67% | +0.06% | 6.451 | 92.7 | 31.4 / 31.4 | 2.0 |
+| Full metrics + traces (none) | +2.26% | +0.10% | 6.420 | 94.1 | 33.3 / 33.3 | 2.7 |
+| Full metrics + traces (core) | +0.58% | +0.10% | 6.877 | 87.9 | 33.2 / 33.2 | 2.7 |
+| Full metrics + traces (all) | -0.35% | +0.12% | 7.631 | 79.2 | 33.3 / 33.3 | 2.9 |
+| Full metrics + traces + profiles + logs (none) | +4.27% | +1.24% | 8.185 | 74.9 | 68.3 / 72.1 | 5.7 |
+| Full metrics + traces + profiles + logs (core) | +3.94% | +1.25% | 7.448 | 83.1 | 68.3 / 72.2 | 6.3 |
+| Full metrics + traces + profiles + logs (all) | +3.23% | +1.22% | 7.748 | 79.3 | 58.7 / 72.4 | 6.7 |
+| Full metrics + traces + logs (core) | +1.07% | +0.18% | 7.620 | 79.4 | 33.9 / 33.9 | 3.4 |
+| Full metrics + traces + profiles (core) | +2.91% | +0.83% | 6.845 | 89.9 | 57.0 / 71.3 | 5.6 |
+
+The shared workstation's timing variation is material. The table below preserves
+ranges for all five runs; do not rank the monitoring levels or infer small
+per-signal speedups from their medians. `none` still retains the accounting needed
+for correctness and explicit status APIs. `core` exports fixed health counters;
+`all` also collects worker timing, size, and cache diagnostics.
+
+| Mode | Cycles range (billions) | Process CPU range (s) | Maximum drain (ms) |
+| --- | ---: | ---: | ---: |
+| No tracer | 25.79–26.47 | 5.88–9.17 | 1.9 |
+| `mars-noop` | 25.59–27.04 | 5.80–8.27 | 1.5 |
+| `mars-metrics` (core) | 25.61–26.82 | 5.93–7.31 | 1.1 |
+| `mars-otel` traces | 25.90–26.91 | 6.03–6.46 | 5.5 |
+| `mars-profiles` | 26.28–27.21 | 6.03–6.36 | 5.3 |
+| Compatibility four-histogram instrumentation | 25.83–27.20 | 5.99–6.59 | 8.4 |
+| `mars-otel` + profiles + logs | 26.48–27.95 | 6.24–6.93 | 6.0 |
+| Full metrics (none) | 25.66–26.61 | 6.05–6.57 | 3.9 |
+| Full metrics (core) | 25.87–27.20 | 5.94–6.71 | 4.7 |
+| Full metrics (all) | 25.85–26.93 | 5.93–8.24 | 2.4 |
+| Full metrics + traces (none) | 26.08–26.83 | 6.19–9.23 | 3.5 |
+| Full metrics + traces (core) | 25.88–26.59 | 6.15–8.66 | 4.8 |
+| Full metrics + traces (all) | 25.86–26.78 | 6.14–8.37 | 3.5 |
+| Full metrics + traces + profiles + logs (none) | 26.40–27.55 | 6.37–9.62 | 6.6 |
+| Full metrics + traces + profiles + logs (core) | 26.43–27.41 | 5.93–9.28 | 11.0 |
+| Full metrics + traces + profiles + logs (all) | 26.60–27.51 | 6.16–8.24 | 9.8 |
+| Full metrics + traces + logs (core) | 26.23–26.88 | 5.95–8.86 | 6.8 |
+| Full metrics + traces + profiles (core) | 26.33–27.23 | 6.14–8.94 | 46.0 |
+
+RSS at EOS is a snapshot **before final cleanup**, not proof of a long-running
+memory plateau. Peak RSS includes initialization, background symbolization,
+and final processing. Linux RSS accounting is approximate; peak is the larger
+of the kernel high-water reading and the observed EOS RSS. Profile report timing
+can change EOS RSS while peak remains similar. Native libraries and debug files
+can make other applications' peaks much larger. Receiver memory/CPU is excluded.
+
+The matched workload is 600 unpaced 1080p RGBA frames from `videotestsrc
+pattern=snow`, converted to I420 and discarded by `fakesink`: four pushes per
+frame. Every case uses the same frame-pointer-enabled release binary on Linux
+x86-64, stock GStreamer 1.24.2, CPUs 0 and 2. Each has one excluded warm-up;
+measured order rotates. Trace export uses the defaults (8,192 records, 512 per
+batch, 200 ms, one request, no compression). Metrics use a one-second export
+interval and 1-in-16 timing samples, so periodic snapshot cost is included.
+The compatibility four-histogram collector uses the same interval/sample rate.
+These shorter runs include proportionally more initialization/final processing
+than the older 1,200-frame series; do not subtract results across series.
+
+The harness pauses after EOS only long enough to acknowledge completion and,
+for `mars-metrics`, scrape the exact final live counters before teardown retires
+them. All modes use that handshake. It then includes final signal drains in
+process CPU and reports their wall time separately. No compiler/test workloads
+ran alongside measurement. No measured runs were discarded.
+
+All **90 measured runs and 18 warm-ups** passed backend validation. Measured runs delivered **132,000 spans**, **15,000 logs**, and **20,747 CPU samples**. All logs and metric exemplars referenced exported spans; decoded profile weights matched sample counters. Full and compatibility metric totals were checked independently, including exact final Prometheus counts.
+
+No trace/log queue drops, failed exports, sample-ring/processing/upload queue
+loss, propagation misses, or attribution-capacity exhaustion occurred. Every
+final drain completed. Profile HTTP bodies were decoded at the test receiver;
+the production Pyroscope SDK still does not expose individual delivery
+acknowledgements. These short runs do not establish absence of rare deadlocks or
+memory leaks; those require separate lifecycle soaks.
+
+[Raw CSV](signal-matrix/2026-10-25/results.csv),
+[settings and hashes](signal-matrix/2026-10-25/metadata.json), and
+[per-run logs and hardware counters](signal-matrix/2026-10-25/logs.tar.gz)
+retain the full results, including warm-ups. Reproduce after building all plugins
+and `profile_video` with `RUSTFLAGS='-C force-frame-pointers=yes'`:
+
+```sh
+python3 tracer/otel/bench/signal_matrix.py --frames 600 --repeats 5 --perf \
+  --output /tmp/mars-signal-matrix
+```
+
+## Earlier compatibility measurements — 2026-10-23
+
 Measured 2026-10-23. For a rough planning figure on this workload, use **about
 1% extra CPU cycles for default `mars-instrument` metrics and traces**, and
 **about 3% with profiles and logs enabled**. Added peak RSS was about **5 MiB**

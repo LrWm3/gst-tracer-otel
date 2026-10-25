@@ -103,6 +103,22 @@ fn main() {
         panic!("{} {:?}", error.error(), error.debug());
     }
     assert_eq!(received.load(Relaxed), frames);
+    let before_cleanup = std::fs::read_to_string("/proc/self/status").unwrap();
+    let steady_rss = before_cleanup
+        .lines()
+        .find(|l| l.starts_with("VmRSS:"))
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    if std::env::var_os("MARS_BENCH_SYNC_EOS").is_some() {
+        // Let the benchmark scrape final live aggregates before NULL retires
+        // metric series. The harness acknowledges over stdin, with a timeout.
+        use std::io::{Read, Write};
+        println!("EOS");
+        std::io::stdout().flush().unwrap();
+        std::io::stdin().read_exact(&mut [0]).unwrap();
+    }
     let shutdown_start = Instant::now();
     pipeline.set_state(gst::State::Null).unwrap();
     let stats = if tracer.is_some() {
@@ -141,10 +157,17 @@ fn main() {
         .split_whitespace()
         .nth(1)
         .unwrap();
-    println!("RESULT frames={frames} elapsed_ns={} stream_cpu_ns={} process_cpu_ns={} total_cpu_ns={} shutdown_ns={} max_rss_kb={peak}",
+    // Linux's per-CPU RSS accounting can briefly make VmHWM lag a prior RSS
+    // read. Keep the highest observation instead of reporting peak < current.
+    let peak = peak
+        .parse::<u64>()
+        .unwrap()
+        .max(steady_rss.parse().unwrap());
+    println!("RESULT frames={frames} elapsed_ns={} stream_cpu_ns={} process_cpu_ns={} total_cpu_ns={} shutdown_ns={} max_rss_kb={peak} steady_rss_kb={steady_rss}",
         elapsed.as_nanos(), source_cpu.load(Relaxed), process_end - process_start,
         process_end - total_start, shutdown.as_nanos());
     println!("TRACE {stats:?}");
     println!("PROFILE {profile:?}");
     println!("METRIC {metrics:?}");
+    println!("LOG {:?}", gstoteltracer::log_stats());
 }

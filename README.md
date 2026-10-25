@@ -16,11 +16,12 @@ element span:
 
 | I want to… | Use | Send data to | Approx. CPU overhead |
 | --- | --- | --- | --- |
-| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | <1% expected on video workloads |
-| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~1% |
-| Investigate with correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | Prometheus / OTLP collector + Pyroscope | ~1% for metrics + traces; ~3% with profiles + logs |
+| Measure element latency, blocking, and queue pressure | [mars-metrics](tracer/prometheus/README.md) | Prometheus | ~1% or less |
+| Collect CPU call stack profiles | [mars-profiles](tracer/otel/PROFILES.md) | Pyroscope | ~2% |
+| Investigate with correlated metrics, traces, logs, and profiles | [mars-instrument](tracer/otel/INSTRUMENT.md) | Prometheus / OTLP collector + Pyroscope | ~1% for metrics + traces; ~4% with profiles + logs |
 
-Start with **mars-metrics** if you are unsure, as it carries the least overhead of these options.
+Start with **mars-metrics** for Prometheus metrics; use **mars-instrument** when
+you need to connect multiple signals.
 
 Use **mars-profiles** to find CPU hotspots, or **mars-instrument** to connect a
 measurement to a trace and its CPU samples. `mars-otel` remains available as a
@@ -42,19 +43,17 @@ For a list of available metrics, see the [prometheus plugin README.md](https://g
 
 See the [performance reports](reports/README.md) for measured CPU and memory costs on the tested pipelines for each tracer.
 
-These are rounded planning figures from our x86-64
-[1080p video measurements](reports/otel/INSTRUMENT_VIDEO_RESULTS.md): extra CPU
-cycles with default export settings, 100% trace sampling, 100 Hz profiles, and
-one log per frame when enabled. Small sub-percent results overlap baseline
-variation; these are not limits or FPS-loss estimates. `mars-instrument` added
-about **5 MiB peak RSS** by default and **45 MiB** with profiles/logs;
-[profiles alone](reports/otel/PROFILE_VIDEO_RESULTS.md) added **41 MiB**.
-The metrics figure comes from separate [video benchmarks](reports/prometheus/BENCHMARK.md).
-These measurements cover the existing defaults; the new explicit full-metrics
-configurations have not yet been benchmarked.
-These x86-64 figures predate element-attributed profiles; see the
-[attribution review](reports/otel/PROFILE_ELEMENT_REVIEW.md) for its additional
-cost and screenshots.
+These are rounded planning figures from the current x86-64
+[1080p video measurements](reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25):
+extra CPU cycles with fully sampled traces, 100 Hz element-attributed profiles,
+and one log per frame when enabled. The matched runs include explicit full
+metrics and `none`/`core`/`all` monitoring. Small differences overlap measurement
+variation; these are not limits or FPS-loss estimates.
+
+Full metrics + traces added about **7 MiB peak RSS**; all signals added **46 MiB**,
+and profiles alone **42 MiB**. These include temporary processing peaks.
+The report includes export settings, RSS before cleanup, delivery checks, and
+shutdown times; other pipelines and debug builds can cost more.
 
 On an integrated memory nvidia device, a separate [1080p check](reports/otel/ARM64_PROFILES.md#video-cpu-and-memory-check)
 with element attribution measured about **1.3% extra process CPU time** for
@@ -134,7 +133,8 @@ then open the span's CPU profile to see which element and native functions ran.
   a bin element.
 - **No async support.** `mars-metrics` supports push, pull, and buffer
   lists, as does explicit `signals="metrics"` collection in `mars-instrument`.
-  Trace spans and metric exemplars cover ordinary pushes and pull reads. Regular
+  Trace spans and metric exemplars cover ordinary pushes, buffer-list pushes,
+  and pull reads. Regular
   `queue` and `multiqueue` thread boundaries are supported, but `threadshare`
   asynchronous boundaries are not handled correctly by the element timings.
   If this is important to you, please open an issue and it can be explored.

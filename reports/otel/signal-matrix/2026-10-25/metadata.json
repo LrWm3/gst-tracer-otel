@@ -1,0 +1,137 @@
+{
+  "architecture": "x86_64",
+  "gstreamer": "1.24.2",
+  "revision": "604095dd0e211967c948559b54c51e13203a4c86",
+  "source_diff_sha256": "759a393011398b068a47bea595b5b631e2d50602168f9b47deba33471489945b",
+  "binary_sha256": "150d0ebe729ef5d9361dc9b96155dfb89f50dee71ed744bfd05b225309bf04ce",
+  "plugin_sha256": {
+    "libgstprometheustracer.so": "dc27c7367fb6547f3f616adf4c09145a14ee6ed3d73e247004bd6147d86d97fe",
+    "libgstoteltracer.so": "e738cd8ea4c3afe6d2ef14c6a68a88e51cda7aa714515bf86a6b988d7432261c",
+    "libgstnooptracer.so": "ab1720d5ea877d0e34ba88c6126cdcb42dbc2fc35006b70587f9adec22be75b1"
+  },
+  "frames": 600,
+  "repeats": 5,
+  "cpus": "0,2",
+  "cases": [
+    [
+      "none",
+      "none",
+      "",
+      "none"
+    ],
+    [
+      "noop",
+      "none",
+      "",
+      "none"
+    ],
+    [
+      "standalone-metrics",
+      "none",
+      "metrics",
+      "core"
+    ],
+    [
+      "otel",
+      "otel",
+      "traces",
+      "none"
+    ],
+    [
+      "profiles",
+      "profiles",
+      "profiles",
+      "none"
+    ],
+    [
+      "legacy-instrument",
+      "instrument",
+      "metrics,traces",
+      "core"
+    ],
+    [
+      "otel-profiles-logs",
+      "otel",
+      "traces,profiles,logs",
+      "none"
+    ],
+    [
+      "full-metrics-none",
+      "instrument",
+      "metrics",
+      "none"
+    ],
+    [
+      "full-metrics-core",
+      "instrument",
+      "metrics",
+      "core"
+    ],
+    [
+      "full-metrics-all",
+      "instrument",
+      "metrics",
+      "all"
+    ],
+    [
+      "full-default-none",
+      "instrument",
+      "metrics,traces",
+      "none"
+    ],
+    [
+      "full-default-core",
+      "instrument",
+      "metrics,traces",
+      "core"
+    ],
+    [
+      "full-default-all",
+      "instrument",
+      "metrics,traces",
+      "all"
+    ],
+    [
+      "full-all-none",
+      "instrument",
+      "metrics,traces,profiles,logs",
+      "none"
+    ],
+    [
+      "full-all-core",
+      "instrument",
+      "metrics,traces,profiles,logs",
+      "core"
+    ],
+    [
+      "full-all-all",
+      "instrument",
+      "metrics,traces,profiles,logs",
+      "all"
+    ],
+    [
+      "full-logs-core",
+      "instrument",
+      "metrics,traces,logs",
+      "core"
+    ],
+    [
+      "full-profiles-core",
+      "instrument",
+      "metrics,traces,profiles",
+      "core"
+    ]
+  ],
+  "warmups_per_case": 1,
+  "profile_hz": 100,
+  "metric_interval_ms": 1000,
+  "metric_sample_rate": 16,
+  "trace_queue": 8192,
+  "trace_batch": 512,
+  "trace_interval_ms": 200,
+  "trace_ratio": 1,
+  "rustflags": "-C force-frame-pointers=yes",
+  "perf": true,
+  "steady_rss_definition": "VmRSS at EOS, before final drain; this is not a long-running memory plateau",
+  "runner_sha256": "49b643d2c409e16c4f2262675f39456a076ad7abc10113960354a1b0bd356cf8"
+}

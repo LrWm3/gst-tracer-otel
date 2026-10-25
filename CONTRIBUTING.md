@@ -190,10 +190,12 @@ profiling optimizations.
   a small context-read/admission-check simplification; the matched measurements
   do not establish a consistent speedup. See the [current capture costs and
   remaining dispatch floor](reports/otel/DIRECT_RESULTS.md#current-stock-gstreamer-capture-check--2026-10-25).
-- [ ] Measure current full-metrics signal combinations alongside compatibility
+- [x] Measure current full-metrics signal combinations alongside compatibility
   presets, including logs, profiles, and each self-monitoring level. Report
   throughput, CPU, steady/peak memory, losses, and shutdown time with matched
-  workloads. Keep private application validation outside the repository.
+  workloads. Keep private application validation outside the repository. The
+  [18-configuration video matrix](reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
+  includes 90 validated measured runs and 18 warm-ups.
 - [ ] Complete long-running soak tests covering pipeline recreation, thread
   churn, plugin loading, collector outages/recovery, and repeated teardown on
   x86-64 and ARM64. Check settled memory, attribution capacity, queue bounds,

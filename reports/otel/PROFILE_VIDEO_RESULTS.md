@@ -1,9 +1,13 @@
-# Current profiling and log overhead on 1080p video
+# Profiling and log overhead on 1080p video
+
+The [2026-10-25 matched signal matrix](INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
+contains the current element-attributed profiling results. The earlier
+comparisons below remain for historical context.
 
 Measured 2026-10-23. This report checks the current `mars-profiles` entry point
 and `mars-otel` with profiles and logs enabled, including actual delivery and
-correlation. It replaces the older prototype figures as the current profiling
-comparison; the older measurements remain available as historical results.
+correlation. It replaced the older prototype figures at the time; the newer matrix above
+now provides the current planning figures.
 
 ## Default export settings
 
