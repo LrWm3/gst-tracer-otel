@@ -10,6 +10,25 @@ use std::fmt::Write;
 
 pub(crate) type Examples = gst_mars_metrics_core::exemplars::Snapshot;
 
+pub(crate) fn record_count(metrics: &[otlp::Metric]) {
+    use gst_mars_metrics_core::monitoring::{self, Monitoring, Stage};
+    if monitoring::level() != Monitoring::All {
+        return;
+    }
+    let count = metrics
+        .iter()
+        .map(|metric| match &metric.data {
+            Some(Data::Gauge(v)) => v.data_points.len(),
+            Some(Data::Sum(v)) => v.data_points.len(),
+            Some(Data::Histogram(v)) => v.data_points.len(),
+            Some(Data::ExponentialHistogram(v)) => v.data_points.len(),
+            Some(Data::Summary(v)) => v.data_points.len(),
+            None => 0,
+        })
+        .sum();
+    monitoring::record_size(Stage::Metrics, 0, count);
+}
+
 fn exemplar(name: &str, metric: &prom::Metric, examples: &Examples) -> Option<Exemplar> {
     let (pull, index) = match name {
         "gst_element_sync_wall_seconds" => (false, 0),

@@ -59,6 +59,9 @@ fn collect(mode: &str, pipeline: &str) -> Received {
                     for scope in resource.scope_metrics {
                         assert_eq!(scope.scope.unwrap().name, "mars-instrument");
                         for metric in scope.metrics {
+                            if metric.name.starts_with("mars_instrument_") {
+                                continue;
+                            }
                             let Data::Histogram(histogram) = metric.data.unwrap() else {
                                 panic!("histogram expected")
                             };

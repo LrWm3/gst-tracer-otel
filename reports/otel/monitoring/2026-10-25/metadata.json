@@ -1,0 +1,19 @@
+{
+  "architecture": "x86_64",
+  "frames": 240,
+  "repeats": 5,
+  "cpus": "0,2",
+  "metric_interval_ms": 1000,
+  "metric_sample_rate": 16,
+  "trace_sampling": 1,
+  "warmups_per_case": 1,
+  "perf": true,
+  "revision": "3a1bf2d26e44d9392392b203f9caa960b9a00dec",
+  "binary_sha256": "a0d2708a04fa1dbda8e64e42315f12465a780183b716b125e89d121f1d4ce355",
+  "plugin_sha256": {
+    "libgstprometheustracer.so": "b38230bd463144eef40130545e50ba7c077c8a3fa279f871dd537575f1dea9a6",
+    "libgstoteltracer.so": "8ef9b1f33f3bd7817836f523d1244ae5f044a36fae3126ba68531fcad8b0eacb",
+    "libgstnooptracer.so": "ca30f402535d2a1b42b05f0fdeb57c1141f9af6609294fd7c04fcef699a83c95"
+  },
+  "diff_sha256": "59bbdb0bff2ad2736dba8df11cbd0e0f1249bbbef0c68df509c4f174708b7476"
+}

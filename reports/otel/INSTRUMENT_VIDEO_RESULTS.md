@@ -187,3 +187,34 @@ passed: `cargo fmt --all`, Clippy on Rust 1.99.1 with all workspace features and
 targets and warnings denied, `cargo test`, the profiles-enabled OTel test suite,
 `cargo audit`, and nightly `cargo udeps` for both tracer packages. Audit exited
 successfully with the existing allowed Tokio `RUSTSEC-2026-0386` warning.
+
+## Instrumentation monitoring — 2026-10-25
+
+Compared `MARS_MONITORING=none|core|all` on the same release binary and 240-frame, 1080p RGBA-to-I420 workload. Each case had one excluded warm-up and five measured repetitions, with rotating order and CPU affinity 0,2. Metrics were sampled at 1/16 calls and exported every second; traces were fully sampled. Standalone metrics were scraped once per second. Receivers ran outside the measured process.
+
+| Selected signals / collector | Monitoring | Median cycles (billions) | Cycle change vs `none` | Median process CPU | CPU range | Median peak RSS | Median shutdown |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Full OTLP metrics | `none` | 10.784 | +0.00% | 3.200 s | 2.418–5.469 s | 30.39 MiB | 3.33 ms |
+| Full OTLP metrics | `core` | 10.693 | -0.84% | 3.226 s | 2.430–4.008 s | 30.43 MiB | 3.36 ms |
+| Full OTLP metrics | `all` | 10.549 | -2.18% | 2.656 s | 2.419–4.120 s | 30.61 MiB | 2.92 ms |
+| Full OTLP metrics + traces | `none` | 10.892 | +0.00% | 2.675 s | 2.511–4.411 s | 32.13 MiB | 2.90 ms |
+| Full OTLP metrics + traces | `core` | 10.695 | -1.81% | 2.694 s | 2.432–3.761 s | 32.07 MiB | 3.37 ms |
+| Full OTLP metrics + traces | `all` | 10.753 | -1.28% | 2.598 s | 2.409–3.806 s | 32.24 MiB | 3.35 ms |
+| Standalone Prometheus metrics | `none` | 10.567 | +0.00% | 2.548 s | 2.371–3.264 s | 27.52 MiB | 0.93 ms |
+| Standalone Prometheus metrics | `core` | 10.528 | -0.37% | 2.560 s | 2.387–3.278 s | 27.53 MiB | 1.18 ms |
+| Standalone Prometheus metrics | `all` | 10.598 | +0.29% | 2.564 s | 2.411–3.115 s | 27.58 MiB | 1.11 ms |
+
+These differences overlap run variation; this test does not establish a sub-percent monitoring overhead or a speedup. CPU time varied substantially with host conditions, so the cycle comparison is more useful here. These are changes relative to the same instrumented collector with monitoring disabled, **not total tracer overhead**. The cases do not include logs or profiles. All completed with zero trace loss, pending spans, and metric export failures.
+
+`core` adds health payloads to the existing export schedule. `all` adds fixed-size counters/histograms and optional timing; snapshots and encoding run outside streaming threads. Both retain the same queue bounds. Peak RSS is measured for the entire short process, not isolated monitoring allocations or settled long-running memory. Standalone shutdown measures pipeline teardown; its embedded HTTP server exits with the process.
+
+Raw [CSV](monitoring/2026-10-25/results.csv), [build/settings metadata](monitoring/2026-10-25/metadata.json), and per-run diagnostics are retained. The build starts from `3a1bf2d` with the monitoring implementation; metadata records binary/plugin hashes and the source diff hash. Hardware events on hybrid CPU types are summed only when their scheduling coverage is at least 99%.
+
+```sh
+cargo build --release -p gst-prometheus-tracer -p gst-otel-tracer --features gst-otel-tracer/profiles
+cargo build --release -p gst-otel-tracer --features profiles --example profile_video
+python3 tracer/otel/bench/monitoring.py --perf --frames 240 --repeats 5 \
+  --output reports/otel/monitoring/recheck
+```
+
+Validation includes enum/default/routing tests for OTLP and Prometheus, real failed trace exports reflected in health metrics, all three standalone monitoring levels, five Prometheus alert-rule tests (plus a healthy backlog control), dashboard provisioning, and actual health series received by Prometheus. Required repository formatting, Clippy, tests, audit and unused-dependency checks passed; audit retains the existing allowed Tokio advisory.

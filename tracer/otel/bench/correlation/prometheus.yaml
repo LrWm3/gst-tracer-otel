@@ -3,3 +3,5 @@ global:
 storage:
   exemplars:
     max_exemplars: 10000
+rule_files:
+  - /etc/prometheus/health-alerts.yaml

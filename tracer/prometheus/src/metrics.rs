@@ -15,12 +15,14 @@ mod imp {
     #[derive(Debug)]
     struct Settings {
         pub server_port: u16,
+        pub monitoring: Option<String>,
     }
 
     impl Default for Settings {
         fn default() -> Self {
             Self {
                 server_port: 8080u16,
+                monitoring: None,
             }
         }
     }
@@ -34,6 +36,12 @@ mod imp {
                     return;
                 }
             };
+            if s.has_field("monitoring") {
+                self.monitoring = Some(
+                    s.get::<String>("monitoring")
+                        .unwrap_or_else(|_| "invalid".into()),
+                );
+            }
             if let Ok(v) = s.get::<i32>("port") {
                 gst::log!(CAT, imp = imp, "setting port to {}", v);
                 self.server_port = v as u16;
@@ -65,6 +73,27 @@ mod imp {
                 let mut settings = self.settings.write().unwrap();
                 settings.update_from_params(self, params);
                 gst::debug!(CAT, imp = self, "using settings: {:?}", *settings);
+            }
+
+            let monitoring = self
+                .settings
+                .read()
+                .unwrap()
+                .monitoring
+                .clone()
+                .or_else(|| std::env::var("MARS_MONITORING").ok())
+                .unwrap_or_else(|| "core".into());
+            let monitoring =
+                match monitoring.parse::<gst_mars_metrics_core::monitoring::Monitoring>() {
+                    Ok(level) => level,
+                    Err(error) => {
+                        gst::error!(CAT, "Metrics tracer disabled: {error}");
+                        return;
+                    }
+                };
+            gst_mars_metrics_core::monitoring::configure(monitoring);
+            if monitoring != gst_mars_metrics_core::monitoring::Monitoring::None {
+                gst_mars_metrics_core::enable_accounting();
             }
 
             // Register all tracer hooks via the core implementation

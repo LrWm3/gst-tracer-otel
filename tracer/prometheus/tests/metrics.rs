@@ -31,6 +31,10 @@ fn setup() -> u16 {
         );
         env::set_var("GST_TRACERS", format!("mars-metrics(port={port})"));
         let case = env::var("GST_PROM_TEST_CASE").unwrap_or_default();
+        if let Some(level) = case.strip_prefix("monitoring-") {
+            env::set_var("GST_TRACERS", format!("mars-metrics(port={port},monitoring={level})"));
+            env::set_var("MARS_MONITORING", "invalid-overridden-value");
+        }
         if case == "sampling" {
             env::remove_var("GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE");
         } else {
@@ -506,7 +510,17 @@ fn queue_labels_follow_reparenting_and_disappear_after_teardown() {
 
 #[test]
 fn configuration_variants() {
-    for case in ["sampling", "filter", "pts", "io", "pull", "pull_without_io"] {
+    for case in [
+        "sampling",
+        "filter",
+        "pts",
+        "io",
+        "pull",
+        "pull_without_io",
+        "monitoring-none",
+        "monitoring-core",
+        "monitoring-all",
+    ] {
         let mut child = std::process::Command::new(env::current_exe().unwrap())
             .args(["--exact", "configuration_child", "--nocapture"])
             .env("GST_PROM_TEST_CASE", case)
@@ -533,6 +547,20 @@ fn configuration_child() {
     let Ok(case) = env::var("GST_PROM_TEST_CASE") else {
         return;
     };
+    if let Some(level) = case.strip_prefix("monitoring-") {
+        let graph = pipeline("health", "fakesrc num-buffers=10 ! identity ! fakesink");
+        run(&graph);
+        let text = metrics();
+        assert_eq!(
+            text.contains("mars_instrument_collector_pushes_total"),
+            level != "none"
+        );
+        assert_eq!(
+            text.contains("mars_instrument_work_duration_seconds"),
+            level == "all"
+        );
+        return;
+    }
     match case.as_str() {
         "sampling" => {
             let graph = pipeline(

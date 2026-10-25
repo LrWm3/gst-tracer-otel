@@ -503,8 +503,25 @@ fn export(
         })
         .collect();
     let mut result = Ok(());
-    for chunk in entries.chunks(EXPORT_CHUNK) {
-        let mut metrics = Vec::new();
+    // Include health once per snapshot, also when no pipeline series remain.
+    let mut chunks: Vec<_> = entries.chunks(EXPORT_CHUNK).collect();
+    if chunks.is_empty() {
+        chunks.push(&[]);
+    }
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let mut metrics = if index == 0 {
+            let families = gst_mars_metrics_core::monitoring::snapshot();
+            crate::shared_metrics_wire::otlp(
+                &families,
+                &Default::default(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            )
+        } else {
+            Vec::new()
+        };
         for index in 0..NAMES.len() {
             let points: Vec<_> = chunk
                 .iter()
@@ -539,6 +556,7 @@ fn export(
             }
             continue;
         }
+        crate::shared_metrics_wire::record_count(&metrics);
         let request = ExportMetricsServiceRequest {
             resource_metrics: vec![proto::ResourceMetrics {
                 resource: Some(ProtoResource {

@@ -70,12 +70,14 @@ fn drain(timeout: Duration, shutdown: bool) -> DrainReport {
     } else {
         crate::profiles::flush(remaining())
     });
-    DrainReport {
+    let report = DrainReport {
         traces,
         metrics,
         logs,
         profiles,
-    }
+    };
+    crate::health::cleanup(&report);
+    report
 }
 
 pub(crate) fn signals() -> Vec<glib::subclass::Signal> {

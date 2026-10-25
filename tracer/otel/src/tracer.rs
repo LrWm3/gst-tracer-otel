@@ -57,6 +57,13 @@ fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result
         Config::from_env()?
     };
     let metrics = instrument && enabled("GST_INSTRUMENT_METRICS", true)?;
+    crate::health::configure(if metrics {
+        std::env::var("MARS_MONITORING")
+            .unwrap_or_else(|_| "core".into())
+            .parse()?
+    } else {
+        gst_mars_metrics_core::monitoring::Monitoring::None
+    });
     let profiles = !instrument || enabled("GST_INSTRUMENT_PROFILES", true)?;
     if instrument {
         config.traces = enabled("GST_INSTRUMENT_TRACES", true)?;
@@ -94,6 +101,7 @@ fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result
 }
 
 fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, String> {
+    crate::health::configure(settings.monitoring);
     #[cfg(not(all(
         feature = "profiles",
         target_os = "linux",
@@ -473,7 +481,11 @@ macro_rules! tracer_impl {
                                 runtime.stats.snapshot()
                             );
                             let start = std::time::Instant::now();
-                            if let Err(error) = runtime.flush(runtime.config.flush_timeout) {
+                            let (traces, metrics) =
+                                runtime.flush_parts(runtime.config.flush_timeout);
+                            if let Err(error) =
+                                traces.as_ref().map(|_| ()).and(metrics.as_ref().copied())
+                            {
                                 gst::warning!(
                                     CAT,
                                     "Telemetry drain failed: {error}; counters: {:?}",
@@ -489,7 +501,8 @@ macro_rules! tracer_impl {
                             let remaining =
                                 runtime.config.flush_timeout.saturating_sub(start.elapsed());
                             let log_start = std::time::Instant::now();
-                            if let Err(error) = crate::otellogbridge::flush(remaining) {
+                            let logs = crate::otellogbridge::flush(remaining);
+                            if let Err(error) = &logs {
                                 gst::warning!(
                                     CAT,
                                     "Log drain failed: {error}; counters: {:?}",
@@ -497,6 +510,12 @@ macro_rules! tracer_impl {
                                 );
                             }
                             gst::debug!(CAT, "Log drain took {:?}", log_start.elapsed());
+                            crate::health::cleanup(&crate::DrainReport {
+                                traces,
+                                metrics,
+                                logs,
+                                profiles: None,
+                            });
                         }
                     }
                 }

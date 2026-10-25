@@ -119,11 +119,11 @@ profiling optimizations.
 
 ### Instrumentation health
 
-- [ ] Add one enum for instrumentation monitoring: `none`, `core`, or `all`,
+- [x] Add one enum for instrumentation monitoring: `none`, `core`, or `all`,
   with `core` as the default. Keep this separate from selecting which application
   signals to collect.
 
-  | Level | Planned behavior |
+  | Level | Behavior |
   | --- | --- |
   | `none` | Disable self-monitoring collection/export beyond bookkeeping required for correctness and existing explicit status APIs. |
   | `core` | Export inexpensive, bounded health counters and gauges: accepted/rejected/dropped records, export failures, pending work, profile sample losses, attribution exhaustion, and cleanup failures/timeouts. |
@@ -137,6 +137,8 @@ profiling optimizations.
   from generating a telemetry feedback loop. Add a health dashboard and alerts
   for loss, backlog, and exhausted capacity. Test enum validation, defaults,
   export routing, and all three levels; measure their overhead separately.
+  See the [configuration and health dashboard](tracer/otel/INSTRUMENT.md#monitor-the-instrumentation)
+  and [measured comparison](reports/otel/INSTRUMENT_VIDEO_RESULTS.md#instrumentation-monitoring--2026-10-25).
 
 ### Readable spans and the correlation demo
 

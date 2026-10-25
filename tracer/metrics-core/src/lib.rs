@@ -3,6 +3,7 @@ pub mod background;
 pub mod exemplars;
 mod metric_lifecycle;
 mod metricsimp;
+pub mod monitoring;
 
 pub use metricsimp::{MetricsTracerImp, CAT};
 pub use prometheus::proto;
@@ -87,6 +88,16 @@ pub(crate) fn setting(name: &str, legacy: &str) -> Result<String, std::env::VarE
 
 /// Snapshot the same measurements for either export protocol.
 pub fn snapshot() -> Vec<proto::MetricFamily> {
+    let _work = monitoring::work(monitoring::Stage::Collection, 0, 0);
     metric_lifecycle::prune();
-    prometheus::gather()
+    let mut families = prometheus::gather();
+    if monitoring::level() == monitoring::Monitoring::All {
+        monitoring::record_size(
+            monitoring::Stage::Collection,
+            0,
+            families.iter().map(|f| f.get_metric().len()).sum(),
+        );
+    }
+    monitoring::append(&mut families);
+    families
 }

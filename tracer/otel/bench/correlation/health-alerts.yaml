@@ -1,0 +1,34 @@
+groups:
+  - name: mars-instrument-health
+    rules:
+      - alert: MarsTelemetryLoss
+        expr: sum by (job, instance, signal) (increase(mars_instrument_records_total{outcome=~"rejected|failed|queue_full|closed"}[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Mars telemetry records were lost
+      - alert: MarsTelemetryBacklog
+        expr: mars_instrument_pending_records / mars_instrument_queue_capacity > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mars telemetry backlog remains high
+      - alert: MarsProfileCapacity
+        expr: increase(mars_instrument_profile_failures_total{reason=~"attribution_capacity|registration"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Mars profiling has exhausted attribution or thread capacity
+      - alert: MarsProfileLoss
+        expr: increase(mars_instrument_profile_samples_total{outcome=~"ring_full|processing_drop|upload_queue_drop"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Mars CPU samples were dropped
+      - alert: MarsCleanupFailure
+        expr: increase(mars_instrument_cleanup_failures_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Mars cleanup failed or exceeded its deadline

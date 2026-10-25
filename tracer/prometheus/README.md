@@ -64,6 +64,14 @@ Then launch your pipeline as usual, for example:
 gst-launch-1.0 fakesrc ! identity ! fakesink
 ```
 
+Instrumentation health defaults to `core`. Set
+`GST_TRACERS='mars-metrics(port=9092,monitoring=none)'` to disable health metrics,
+or select `all` for collection timing and detailed diagnostics. The enum accepts
+exactly `none`, `core`, and `all`; `MARS_MONITORING` is its environment equivalent,
+with tracer parameters taking precedence. Health uses the existing metrics
+endpoint and has fixed labels, with no additional listener. See the
+[monitoring reference](../otel/INSTRUMENT.md#monitor-the-instrumentation).
+
 ## Collecting Metrics via HTTP
 
 If you wish to have Prometheus scrape metrics over HTTP, configure the tracer with a `port`:

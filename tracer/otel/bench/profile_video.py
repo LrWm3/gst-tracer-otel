@@ -47,6 +47,8 @@ def validate_metrics(payloads, spans, expected):
                 for raw in fields(scope)[2]:
                     metric = fields(raw)
                     name = metric[1][0].decode()
+                    if name.startswith("mars_instrument_"):
+                        continue
                     assert name in names, name
                     histogram = fields(metric[9][0])
                     assert histogram[2] == [2], 'expected cumulative histograms'
@@ -58,7 +60,7 @@ def validate_metrics(payloads, spans, expected):
                         assert count == sum(int.from_bytes(buckets[i:i + 8], 'little')
                                             for i in range(0, len(buckets), 8))
                         attributes = tuple(sorted(point[9]))
-                        assert len(attributes) == 6
+                        assert len(attributes) == 8
                         assert all(fields(a)[1][0] not in (b'trace_id', b'span_id') for a in attributes)
                         latest[name, attributes] = count
                         for raw_example in point[8]:

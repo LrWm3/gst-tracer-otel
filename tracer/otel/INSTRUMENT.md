@@ -49,6 +49,7 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 | `MARS_SIGNALS` | Unset: compatibility behavior | Comma-separated `metrics,traces,profiles,logs` |
 | `MARS_METRICS_EXPORTER` | `otlp` | `otlp` or `prometheus`; parameter `metrics-exporter` |
 | `MARS_METRICS_PORT` | `9188` | Prometheus listen port; parameter `metrics-port` |
+| `MARS_MONITORING` | `core` | Instrumentation health: `none`, `core`, or `all`; parameter `monitoring` |
 | `MARS_METRIC_INTERVAL_MS` | `10000` | OTLP metrics export interval, 1–60000 ms |
 | `MARS_METRIC_SAMPLE_RATE` | `16` | Approximately one in N calls enters timing histograms |
 | `MARS_METRIC_INCLUDE` | `*` | Comma-separated element-name glob filters |
@@ -77,6 +78,49 @@ the [trace guide](README.md#configuration).
 For logs, also select useful `GST_DEBUG` categories. The log bridge preserves
 GStreamer's normal log handler. Profile collection is independent of trace
 sampling; unsampled work still appears in profiles without trace IDs.
+
+## Monitor the instrumentation
+
+Select `monitoring=none`, `monitoring=core`, or `monitoring=all` independently of
+the application signals. The default is `core`:
+
+```sh
+GST_TRACERS='mars-instrument(signals="metrics,traces",monitoring=core)'
+```
+
+| Level | Health data |
+| --- | --- |
+| `none` | No health series or optional diagnostic timing. Correctness counters and explicit status APIs still work. |
+| `core` | Delivery outcomes, export warnings/failures, pending work and capacity, capture failures, profile losses/capacity failures, and cleanup failures. |
+| `all` | Core plus worker-duration histograms, encoded bytes and record totals, queue high-water marks, symbol-cache activity/retained size, and detailed trace/profile counters. |
+
+Health series use the `mars_instrument_` prefix. Labels have fixed values such as
+signal, outcome, stage, and failure reason; they never contain element paths,
+trace IDs, or raw error messages. Core reuses existing counters and creates its
+metric snapshots off streaming threads. Detailed timing and queue observations
+are collected only in `all`. Profile `reported` samples mean handoff to the SDK,
+not acknowledgement by the server; symbol-cache bytes exclude temporary debug
+parsing and total process memory.
+
+Health data follows the selected metrics exporter. With metrics disabled,
+monitoring is inactive and does not create an exporter or listener. Standalone
+`mars-metrics` accepts the same parameter/environment enum and exports collector
+health through its existing HTTP/signal output. The compatibility instrumentation
+preset also honors `MARS_MONITORING`. Configuration is process-wide.
+
+The [local Grafana demo](CORRELATION.md) provisions a **Mars instrumentation
+health** dashboard and [Prometheus alert rules](bench/correlation/health-alerts.yaml)
+for telemetry loss, a backlog above 80% of queue capacity for five minutes,
+profile capacity/sample loss, and cleanup failures. Detailed panels require
+`all`. These are starter alert rules; choose durations appropriate to the
+application and add backend/target availability alerts. Exporting health through
+an unavailable backend cannot notify you until delivery recovers. The demo loads
+rules but does not configure outbound notifications.
+
+Pipeline-stop failures and explicit flush/shutdown results update cleanup
+counters. Failures occurring after the final metrics export remain inspectable
+through per-signal drain results and status APIs rather than being guaranteed
+to appear in that final export.
 
 ## Follow a measurement
 

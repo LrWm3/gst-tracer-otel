@@ -18,6 +18,7 @@ use std::time::Duration;
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 #[derive(Debug)]
 struct Settings {
+    stage: gst_mars_metrics_core::monitoring::Stage,
     endpoint: Url,
     headers: HeaderMap,
     timeout: Duration,
@@ -91,6 +92,11 @@ impl Settings {
             Some(_) => return Err("GST_OTEL_HTTP_CLIENT must be blocking or async".into()),
         };
         Ok(Self {
+            stage: match signal {
+                "LOGS" => gst_mars_metrics_core::monitoring::Stage::Logs,
+                "METRICS" => gst_mars_metrics_core::monitoring::Stage::Metrics,
+                _ => gst_mars_metrics_core::monitoring::Stage::Traces,
+            },
             endpoint,
             headers,
             timeout: Duration::from_millis(timeout),
@@ -142,6 +148,7 @@ impl HttpExporter {
         Ok(Self { client, settings })
     }
     pub fn send_response(&self, body: Bytes) -> Result<Vec<u8>, FlushError> {
+        let _work = gst_mars_metrics_core::monitoring::work(self.settings.stage, body.len(), 0);
         let failed = |_| FlushError::ExportFailed;
         match &self.client {
             Client::Blocking(client) => {

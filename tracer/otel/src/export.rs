@@ -375,6 +375,10 @@ impl Runtime {
         let accepted = match self.sender.try_send(Message::Span(record)) {
             Ok(()) => {
                 stats.enqueued_spans.fetch_add(1, Relaxed);
+                gst_mars_metrics_core::monitoring::queue(
+                    gst_mars_metrics_core::monitoring::Stage::Traces,
+                    || self.sender.len(),
+                );
                 true
             }
             Err(error) => {
@@ -426,6 +430,7 @@ impl Runtime {
         Ok(self.stats.snapshot())
     }
 
+    #[cfg(test)]
     pub fn flush(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
         let (traces, metrics) = self.flush_parts(timeout);
         traces.and_then(|stats| metrics.map(|()| stats))
@@ -657,6 +662,11 @@ fn export_batch<E: RecordExporter>(
         return Ok(());
     }
     let count = batch.len() as u64;
+    gst_mars_metrics_core::monitoring::record_size(
+        gst_mars_metrics_core::monitoring::Stage::Traces,
+        0,
+        batch.len(),
+    );
     let result = exporter.export(
         batch,
         anchor.get().expect("capture sets clock anchor"),

@@ -9,6 +9,7 @@ pub(crate) enum MetricExporter {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Settings {
+    pub monitoring: gst_mars_metrics_core::monitoring::Monitoring,
     pub metrics: bool,
     pub traces: bool,
     pub profiles: bool,
@@ -35,7 +36,7 @@ impl Settings {
             for (key, _) in s.iter() {
                 if !matches!(
                     key.as_str(),
-                    "signals" | "metrics-exporter" | "metrics-port"
+                    "signals" | "metrics-exporter" | "metrics-port" | "monitoring"
                 ) {
                     return Err(format!("unknown tracer parameter: {key}"));
                 }
@@ -59,6 +60,7 @@ impl Settings {
             return Ok(None);
         };
         let mut settings = Self {
+            monitoring: gst_mars_metrics_core::monitoring::Monitoring::None,
             metrics: false,
             traces: false,
             profiles: false,
@@ -86,6 +88,10 @@ impl Settings {
         }
         // Disabled exporters do not read or validate their settings.
         if settings.metrics {
+            settings.monitoring = value("monitoring", "MARS_MONITORING")?
+                .as_deref()
+                .unwrap_or("core")
+                .parse()?;
             settings.exporter = match value("metrics-exporter", "MARS_METRICS_EXPORTER")?.as_deref()
             {
                 None | Some("otlp") => MetricExporter::Otlp,
@@ -165,5 +171,40 @@ mod tests {
         ] {
             assert!(Settings::parse(Some(params), |_| None).is_err(), "{params}");
         }
+    }
+
+    #[test]
+    fn monitoring_defaults_to_core_and_never_enables_metrics() {
+        use gst_mars_metrics_core::monitoring::Monitoring;
+        gstreamer::init().unwrap();
+        assert_eq!(
+            Settings::parse(Some("signals=metrics"), |_| None)
+                .unwrap()
+                .unwrap()
+                .monitoring,
+            Monitoring::Core
+        );
+        for (value, expected) in [
+            ("none", Monitoring::None),
+            ("core", Monitoring::Core),
+            ("all", Monitoring::All),
+        ] {
+            assert_eq!(
+                Settings::parse(
+                    Some(&format!("signals=metrics,monitoring={value}")),
+                    |key| (key == "MARS_MONITORING").then(|| "invalid".into())
+                )
+                .unwrap()
+                .unwrap()
+                .monitoring,
+                expected
+            );
+        }
+        assert!(Settings::parse(Some("signals=metrics,monitoring=invalid"), |_| None).is_err());
+        let disabled = Settings::parse(Some("signals=traces,monitoring=all"), |_| None)
+            .unwrap()
+            .unwrap();
+        assert!(!disabled.metrics);
+        assert_eq!(disabled.monitoring, Monitoring::None);
     }
 }

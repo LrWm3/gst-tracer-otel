@@ -81,9 +81,14 @@ impl Metrics {
                     };
                     let examples = core::exemplars::snapshot();
                     let families = core::snapshot();
-                    worker_state
-                        .series
-                        .store(families.iter().map(|f| f.get_metric().len()).sum(), Relaxed);
+                    worker_state.series.store(
+                        families
+                            .iter()
+                            .filter(|f| !f.name().starts_with("mars_instrument_"))
+                            .map(|f| f.get_metric().len())
+                            .sum(),
+                        Relaxed,
+                    );
                     let now = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -92,6 +97,7 @@ impl Metrics {
                     if metrics.is_empty() {
                         return Ok(());
                     }
+                    wire::record_count(&metrics);
                     let request = ExportMetricsServiceRequest {
                         resource_metrics: vec![ResourceMetrics {
                             resource: Some(ProtoResource {
@@ -150,7 +156,11 @@ impl Metrics {
                                 let examples = core::exemplars::snapshot();
                                 let families = core::snapshot();
                                 worker_state.series.store(
-                                    families.iter().map(|f| f.get_metric().len()).sum(),
+                                    families
+                                        .iter()
+                                        .filter(|f| !f.name().starts_with("mars_instrument_"))
+                                        .map(|f| f.get_metric().len())
+                                        .sum(),
                                     Relaxed,
                                 );
                                 let body = wire::openmetrics(&families, &examples);

@@ -65,7 +65,7 @@ fn log_failures_and_slow_receivers_preserve_cleanup_deadlines() {
         let output = child
             .args(["--exact", "lifecycle_child", "--ignored", "--nocapture"])
             .env("MARS_TEST_MODE", mode)
-            .env("GST_DEBUG", "lifecycle-test:3")
+            .env("GST_DEBUG", "mars-lifecycle-test:3")
             .env("GST_OTEL_FLUSH_TIMEOUT_MS", "10")
             .env("OTEL_BLRP_SCHEDULE_DELAY", "60000")
             .env("OTEL_EXPORTER_OTLP_ENDPOINT", format!("http://{address}"))
@@ -89,7 +89,7 @@ fn lifecycle_child() {
     let _tracer: gstoteltracer::InstrumentTracer = glib::Object::builder()
         .property("params", "signals=\"logs\"")
         .build();
-    let cat = gst::DebugCategory::new("lifecycle-test", gst::DebugColorFlags::empty(), None);
+    let cat = gst::DebugCategory::new("mars-lifecycle-test", gst::DebugColorFlags::empty(), None);
     let pipeline = gst::parse::launch("fakesrc num-buffers=1 ! fakesink sync=false")
         .unwrap()
         .downcast::<gst::Pipeline>()

@@ -25,6 +25,7 @@ use std::{
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LogStats {
+    pub capacity: u64,
     pub enqueued: u64,
     pub exported: u64,
     pub failed: u64,
@@ -144,6 +145,11 @@ impl Logs {
                         return false;
                     }
                     let count = batch.len() as u64;
+                    gst_mars_metrics_core::monitoring::record_size(
+                        gst_mars_metrics_core::monitoring::Stage::Logs,
+                        0,
+                        batch.len(),
+                    );
                     let result = export(batch);
                     batch.clear();
                     let rejected = match result {
@@ -204,6 +210,10 @@ impl Logs {
             self.state.dropped_closed.fetch_add(1, Relaxed);
         } else if self.tx.try_send(Command::Record(Box::new(record))).is_ok() {
             self.state.enqueued.fetch_add(1, Relaxed);
+            gst_mars_metrics_core::monitoring::queue(
+                gst_mars_metrics_core::monitoring::Stage::Logs,
+                || self.tx.len(),
+            );
         } else {
             self.state.dropped_queue_full.fetch_add(1, Relaxed);
         }
@@ -249,6 +259,7 @@ impl Logs {
     pub fn stats(&self) -> LogStats {
         let s = &self.state;
         let mut stats = LogStats {
+            capacity: self.tx.capacity().unwrap_or(0) as u64,
             enqueued: s.enqueued.load(Relaxed),
             exported: s.exported.load(Relaxed),
             failed: s.failed.load(Relaxed),

@@ -1,0 +1,173 @@
+{
+  "rule_files": [
+    "health-alerts.yaml"
+  ],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_records_total{job=\"demo\",instance=\"a\",signal=\"traces\",outcome=\"queue_full\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "MarsTelemetryLoss",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "signal": "traces",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars telemetry records were lost"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_profile_failures_total{job=\"demo\",instance=\"a\",reason=\"attribution_capacity\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "MarsProfileCapacity",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "reason": "attribution_capacity",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars profiling has exhausted attribution or thread capacity"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_profile_samples_total{job=\"demo\",instance=\"a\",outcome=\"ring_full\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "MarsProfileLoss",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "outcome": "ring_full",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars CPU samples were dropped"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_cleanup_failures_total{job=\"demo\",instance=\"a\",signal=\"logs\",reason=\"timeout\"}",
+          "values": "0+1x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "5m",
+          "alertname": "MarsCleanupFailure",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "signal": "logs",
+                "reason": "timeout",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars cleanup failed or exceeded its deadline"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_pending_records{job=\"demo\",instance=\"a\",signal=\"traces\"}",
+          "values": "8000+0x10"
+        },
+        {
+          "series": "mars_instrument_queue_capacity{job=\"demo\",instance=\"a\",signal=\"traces\"}",
+          "values": "8192+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "MarsTelemetryBacklog",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "demo",
+                "instance": "a",
+                "signal": "traces",
+                "severity": "warning"
+              },
+              "exp_annotations": {
+                "summary": "Mars telemetry backlog remains high"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "mars_instrument_pending_records{job=\"demo\",instance=\"a\",signal=\"traces\"}",
+          "values": "0+0x10"
+        },
+        {
+          "series": "mars_instrument_queue_capacity{job=\"demo\",instance=\"a\",signal=\"traces\"}",
+          "values": "8192+0x10"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "6m",
+          "alertname": "MarsTelemetryBacklog",
+          "exp_alerts": []
+        }
+      ]
+    }
+  ]
+}

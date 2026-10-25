@@ -1,0 +1,298 @@
+{
+  "uid": "mars-instrument-health",
+  "title": "Mars instrumentation health",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "tags": [
+    "mars",
+    "instrumentation"
+  ],
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Delivery losses per second",
+      "description": "Core: rejected, failed, queue-full, and closed records.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (signal, outcome) (rate(mars_instrument_records_total{outcome!=\"accepted\"}[$__rate_interval]))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "records/s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Pending telemetry",
+      "description": "Core: queued, batched, and in-flight records.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (signal) (mars_instrument_pending_records)",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Export failures per second",
+      "description": "Core: transport failures and collector rejections.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (signal) (rate(mars_instrument_export_failures_total[$__rate_interval]))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CPU sample loss per second",
+      "description": "Core: sample loss before or during processing/upload handoff.",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(mars_instrument_profile_samples_total{outcome=~\"ring_full|processing_drop|upload_queue_drop\"}[$__rate_interval]))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Profiler capacity failures",
+      "description": "Core: failures to register threads or attribute elements.",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (increase(mars_instrument_profile_failures_total{reason=~\"registration|attribution_capacity\"}[5m]))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Cleanup failures",
+      "description": "Core: failed cleanup calls and deadline expiry.",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (signal, reason) (increase(mars_instrument_cleanup_failures_total[5m]))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Worker duration p95",
+      "description": "All only: HTTP requests, profile processing, and metric collection.",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(mars_instrument_work_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Symbol cache bytes",
+      "description": "All only: retained symbols; temporary debug parsing can use more memory.",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "mars-correlation-metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mars_instrument_symbol_cache_bytes",
+          "legendFormat": "{{signal}} {{outcome}} {{reason}} {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

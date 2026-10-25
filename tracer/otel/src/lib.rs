@@ -18,6 +18,7 @@
 use gstreamer as gst;
 mod capture;
 mod export;
+mod health;
 mod lifecycle;
 mod logexport;
 mod metadata;

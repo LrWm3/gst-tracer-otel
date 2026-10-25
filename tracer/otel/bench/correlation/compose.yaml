@@ -10,6 +10,7 @@ services:
       - --storage.tsdb.retention.time=2h
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./health-alerts.yaml:/etc/prometheus/health-alerts.yaml:ro
     ports:
       - "127.0.0.1:49090:9090"
   tempo:
@@ -35,6 +36,8 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
       - ./datasources.yaml:/etc/grafana/provisioning/datasources/mars.yaml:ro
+      - ./dashboards.yaml:/etc/grafana/provisioning/dashboards/mars.yaml:ro
+      - ./health-dashboard.json:/etc/grafana/dashboards/health.json:ro
     ports:
       - "127.0.0.1:43002:3000"
     depends_on:

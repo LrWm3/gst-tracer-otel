@@ -34,6 +34,9 @@ GST_TRACERS='mars-instrument(signals="metrics,traces,profiles")'
 
 Metrics can go to Prometheus or an OTLP collector. The
 [instrumentation guide](tracer/otel/INSTRUMENT.md) has complete launch commands.
+Instrumentation health defaults to `core`; use `monitoring=none` or
+`monitoring=all` to change the detail. See the
+[health metrics and dashboard](tracer/otel/INSTRUMENT.md#monitor-the-instrumentation).
 
 For a list of available metrics, see the [prometheus plugin README.md](https://github.com/LrWm3/gst-tracer-otel/blob/main/tracer/prometheus/README.md#metric-semantics).
 

@@ -416,12 +416,14 @@ mod linux {
     }
     impl Symbols {
         fn refresh(&mut self, pcs: &[usize]) {
+            let mut evicted = 0;
             let mappings: Vec<_> = std::fs::read_to_string("/proc/self/maps")
                 .unwrap_or_default()
                 .lines()
                 .filter_map(Mapping::parse)
                 .collect();
             if self.mappings != mappings {
+                evicted += self.frames.len();
                 self.frames.clear();
                 self.bytes = 0;
                 self.mappings = mappings;
@@ -435,9 +437,17 @@ mod linux {
                     .count()
                 > MAX_SYMBOLS
             {
+                evicted += self.frames.len();
                 self.frames.clear();
                 self.bytes = 0;
             }
+            let hits = if gst_mars_metrics_core::monitoring::level()
+                == gst_mars_metrics_core::monitoring::Monitoring::All
+            {
+                pcs.iter().filter(|pc| self.frames.contains_key(pc)).count()
+            } else {
+                0
+            };
             // PCs are sorted, so each ELF/DWARF context is built once per report
             // and dropped before loading the next file. No global resolver lock,
             // libunwind, dladdr, or dl_iterate_phdr (which takes the loader lock).
@@ -529,6 +539,13 @@ mod linux {
                     self.frames.insert(pc, frames);
                 }
             }
+            gst_mars_metrics_core::monitoring::symbol_cache(
+                hits,
+                pcs.len() - hits,
+                evicted,
+                self.frames.len(),
+                self.bytes,
+            );
         }
     }
 
@@ -735,6 +752,11 @@ mod linux {
             Ok(())
         }
         fn report(&mut self) -> pyroscope::Result<ReportBatch> {
+            let _work = gst_mars_metrics_core::monitoring::work(
+                gst_mars_metrics_core::monitoring::Stage::Profiles,
+                0,
+                0,
+            );
             let samples = self.sampler.drain();
             self.pending = samples.values().sum::<usize>() as u64;
             let mut pcs: Vec<_> = samples
@@ -788,8 +810,16 @@ mod linux {
                     .encode_to_vec()
             };
             Ok(ReportBatch {
+                // Processing bytes are distinct from SDK upload acknowledgement.
                 profile_type: "process_cpu".into(),
-                data: ReportData::RawPprof(data),
+                data: {
+                    gst_mars_metrics_core::monitoring::record_size(
+                        gst_mars_metrics_core::monitoring::Stage::Profiles,
+                        data.len(),
+                        self.pending as usize,
+                    );
+                    ReportData::RawPprof(data)
+                },
             })
         }
         fn add_tag(&self, _: ThreadTag) -> pyroscope::Result<()> {

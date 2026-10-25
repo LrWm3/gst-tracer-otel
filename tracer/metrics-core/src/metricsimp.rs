@@ -18,9 +18,9 @@ use glib::{
 use gst::{ffi, prelude::*};
 use gstreamer as gst;
 use prometheus::{
-    gather, register_gauge_vec, register_histogram_vec, register_int_counter_vec,
-    register_int_gauge_vec, Encoder, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter,
-    IntCounterVec, IntGauge, IntGaugeVec, TextEncoder,
+    register_gauge_vec, register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
+    Encoder, Gauge, GaugeVec, Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    IntGaugeVec, TextEncoder,
 };
 use tiny_http::{Header, Response, Server};
 
@@ -631,8 +631,7 @@ impl MetricsTracerImp {
 
     // Add this function, which is the handler for the "metrics" signal
     pub fn request_metrics() -> String {
-        metric_lifecycle::prune();
-        let metric_families = gather();
+        let metric_families = crate::snapshot();
         let mut buffer = Vec::new();
         let encoder = TextEncoder::new();
         encoder

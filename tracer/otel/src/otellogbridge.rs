@@ -24,7 +24,11 @@ pub(crate) fn initialize(resource: Resource) -> Result<(), String> {
     gst::log::add_log_function(
         move |category, level, file, function, line, _object, message| {
             // Worker diagnostics must never recursively create export traffic.
-            if category.name().starts_with("mars-") || IN_LOG.with(|v| v.replace(true)) {
+            if matches!(
+                category.name(),
+                "mars-otel" | "mars-profiles" | "mars-metrics"
+            ) || IN_LOG.with(|v| v.replace(true))
+            {
                 return;
             }
             let text = |value: &str, limit| {
