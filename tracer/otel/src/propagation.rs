@@ -232,6 +232,17 @@ pub(crate) fn read_input(buffer: &gst::BufferRef) -> Option<Input> {
     unsafe { read_raw(buffer.as_ptr() as *mut _) }
 }
 
+// The common single-input path needs no cloned token or qdata fallback lookup.
+// Only a real merge carries links; shared-root overrides suppress stale merges.
+pub(crate) fn read_fan_in(buffer: &gst::BufferRef) -> Option<Input> {
+    unsafe {
+        let ptr = buffer.as_ptr() as *mut gst::ffi::GstBuffer;
+        let meta = (gst::ffi::gst_buffer_get_meta(ptr, api()) as *const ContextMeta).as_ref()?;
+        meta.input.links.as_ref()?;
+        read_raw(ptr).filter(|input| input.links.is_some())
+    }
+}
+
 /// Explicit propagation for aggregators whose outputs do not copy input metadata.
 /// The first known input supplies the parent/sampling decision; other inputs
 /// become links (up to eight). Missing inputs never cause a fresh sampled root.

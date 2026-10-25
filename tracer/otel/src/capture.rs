@@ -248,18 +248,17 @@ fn begin_local(
     };
     // Read fan-in evidence before replacing the input metadata with this span.
     // Sources can recycle buffers; stale metadata must not become input links.
-    let links = if parent_token.sampled() && runtime.accepting() && !is_root {
+    let recording = parent_token.sampled() && runtime.accepting();
+    let links = if recording && !is_root {
         let mut links = crate::propagation::Links::default();
         if let Some(list) = list {
             for input in list.iter().filter_map(crate::propagation::read_input) {
                 links.extend(&input, &parent_token);
             }
-        } else if let Some(input) = buffer.and_then(|b| crate::propagation::read_input(b)) {
+        } else if let Some(input) = buffer.and_then(|b| crate::propagation::read_fan_in(b)) {
             // Single-input shared branches retain a common ancestor; do not
             // invent a link to it on every synchronous downstream call.
-            if input.links.is_some() {
-                links.extend(&input, &parent_token);
-            }
+            links.extend(&input, &parent_token);
         }
         links.finish()
     } else {
@@ -268,14 +267,14 @@ fn begin_local(
     let parent = parent_token.span_id;
     let parent_is_remote = parent_token.is_remote;
     let mut token = parent_token;
-    let site = (runtime.metrics.is_some() || (token.sampled() && runtime.accepting()))
+    let site = (runtime.metrics.is_some() || recording)
         .then(|| crate::metadata::site(pad, runtime.config.value_length_limit));
     let series = runtime
         .metrics
         .as_ref()
         .filter(|_| operation != Operation::Pull)
         .and_then(|m| m.series(site.as_ref().unwrap()));
-    let record = if token.sampled() && runtime.accepting() {
+    let record = if recording {
         let site = site.unwrap();
         token.span_id = IDS.new_span_id();
         token.is_remote = false;

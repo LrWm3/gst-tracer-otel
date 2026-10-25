@@ -186,8 +186,10 @@ profiling optimizations.
   the protections against loader-lock deadlocks.
   Selective cache eviction and optional `functions` symbolization are implemented;
   see the [cold/warm debug-build measurements](reports/otel/PROFILE_VIDEO_RESULTS.md#symbolization-cost-and-cache-retention--2026-10-25).
-- [ ] Reduce OTel capture overhead on stock GStreamer; see the
-  [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
+- [x] Review and reduce avoidable OTel capture work on stock GStreamer. Retained
+  a small context-read/admission-check simplification; the matched measurements
+  do not establish a consistent speedup. See the [current capture costs and
+  remaining dispatch floor](reports/otel/DIRECT_RESULTS.md#current-stock-gstreamer-capture-check--2026-10-25).
 - [ ] Measure current full-metrics signal combinations alongside compatibility
   presets, including logs, profiles, and each self-monitoring level. Report
   throughput, CPU, steady/peak memory, losses, and shutdown time with matched

@@ -335,3 +335,47 @@ Run the experiment with:
 ```sh
 /usr/bin/python3 tracer/otel/bench/queue_boundaries.py --output /tmp/queue-boundaries.json
 ```
+
+
+## Current stock-GStreamer capture check — 2026-10-25
+
+The bounded fan-in implementation can avoid cloning a single-input token while
+checking for links, and capture can reuse one admission check. Those small
+simplifications are retained; this series **does not establish a consistent
+streaming-speed improvement**. No private GStreamer dispatch patch is required.
+
+Both binaries use frame pointers and the same release build/features. The
+baseline is `dc6cbbc`; the [exact change](capture/2026-10-25/change.patch) and
+[binary hashes](capture/2026-10-25/metadata.json) identify the comparison.
+Stock GStreamer 1.24.2, Linux x86-64, CPUs 4–11, 10,000 buffers through five
+pushes, 512-span batches, 65,536-record queues, and a local receiver. Seven
+measured runs per case after one excluded warm-up; order rotates. No build or
+test workload ran alongside timing. The host is shared, not isolated.
+
+Median total streaming-thread CPU, milliseconds:
+
+| Streams | No tracer | Empty push hooks | Unsampled before → after | Fully sampled before → after | 10% sampling before → after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 21.97 | 38.89 | 51.34 → 49.52 | 69.35 → 69.91 | 59.34 → 59.24 |
+| 4 | 34.97 | 52.28 | 65.63 → 65.05 | 92.63 → 88.33 | 74.36 → 77.47 |
+| 16 | 60.81 | 62.11 | 70.16 → 68.40 | 93.54 → 93.16 | 82.72 → 82.82 |
+
+At one stream, the candidate costs approximately **0.55 µs per push** above the
+no-tracer control when unsampled and **0.96 µs** fully sampled. Empty hooks alone
+add roughly **0.34 µs per push** in that control. These are trivial-buffer capture
+costs, not percentages for a video-processing workload. Partial sampling still
+pays hook dispatch, context propagation, and sampling-decision bookkeeping.
+
+Fully sampled whole-process CPU before → after was 112.94 → 115.51 ms (one
+stream), 141.09 → 132.36 ms (four), and 141.90 → 138.03 ms (sixteen). The
+unsampled path has essentially unchanged work, so its small movement also
+illustrates timing/layout noise. Keep ratios workload-specific; do not derive a
+universal percentage or a guaranteed multi-threaded gain from these medians.
+
+All sampled runs delivered 50,000 spans. Partial runs kept whole buffer journeys;
+unsampled controls delivered none. Final pending, queue drops, export failures,
+hook mismatches, and propagation misses were zero. [All 216 runs](capture/2026-10-25/runs.csv)
+include warm-ups, shutdown timing, peak RSS, and delivery counters. Further large
+capture gains likely need dispatch changes upstream or a less detailed signal
+selection; preserving asynchronous sampling decisions rules out simply skipping
+all unsampled hook work.

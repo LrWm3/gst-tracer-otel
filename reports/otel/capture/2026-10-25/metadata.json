@@ -1,0 +1,14 @@
+{
+  "baseline_revision": "dc6cbbcdf61643a644384ed8a4621dd4972cec33",
+  "gstreamer": "1.24.2",
+  "architecture": "x86_64",
+  "cpus": "4-11",
+  "warmup_repeat": 0,
+  "measured_repeats": 7,
+  "rustflags": "-C force-frame-pointers=yes",
+  "binary_sha256": {
+    "/tmp/mars-capture-before/libgstoteltracer.so": "1bce0aa49db8cd990c848c4e8ac8fec8c08798b83253dad19a75a41a38ddaf96",
+    "target/release/libgstoteltracer.so": "e738cd8ea4c3afe6d2ef14c6a68a88e51cda7aa714515bf86a6b988d7432261c"
+  },
+  "diff_sha256": "b6dfeca9207757bfa4ad64baa0ce180ff64f3b5e20959aee56131d72b307994c"
+}
