@@ -110,6 +110,12 @@ monitoring is inactive and does not create an exporter or listener. Standalone
 health through its existing HTTP/signal output. The compatibility instrumentation
 preset also honors `MARS_MONITORING`. Configuration is process-wide.
 
+For both OTLP metric collectors, `export_warnings` and the health series
+`mars_instrument_export_warnings_total{signal="metrics"}` count fully accepted
+snapshots with collector warnings. These warnings do not fail flush/shutdown.
+Nonzero rejection counts or malformed responses fail the snapshot; subsequent
+cumulative snapshots continue normally.
+
 The [local Grafana demo](CORRELATION.md) provisions a **Mars instrumentation
 health** dashboard and [Prometheus alert rules](bench/correlation/health-alerts.yaml)
 for telemetry loss, a backlog above 80% of queue capacity for five minutes,

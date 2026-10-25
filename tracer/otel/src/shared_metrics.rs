@@ -10,7 +10,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use gst_mars_metrics_core as core;
 use opentelemetry_proto::{
     tonic::{
-        collector::metrics::v1::{ExportMetricsServiceRequest, ExportMetricsServiceResponse},
+        collector::metrics::v1::ExportMetricsServiceRequest,
         common::v1::InstrumentationScope,
         metrics::v1::{ResourceMetrics, ScopeMetrics},
         resource::v1::Resource as ProtoResource,
@@ -40,6 +40,7 @@ struct State {
     result: OnceLock<Result<(), FlushError>>,
     exported: AtomicU64,
     failed: AtomicU64,
+    warnings: AtomicU64,
     series: AtomicUsize,
 }
 pub(crate) struct Metrics {
@@ -118,23 +119,14 @@ impl Metrics {
                     };
                     let result = exporter
                         .send_response(request.encode_to_vec().into())
-                        .and_then(|body| {
-                            let response = ExportMetricsServiceResponse::decode(body.as_slice())
-                                .map_err(|_| FlushError::ExportFailed)?;
-                            if response.partial_success.is_some_and(|p| {
-                                p.rejected_data_points != 0 || !p.error_message.is_empty()
-                            }) {
-                                Err(FlushError::ExportFailed)
-                            } else {
-                                Ok(())
-                            }
-                        });
-                    if result.is_ok() {
+                        .and_then(|body| crate::metrics::check_response(&body));
+                    if let Ok(warned) = result {
                         worker_state.exported.fetch_add(1, Relaxed);
+                        worker_state.warnings.fetch_add(u64::from(warned), Relaxed);
                     } else {
                         worker_state.failed.fetch_add(1, Relaxed);
                     }
-                    result
+                    result.map(|_| ())
                 };
                 loop {
                     if worker_state.stop.load(Acquire) {
@@ -222,6 +214,7 @@ impl Metrics {
             recorded_pushes: core::recorded_pushes(),
             exported_batches: self.state.exported.load(Relaxed),
             failed_exports: self.state.failed.load(Relaxed),
+            export_warnings: self.state.warnings.load(Relaxed),
             active_series: self.state.series.load(Relaxed),
             ..Default::default()
         }

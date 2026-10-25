@@ -89,7 +89,11 @@ fn snapshot() -> Vec<proto::MetricFamily> {
             &[("reason", reason)],
         );
     }
-    for (signal, count) in [("traces", traces.export_warnings), ("logs", logs.warnings)] {
+    for (signal, count) in [
+        ("traces", traces.export_warnings),
+        ("logs", logs.warnings),
+        ("metrics", metrics.export_warnings),
+    ] {
         sample(
             &mut families,
             "mars_instrument_export_warnings_total",

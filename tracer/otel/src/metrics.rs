@@ -9,7 +9,7 @@ use crate::{
 use crossbeam_channel::{bounded, Receiver, Sender};
 use opentelemetry_proto::{
     tonic::{
-        collector::metrics::v1::ExportMetricsServiceRequest,
+        collector::metrics::v1::{ExportMetricsServiceRequest, ExportMetricsServiceResponse},
         common::v1::{InstrumentationScope, KeyValue},
         metrics::v1::{self as proto, metric::Data},
         resource::v1::Resource as ProtoResource,
@@ -140,7 +140,7 @@ macro_rules! counters {
         }
     }
 }
-counters! { recorded_pushes, dropped_capacity, dropped_invalid, skipped_closed, skipped_exemplars, exported_batches, failed_exports }
+counters! { recorded_pushes, dropped_capacity, dropped_invalid, skipped_closed, skipped_exemplars, exported_batches, failed_exports, export_warnings }
 
 #[derive(Clone, Copy)]
 struct Example {
@@ -226,6 +226,19 @@ struct Inner {
     stopped: OnceLock<Result<(), FlushError>>,
     anchor: Anchor,
 }
+/// HTTP 200 may carry a warning even when every point was accepted.
+/// Any nonzero rejection count (including invalid negative values) fails the
+/// snapshot; the next cumulative snapshot is independent, not a batch retry.
+pub(crate) fn check_response(body: &[u8]) -> Result<bool, FlushError> {
+    let response =
+        ExportMetricsServiceResponse::decode(body).map_err(|_| FlushError::ExportFailed)?;
+    match response.partial_success {
+        Some(partial) if partial.rejected_data_points != 0 => Err(FlushError::ExportFailed),
+        Some(partial) => Ok(!partial.error_message.is_empty()),
+        None => Ok(false),
+    }
+}
+
 enum Command {
     Flush(Sender<Result<(), FlushError>>),
     Wake,
@@ -240,24 +253,13 @@ impl Metrics {
         let http = HttpExporter::new("METRICS")?;
         Self::start(config, resource, move |body| {
             let response = http.send_response(body.into())?;
-            if response.is_empty() {
-                return Ok(());
-            }
-            let response = opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceResponse::decode(response.as_slice()).map_err(|_| FlushError::ExportFailed)?;
-            if response
-                .partial_success
-                .is_some_and(|p| p.rejected_data_points > 0)
-            {
-                Err(FlushError::ExportFailed)
-            } else {
-                Ok(())
-            }
+            check_response(&response)
         })
     }
     fn start(
         config: Config,
         resource: &Resource,
-        send: impl FnMut(Vec<u8>) -> Result<(), FlushError> + Send + 'static,
+        send: impl FnMut(Vec<u8>) -> Result<bool, FlushError> + Send + 'static,
     ) -> Result<Self, String> {
         let inner = Arc::new(Inner {
             config,
@@ -447,7 +449,7 @@ fn worker_loop(
     inner: &Inner,
     resource: ResourceAttributesWithSchema,
     commands: Receiver<Command>,
-    mut send: impl FnMut(Vec<u8>) -> Result<(), FlushError>,
+    mut send: impl FnMut(Vec<u8>) -> Result<bool, FlushError>,
 ) {
     let _suppression = opentelemetry::Context::enter_telemetry_suppressed_scope();
     let mut failed = false;
@@ -487,7 +489,7 @@ fn worker_loop(
 fn export(
     inner: &Inner,
     resource: &ResourceAttributesWithSchema,
-    send: &mut impl FnMut(Vec<u8>) -> Result<(), FlushError>,
+    send: &mut impl FnMut(Vec<u8>) -> Result<bool, FlushError>,
 ) -> Result<(), FlushError> {
     let entries: Vec<_> = inner
         .series
@@ -575,10 +577,12 @@ fn export(
                 }],
             }],
         };
-        if send(request.encode_to_vec()).is_err() {
-            inner.counters.local().failed_exports.fetch_add(1, Relaxed);
-            result = Err(FlushError::ExportFailed);
-        } else {
+        if let Ok(warned) = send(request.encode_to_vec()) {
+            inner
+                .counters
+                .local()
+                .export_warnings
+                .fetch_add(u64::from(warned), Relaxed);
             inner
                 .counters
                 .local()
@@ -600,6 +604,9 @@ fn export(
                     inner.capacity_epoch.fetch_add(1, Relaxed);
                 }
             }
+        } else {
+            inner.counters.local().failed_exports.fetch_add(1, Relaxed);
+            result = Err(FlushError::ExportFailed);
         }
     }
     result
@@ -723,7 +730,7 @@ mod tests {
                 if failed.swap(false, SeqCst) {
                     Err(FlushError::ExportFailed)
                 } else {
-                    Ok(())
+                    Ok(false)
                 }
             },
         )
@@ -796,7 +803,7 @@ mod tests {
                     entered.send(()).unwrap();
                     wait.recv_timeout(Duration::from_secs(2)).unwrap();
                 }
-                Ok(())
+                Ok(false)
             },
         )
         .unwrap();
@@ -846,7 +853,7 @@ mod tests {
         let metrics = Metrics::start(
             Config::default(),
             &Resource::builder_empty().build(),
-            |_| Ok(()),
+            |_| Ok(false),
         )
         .unwrap();
         let site = record(0).site;
@@ -890,7 +897,7 @@ mod tests {
             move |_| {
                 let _ = entered.try_send(());
                 let _ = wait.recv_timeout(Duration::from_secs(2));
-                Ok(())
+                Ok(false)
             },
         )
         .unwrap();
