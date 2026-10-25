@@ -96,12 +96,110 @@ built from `gst-noop-tracer`. It is not a telemetry collector.
 
 ## Remaining work
 
-- Reduce OTel capture overhead on stock GStreamer; see the
+These are planned changes, not currently supported options. Prioritize delivery
+correctness, lifecycle handling, and instrumentation health before export and
+profiling optimizations.
+
+### Delivery and lifecycle
+
+- [ ] Decode OTLP trace export responses. HTTP 200 can include rejected spans;
+  count accepted and rejected records accurately, surface warning messages, and
+  reject malformed responses. Do not retry partially accepted batches, as
+  required by the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/#partial-success-1).
+  Cover full acceptance, partial/all rejection, warning-only responses, malformed
+  bodies, and transport failures with receiver tests.
+- [ ] Apply a shared deadline to trace, metric, log, and profile cleanup. Pipeline
+  teardown currently flushes logs on a separate SDK timeout, and log flush and
+  shutdown errors are discarded. Return useful per-signal failure information
+  and test slow/unavailable receivers, repeated shutdown, and concurrent callers.
+- [ ] Provide a final profile drain accessible to C/Python applications as well
+  as Rust. Distinguish local queue drain from confirmed backend delivery, and
+  preserve other active pipelines when one pipeline transitions to NULL.
+
+### Instrumentation health
+
+- [ ] Add one enum for instrumentation monitoring: `none`, `core`, or `all`,
+  with `core` as the default. Keep this separate from selecting which application
+  signals to collect.
+
+  | Level | Planned behavior |
+  | --- | --- |
+  | `none` | Disable self-monitoring collection/export beyond bookkeeping required for correctness and existing explicit status APIs. |
+  | `core` | Export inexpensive, bounded health counters and gauges: accepted/rejected/dropped records, export failures, pending work, profile sample losses, attribution exhaustion, and cleanup failures/timeouts. |
+  | `all` | Include `core` plus detailed diagnostics such as export duration histograms, batch sizes, bytes sent, queue high-water marks, symbol-cache activity, and worker processing costs. |
+
+  Use the configured metrics exporter when metrics are enabled; do not silently
+  enable an additional signal, listener, or endpoint. Keep labels bounded by
+  component, signal, and fixed failure reason, without element paths, trace IDs,
+  or error-message labels. Keep timing and allocation-heavy diagnostics out of
+  `core`, avoid blocking streaming threads, and prevent monitoring its own export
+  from generating a telemetry feedback loop. Add a health dashboard and alerts
+  for loss, backlog, and exhausted capacity. Test enum validation, defaults,
+  export routing, and all three levels; measure their overhead separately.
+
+### Readable spans and the correlation demo
+
+- [ ] Include the element factory in span names by default, for example
+  `gst.pad.push videoconvert` and `gst.pad.pull_range filesrc`. Use the callee:
+  the downstream receiving element for a push and the upstream serving element
+  for a pull. Do not add an element-instance-name mode. Keep instance names,
+  pad names, and paths in attributes, and add a stable operation attribute
+  for queries that should not depend on display names. Fall back to the operation
+  name when the factory cannot be resolved; omit dynamic IDs and full paths from
+  names. This follows OpenTelemetry's guidance to use
+  [general, human-readable span names](https://opentelemetry.io/docs/specs/otel/trace/api/#span).
+  Cache bounded names with the site metadata so each buffer does not require
+  string formatting or GObject lookups. Test push/pull direction, relinking,
+  missing peers, and factory-less elements, and update queries and documentation
+  that match the old names. The duration remains the inclusive synchronous call
+  duration; a factory name does not make it exclusive element CPU time.
+- [ ] Extend the README correlation video with logs. Add a logs backend to the
+  demo and provision trace-to-logs and log-to-trace navigation. Emit a useful log
+  inside the selected sampled span, then show metric exemplar → trace → matching
+  log → the same trace, alongside the existing span-to-profile navigation.
+  Verify trace/span IDs and time ranges in both backend data and the Grafana UI,
+  including an unrelated-ID control. Re-record with factory-based span names,
+  and update the demo scripts, provisioning, captions, and correlation guide.
+
+### Performance and profiler lifetime
+
+- [ ] Increase sustained trace export throughput. Benchmark larger batches,
+  compression, and a small bounded number of concurrent requests against the
+  serialized exporter. Compare local and delayed receivers, measuring loss,
+  CPU, memory, and final drain time. A larger queue alone does not increase
+  sustained throughput. Preserve bounded memory and cleanup behavior.
+- [ ] Retire profile element descriptions safely after queued samples no longer
+  reference them. The current 4,096-description limit applies over the process
+  lifetime, so repeated pipeline creation with new names can exhaust attribution
+  capacity. Test beyond that limit without relabeling old samples or retaining
+  destroyed GStreamer objects.
+- [ ] Reduce symbolization cost and temporary memory peaks. Measure cold/warm
+  caches and large debug files; compare selective eviction with whole-cache
+  clearing and evaluate an optional lightweight symbolization mode. Keep
+  resolver work off streaming threads and out of the signal handler, preserving
+  the protections against loader-lock deadlocks.
+- [ ] Reduce OTel capture overhead on stock GStreamer; see the
   [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
-- Extend trace spans and exemplars to pull mode and buffer lists. Explicit
-  metrics collection already covers these operations through the shared core.
-- Measure full-metrics signal configurations alongside the compatibility presets.
-- Complete production soak testing and broader platform validation.
+- [ ] Measure current full-metrics signal combinations alongside compatibility
+  presets, including logs, profiles, and each self-monitoring level. Report
+  throughput, CPU, steady/peak memory, losses, and shutdown time with matched
+  workloads. Keep private application validation outside the repository.
+- [ ] Complete long-running soak tests covering pipeline recreation, thread
+  churn, plugin loading, collector outages/recovery, and repeated teardown on
+  x86-64 and ARM64. Check settled memory, attribution capacity, queue bounds,
+  and shutdown progress, alongside broader platform validation.
+
+### Trace coverage
+
+- [ ] Add buffer-list spans and exemplars. Individual push and pull calls already
+  create spans; lists currently have metrics and attributed CPU profiles only.
+- [ ] Add span links for fan-in and batched inputs, with explicit limits and
+  documented behavior when elements replace buffers or strip metadata.
+- [ ] Investigate per-buffer queue residence measurements separately from
+  synchronous call duration, including matching and cleanup on flush/seek/drop.
+
+GPU execution timing is out of scope. Revisit it only as a separate extension
+after delivery, lifecycle, instrumentation health, and CPU profiling are solid.
 
 Whole-bin elapsed latency across queues and parallel branches is out of scope:
 input/output matching and completion are ambiguous. Existing metrics report
