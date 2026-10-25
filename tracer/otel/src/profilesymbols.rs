@@ -506,22 +506,31 @@ mod tests {
                 .unwrap_or(false);
             1
         }
+        // A release binary can have symbols but no DWARF. Require the same
+        // information as an uncontended resolution, including file/line when
+        // available; debug test builds must still resolve their source location.
+        let pc = resolve_file as *const () as usize;
+        let mut baseline = Symbols::default();
+        baseline.refresh(&[pc]);
+        let expected = baseline.frames.remove(&pc).unwrap();
+        assert!(expected
+            .iter()
+            .any(|f| f.name.as_ref().is_some_and(|n| n.contains("resolve_file"))));
+        if cfg!(debug_assertions) {
+            assert!(expected.iter().any(|f| f
+                .filename
+                .as_ref()
+                .is_some_and(|n| n.ends_with("profilesymbols.rs"))
+                && f.line.is_some_and(|line| line > 0)));
+        }
+        drop(baseline);
         let (start, ready) = std::sync::mpsc::channel();
         let (finished, done) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             ready.recv().unwrap();
-            let pc = resolve_file as *const () as usize;
             let mut symbols = Symbols::default();
             symbols.refresh(&[pc]);
-            let valid = symbols.frames.get(&pc).is_some_and(|frames| {
-                frames.iter().any(|f| {
-                    f.name.as_ref().is_some_and(|n| n.contains("resolve_file"))
-                        && f.filename
-                            .as_ref()
-                            .is_some_and(|n| n.ends_with("profilesymbols.rs"))
-                        && f.line.is_some_and(|line| line > 0)
-                })
-            });
+            let valid = symbols.frames.get(&pc) == Some(&expected);
             let old = symbols.frames.get(&pc).map(Vec::as_ptr);
             let mappings = symbols.mappings.clone();
             symbols.refresh(&[pc]);
@@ -545,7 +554,7 @@ mod tests {
         worker.join().unwrap();
         assert!(
             probe.passed,
-            "symbolization must preserve file/line information without waiting for the loader lock"
+            "symbolization must preserve available symbols/source information without waiting for the loader lock"
         );
     }
 
