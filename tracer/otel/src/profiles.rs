@@ -90,6 +90,9 @@ mod platform {
     pub fn shutdown(_: Duration) -> Result<(), FlushError> {
         Ok(())
     }
+    pub fn flush(_: Duration) -> Result<(), FlushError> {
+        Ok(())
+    }
     pub fn stats() -> ProfileStats {
         ProfileStats::default()
     }
@@ -97,7 +100,7 @@ mod platform {
 
 #[cfg(feature = "profiles")]
 pub(crate) use platform::{active, publish_element, register_thread};
-pub(crate) use platform::{clear, initialize, publish, shutdown};
+pub(crate) use platform::{clear, flush, initialize, publish, shutdown};
 
 pub fn profile_stats() -> ProfileStats {
     platform::stats()
@@ -801,74 +804,126 @@ mod linux {
         }
     }
 
+    enum ProfileCommand {
+        Flush(crossbeam_channel::Sender<Result<(), FlushError>>),
+        Stop,
+    }
     struct Worker {
-        stop: std::sync::mpsc::Sender<()>,
+        command: crossbeam_channel::Sender<ProfileCommand>,
+        done: crossbeam_channel::Receiver<()>,
         handle: std::thread::JoinHandle<Result<(), FlushError>>,
+    }
+    fn drain_uploads(manager: SessionManager) -> Result<(), FlushError> {
+        // Closing the only sender drains the SDK's bounded upload queue. The
+        // SDK does not expose individual HTTP acknowledgements through this API.
+        drop(manager.tx);
+        manager
+            .handle
+            .unwrap()
+            .join()
+            .map_err(|_| FlushError::ExportFailed)?
+            .map_err(|_| FlushError::ExportFailed)
     }
     impl Worker {
         fn start(sampler: Arc<Sampler>, config: PyroscopeConfig) -> Result<Self, String> {
-            let (stop, wake) = std::sync::mpsc::channel();
+            let (command, wake) = crossbeam_channel::bounded(1);
+            let (finished, done) = crossbeam_channel::bounded::<()>(0);
             let handle = std::thread::Builder::new()
                 .name("mars-profile".into())
                 .spawn(move || {
+                    let _finished = finished;
                     let mut backend = ProfileBackend::new(sampler);
-                    let manager = SessionManager::new().map_err(|_| FlushError::ExportFailed)?;
+                    let mut manager =
+                        Some(SessionManager::new().map_err(|_| FlushError::ExportFailed)?);
                     let mut next = std::time::Instant::now() + config.upload_interval;
                     let result = loop {
-                        let stopping = !matches!(
-                            wake.recv_timeout(
-                                next.saturating_duration_since(std::time::Instant::now())
-                            ),
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                        );
-                        let batch = match backend.report() {
-                            Ok(batch) => batch,
-                            Err(_) => break Err(FlushError::ExportFailed),
-                        };
-                        if backend.pending != 0 {
-                            // Raw pprof carries its own timestamps. Session's integer
-                            // range is unused by the SDK for this backend format.
-                            let session = Session {
-                                config: config.clone(),
-                                batch,
-                                from: 0,
-                                until: 0,
-                            };
-                            if let Err(error) = enqueue(
-                                &manager.tx,
-                                session,
-                                backend.pending,
-                                &backend.sampler.counters,
-                            ) {
-                                break Err(error);
+                        let command = match wake
+                            .recv_timeout(next.saturating_duration_since(std::time::Instant::now()))
+                        {
+                            Ok(command) => Some(command),
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                                Some(ProfileCommand::Stop)
                             }
+                        };
+                        let result = (|| {
+                            let batch = backend.report().map_err(|_| FlushError::ExportFailed)?;
+                            if backend.pending != 0 {
+                                let session = Session {
+                                    config: config.clone(),
+                                    batch,
+                                    from: 0,
+                                    until: 0,
+                                };
+                                let tx = &manager.as_ref().unwrap().tx;
+                                if command.is_some() {
+                                    // Explicit drains preserve the last report even if the
+                                    // upload queue is full. Only this worker can wait; the
+                                    // calling application still has its own deadline.
+                                    match tx.send(SessionSignal::Session(Box::new(session))) {
+                                        Ok(()) => {
+                                            backend
+                                                .sampler
+                                                .counters
+                                                .reported_samples
+                                                .fetch_add(backend.pending, Relaxed);
+                                        }
+                                        Err(_) => {
+                                            backend
+                                                .sampler
+                                                .counters
+                                                .dropped_upload
+                                                .fetch_add(backend.pending, Relaxed);
+                                            return Err(FlushError::ExportFailed);
+                                        }
+                                    }
+                                } else {
+                                    enqueue(
+                                        tx,
+                                        session,
+                                        backend.pending,
+                                        &backend.sampler.counters,
+                                    )?;
+                                }
+                            }
+                            if command.is_some() {
+                                drain_uploads(manager.take().unwrap())?;
+                            }
+                            Ok(())
+                        })();
+                        match command {
+                            Some(ProfileCommand::Flush(reply)) => {
+                                // Reopen delivery without stopping sampling in any pipeline.
+                                let result = result.and_then(|()| {
+                                    manager = Some(
+                                        SessionManager::new()
+                                            .map_err(|_| FlushError::ExportFailed)?,
+                                    );
+                                    Ok(())
+                                });
+                                let _ = reply.send(result.clone());
+                                if result.is_err() {
+                                    break result;
+                                }
+                            }
+                            Some(ProfileCommand::Stop) => break result,
+                            None if result.is_err() => break result,
+                            None => {}
                         }
-                        if stopping {
-                            break Ok(());
-                        }
-                        // No unbounded timer-message backlog after a slow report.
-                        next += config.upload_interval;
-                        if next < std::time::Instant::now() {
-                            next = std::time::Instant::now();
-                        }
+                        next = std::time::Instant::now() + config.upload_interval;
                     };
-                    // Closing the only sender drains the SDK's bounded upload queue.
-                    // No kill-message send can block behind a full queue. Unlike the
-                    // Agent stop condvar, join also observes failure/panic/early exit.
-                    drop(manager.tx);
-                    let uploaded = manager
-                        .handle
-                        .unwrap()
-                        .join()
-                        .map_err(|_| FlushError::ExportFailed)?
-                        .map_err(|_| FlushError::ExportFailed);
+                    let uploaded = manager.map_or(Ok(()), drain_uploads);
                     result.and(uploaded)
                 })
                 .map_err(|e| e.to_string())?;
-            Ok(Self { stop, handle })
+            Ok(Self {
+                command,
+                done,
+                handle,
+            })
         }
         fn stop(self) -> Result<(), FlushError> {
-            let _ = self.stop.send(());
+            let _ = self.command.send(ProfileCommand::Stop);
             self.handle.join().map_err(|_| FlushError::ExportFailed)?
         }
     }
@@ -1276,6 +1331,36 @@ mod linux {
             ACTIVE.store(true, Release);
         }
         Ok(())
+    }
+
+    pub fn flush(timeout: Duration) -> Result<(), FlushError> {
+        if STATE.get().is_none() {
+            return Ok(());
+        }
+        let start = std::time::Instant::now();
+        let (command, done) = {
+            let worker = WORKER.lock().unwrap();
+            let worker = worker.as_ref().ok_or(FlushError::Closed)?;
+            (worker.command.clone(), worker.done.clone())
+        };
+        let (reply, result) = crossbeam_channel::bounded(1);
+        command
+            .send_timeout(
+                ProfileCommand::Flush(reply),
+                timeout.saturating_sub(start.elapsed()),
+            )
+            .map_err(|e| {
+                if e.is_timeout() {
+                    FlushError::Timeout
+                } else {
+                    FlushError::Closed
+                }
+            })?;
+        crossbeam_channel::select! {
+            recv(result) -> result => result.map_err(|_| FlushError::Closed)?,
+            recv(done) -> _ => Err(FlushError::Closed),
+            default(timeout.saturating_sub(start.elapsed())) => Err(FlushError::Timeout),
+        }
     }
 
     pub fn shutdown(timeout: Duration) -> Result<(), FlushError> {

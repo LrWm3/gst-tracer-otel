@@ -144,9 +144,13 @@ also apply here.
 Profiles upload approximately once per second. Stop streaming, then call
 `gstoteltracer::shutdown(timeout)` to stop timers and drain the final profile.
 Shutdown uses the same bounded deadline as correlated profiling, can be retried
-after a timeout, and cannot restart sampling. Pipeline NULL transitions and
-`flush()` do not drain profiles. `gst-launch-1.0` relies on periodic uploads and
-may lose the final interval when exiting.
+after a timeout, and cannot restart sampling. `gstoteltracer::flush(timeout)`
+drains the current profiles while preserving sampling for other or later
+pipelines. C/Python applications can invoke the tracer's `flush` or `shutdown`
+[action signals](README.md#drain-and-counters), with a millisecond timeout and
+per-signal results. Pipeline NULL transitions do not drain profiles automatically.
+`gst-launch-1.0` relies on periodic uploads and may lose the final interval when
+exiting.
 
 Sampling buffers and immutable element descriptions are bounded but intentionally
 remain allocated until process exit. Temporary symbolization allocations and

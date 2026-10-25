@@ -45,7 +45,7 @@ pub use profiles::{profile_stats, ProfileStats};
 pub use profiletracer::ProfilesTracer;
 pub use tracer::{InstrumentTracer, TelemetryTracer};
 
-/// Drain traces, logs and snapshot cumulative metrics, bounded by `timeout`.
+/// Drain traces, logs, profiles and snapshot cumulative metrics, bounded by `timeout`.
 /// Stop streaming first for an exact final snapshot.
 pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     flush_report(timeout).result()

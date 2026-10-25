@@ -25,6 +25,11 @@ mod imp {
     }
 
     impl ObjectImpl for ProfilesTracer {
+        fn signals() -> &'static [glib::subclass::Signal] {
+            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
+                LazyLock::new(crate::lifecycle::signals);
+            &SIGNALS
+        }
         fn constructed(&self) {
             self.parent_constructed();
             if self

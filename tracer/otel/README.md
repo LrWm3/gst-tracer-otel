@@ -503,11 +503,13 @@ closure increment `dropped_closed`. On a caller timeout, the worker may still be
 finishing a request; counters remain inspectable, and shutdown may be retried.
 Abrupt process termination cannot guarantee a drain.
 
-`flush` shares one deadline across traces, metrics, and logs. `shutdown` also
-includes the CPU profiler in that deadline. `flush_report(timeout)` and
+`flush` and `shutdown` share one deadline across traces, metrics, logs, and CPU
+profiles. Flushing preserves sampling for other active or later pipelines;
+shutdown stops it process-wide. `flush_report(timeout)` and
 `shutdown_report(timeout)` return separate trace, metric, log, and profile
-results, so a failure in one signal does not hide another. Flush does not yet
-request a profile drain; its report has `profiles: None`.
+results, so a failure in one signal does not hide another. Profile completion
+means the local processing/upload queues drained; the Pyroscope SDK does not
+expose server acknowledgements.
 
 Logs use a bounded background queue, with `OTEL_BLRP_MAX_QUEUE_SIZE` (default
 2048, maximum 65536), `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE` (default 512, capped by
@@ -521,7 +523,37 @@ failures from generating more telemetry for the failing destination.
 
 C and other GStreamer applications can find the tracer through
 `gst_tracing_get_active_tracers()` and read its `stats` property, a `GstStructure`.
-The same cumulative fields are available through the Rust API:
+All three OTel-plugin tracer classes also expose `flush` and `shutdown` action
+signals. Each takes a `guint64` timeout in milliseconds (0–60000) and returns a
+`GstStructure` with `success` and per-signal status fields. Stop the relevant
+pipeline first and invoke the action from an application/control thread, outside
+streaming callbacks. Use `flush` while other pipelines may continue; use
+`shutdown` only at process teardown.
+
+```python
+# tracer is a Mars instance from Gst.tracing_get_active_tracers().
+report = tracer.emit("flush", 5000)
+if not report.get_value("success"):
+    print(report.to_string())
+```
+
+```c
+GstStructure *report = NULL;
+g_signal_emit_by_name(tracer, "flush", (guint64)5000, &report);
+gboolean success = FALSE;
+gst_structure_get_boolean(report, "success", &success);
+/* Inspect traces/metrics/logs/profiles status strings when success is FALSE. */
+gst_structure_free(report);
+```
+
+Statuses are `ok`, `timeout`, `export-failed`, `closed`, or `not-initialized`.
+Invalid timeout arguments return `success=false` with an `error` field without
+starting cleanup. `profile-delivery-confirmed` is always false, reflecting the
+SDK acknowledgement limitation. A timeout can be retried; workers continue
+bounded processing in the background. Pipeline NULL transitions flush traces,
+metrics, and logs, but applications must request the final profile flush.
+
+The same cumulative trace counters are available through the Rust API:
 
 - `started_spans`, `completed_spans`, `enqueued_spans`, `exported_spans`.
 - `dropped_queue_full`, `dropped_closed`, `failed_export_spans`, `failed_exports`.

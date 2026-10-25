@@ -400,6 +400,12 @@ fn profiles_only_shutdown_keeps_its_deadline_with_a_slow_receiver() {
     collect("profiles-only-slow");
 }
 
+#[test]
+fn profile_action_flush_preserves_sampling_for_later_pipelines() {
+    let (received, _) = collect("profiles-only-flush");
+    assert!(!received.profiles.is_empty());
+}
+
 #[inline(never)]
 fn busy(phase: &str) {
     static CAT: std::sync::LazyLock<gst::DebugCategory> = std::sync::LazyLock::new(|| {
@@ -522,8 +528,27 @@ fn profile_child() {
         assert_eq!(metrics.failed_exports, 0);
         assert_eq!(gstoteltracer::profile_stats().correlated_samples, 0);
     }
-    // Drain trace export before testing the independent profile deadline.
-    gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+    let invalid: gst::Structure = _tracer.emit_by_name("flush", &[&60001u64]);
+    assert!(!invalid.get::<bool>("success").unwrap());
+    if slow {
+        let start = Instant::now();
+        let report = gstoteltracer::flush_report(Duration::from_millis(10));
+        assert_eq!(
+            report.profiles,
+            Some(Err(gstoteltracer::FlushError::Timeout))
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+    } else {
+        let samples = gstoteltracer::profile_stats().samples;
+        let report: gst::Structure = _tracer.emit_by_name("flush", &[&5000u64]);
+        assert!(report.get::<bool>("success").unwrap(), "{report:?}");
+        assert!(!report.get::<bool>("profile-delivery-confirmed").unwrap());
+        assert!(gstoteltracer::profile_stats().reported_samples >= samples);
+        if mode == "profiles-only-flush" {
+            profile_push_work();
+            assert!(gstoteltracer::profile_stats().samples > samples);
+        }
+    }
     let start = Instant::now();
     let shutdown = gstoteltracer::shutdown(Duration::from_millis(if slow { 30 } else { 5000 }));
     if slow {
@@ -548,7 +573,8 @@ fn profile_child() {
             "final report must drain samples"
         );
     }
-    gstoteltracer::shutdown(Duration::from_secs(1)).unwrap();
+    let report: gst::Structure = _tracer.emit_by_name("shutdown", &[&1000u64]);
+    assert!(report.get::<bool>("success").unwrap(), "{report:?}");
 }
 
 fn profile_non_push_work(mode: &str) {

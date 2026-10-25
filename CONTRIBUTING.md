@@ -112,8 +112,8 @@ profiling optimizations.
   of all signals including profiles. Log export now uses a bounded worker and
   reports failures. `flush_report` and `shutdown_report` retain per-signal
   results; tests cover slow/failing receivers, repeated shutdown, and concurrent
-  callers. Explicit profile flushing is the next lifecycle item.
-- [ ] Provide a final profile drain accessible to C/Python applications as well
+  callers.
+- [x] Provide a final profile drain accessible to C/Python applications as well
   as Rust. Distinguish local queue drain from confirmed backend delivery, and
   preserve other active pipelines when one pipeline transitions to NULL.
 

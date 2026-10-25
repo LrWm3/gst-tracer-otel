@@ -286,6 +286,11 @@ macro_rules! tracer_impl {
             }
 
             impl ObjectImpl for OtelTracerImpl {
+                fn signals() -> &'static [glib::subclass::Signal] {
+                    static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
+                        LazyLock::new(crate::lifecycle::signals);
+                    &SIGNALS
+                }
                 fn properties() -> &'static [glib::ParamSpec] {
                     static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
                         vec![
