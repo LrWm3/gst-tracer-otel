@@ -1,0 +1,19 @@
+{
+  "architecture": "x86_64",
+  "repeats": 5,
+  "cpus": "0,2",
+  "binary_bytes": 186991208,
+  "binary_sha256": "569f9fe85a699c26c1ff34f5103997eecc616c6d81a107495deb3fb860ced510",
+  "revision": "da5f4aed507d36284b72f19fa24e5296dfe4abaa",
+  "phase_meanings": {
+    "cold": "empty resolver cache, OS page cache not flushed",
+    "warm": "same six PCs with the retained cache",
+    "cache_cleared": "same PCs after explicit whole-cache invalidation"
+  },
+  "source_sha256": {
+    "tracer/otel/src/profilesymbols.rs": "9c40f89a4a78c9c185b5a20a81e0b6fa1a6b7a771fe7a2ebae872175acaaa0c0",
+    "tracer/otel/src/profiles.rs": "5484f8f7247f0ff4424a2194bd3ad12a9c4896b8c263a59bfc99f994557328b5",
+    "tracer/otel/bench/symbolization.py": "2b8c1f9e05f5205033740caa4f70c27686300db62eee9515839910646197dc6c",
+    "Cargo.lock": "b0daedce7517273a8830a75304084dccfeffb73713564769002aaf4dea28ceb3"
+  }
+}

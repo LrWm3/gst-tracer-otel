@@ -177,6 +177,11 @@ fn collect(mode: &str) -> (Received, String) {
     if mode.ends_with("invalid-elements") {
         command.env("GST_OTEL_PROFILE_ELEMENTS", "invalid");
     }
+    if mode.ends_with("invalid-symbolization") {
+        command.env("MARS_PROFILE_SYMBOLIZATION", "invalid");
+    } else if mode.ends_with("functions") {
+        command.env("MARS_PROFILE_SYMBOLIZATION", "functions");
+    }
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -243,6 +248,21 @@ fn pipeline_churn_reclaims_descriptions_and_preserves_early_and_late_samples() {
             "missing {name} samples: {stdout}"
         );
     }
+}
+
+#[test]
+fn function_mode_uploads_attributed_profiles_without_source_locations() {
+    let (received, _) = collect("profiles-only-functions");
+    assert!(received.profiles.iter().any(|p| !p.sample.is_empty()));
+    assert!(received
+        .profiles
+        .iter()
+        .flat_map(|p| &p.function)
+        .all(|f| f.filename == 0));
+    assert!(received.profiles.iter().any(|p| p
+        .sample
+        .iter()
+        .any(|s| scope_frame(p, s).contains("GstIdentity:outer"))));
 }
 
 #[test]
@@ -418,6 +438,7 @@ fn profiles_only_rejects_invalid_configuration_without_starting_other_signals() 
     for mode in [
         "profiles-only-invalid-rate",
         "profiles-only-invalid-elements",
+        "profiles-only-invalid-symbolization",
         "profiles-only-signal-conflict",
         "profiles-only-legacy-params",
     ] {
@@ -495,6 +516,7 @@ fn profile_child() {
     if profiles_only
         && (mode.ends_with("invalid-rate")
             || mode.ends_with("invalid-elements")
+            || mode.ends_with("invalid-symbolization")
             || mode.ends_with("signal-conflict")
             || mode.ends_with("legacy-params"))
     {

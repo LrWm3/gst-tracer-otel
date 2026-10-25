@@ -139,6 +139,24 @@ signal handler reads only an atomic integer; all name lookup and synthetic frame
 construction happen outside signals. No GStreamer objects are retained by the
 description registry.
 
+`MARS_PROFILE_SYMBOLIZATION=full` is the default: native function names, source
+locations and inline frames when debug information is available. Use
+`MARS_PROFILE_SYMBOLIZATION=functions` to read ELF symbol tables without loading
+DWARF or separate debug files. This reduces resolver work and temporary memory
+at the cost of source locations and inline detail; stripped private functions
+may appear only under their library name. Element roots and trace IDs are
+unchanged. `GST_OTEL_PROFILE_SYMBOLIZATION` is the fallback name.
+
+The worker keeps up to 4096 resolved addresses and 4 MiB of frame/string data.
+Loading an unrelated library preserves existing cached symbols; replacing or
+unmapping a library invalidates its addresses. Capacity pressure evicts stale
+entries absent from the current report in least-recently-used order. A report
+with more unique addresses than the cache can hold retains unresolved addresses
+as native fallbacks. These limits exclude temporary ELF/DWARF parsing and cache
+bookkeeping, so they are not a bound on process RSS.
+See the [cold/warm resolver measurements](../../reports/otel/PROFILE_VIDEO_RESULTS.md#symbolization-cost-and-cache-retention--2026-10-25)
+for the measured tradeoff in a build with debug information.
+
 Install debug symbols and build relevant native libraries with frame pointers
 for useful stacks. The Rust flag above only changes Rust code. The
 [native build flags](gstreamer/native.flags.ini) can be passed to GStreamer's

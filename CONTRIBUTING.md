@@ -177,11 +177,13 @@ profiling optimizations.
   old samples or retaining destroyed GStreamer objects. Coverage includes 1,800
   recreated pipelines with early and late samples decoded from actual uploads,
   plus delayed-release and same-path-recreation tests.
-- [ ] Reduce symbolization cost and temporary memory peaks. Measure cold/warm
+- [x] Reduce symbolization cost and temporary memory peaks. Measure cold/warm
   caches and large debug files; compare selective eviction with whole-cache
   clearing and evaluate an optional lightweight symbolization mode. Keep
   resolver work off streaming threads and out of the signal handler, preserving
   the protections against loader-lock deadlocks.
+  Selective cache eviction and optional `functions` symbolization are implemented;
+  see the [cold/warm debug-build measurements](reports/otel/PROFILE_VIDEO_RESULTS.md#symbolization-cost-and-cache-retention--2026-10-25).
 - [ ] Reduce OTel capture overhead on stock GStreamer; see the
   [measured limits](tracer/otel/README.md#performance-and-sampling-cost).
 - [ ] Measure current full-metrics signal combinations alongside compatibility

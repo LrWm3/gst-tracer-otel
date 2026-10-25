@@ -237,3 +237,32 @@ The defaults check has its own [raw CSV](2026-10-23-profiles-video-defaults.csv)
 and [metadata](2026-10-23-profiles-video-defaults.json). The runner gained explicit
 export-interval and queue-capacity options between series; the driver binary
 remained identical. The recorded source hashes reflect each measurement.
+
+## Symbolization cost and cache retention — 2026-10-25
+
+The default `full` symbolizer now preserves entries belonging to unchanged library mappings and evicts stale entries selectively under pressure. The optional `MARS_PROFILE_SYMBOLIZATION=functions` mode resolves ELF function names without DWARF, source locations or inline frames. Element attribution and trace correlation remain available in both modes. Resolver code and its loader-lock tests are isolated in [profilesymbols.rs](../../tracer/otel/src/profilesymbols.rs).
+
+This focused x86-64 measurement uses a 178.3 MiB optimized test executable with debug information, six instruction addresses across the executable and libc, and five fresh processes per mode in alternating order. “Cold” means an empty resolver cache; the operating system page cache was not flushed. The warm pass repeats the same addresses. The final pass explicitly clears the cache to measure the cost of the former whole-cache invalidation behavior; it is not a replay of a production workload or a comparison against an older binary.
+
+| Mode / phase | Median process CPU | CPU range | Median process peak RSS | Median RSS after resolution | Retained frame/string bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `full` / cold | 80.477 ms | 79.579–85.758 ms | 119.42 MiB | 47.95 MiB | 4,041 |
+| `full` / warm | 0.085 ms | 0.084–0.087 ms | 119.42 MiB | 47.95 MiB | 4,041 |
+| `full` / cache cleared | 70.748 ms | 69.762–74.680 ms | 122.04 MiB | 53.25 MiB | 4,041 |
+| `functions` / cold | 13.409 ms | 13.146–13.824 ms | 13.75 MiB | 10.61 MiB | 971 |
+| `functions` / warm | 0.078 ms | 0.076–0.083 ms | 13.75 MiB | 10.61 MiB | 971 |
+| `functions` / cache cleared | 12.695 ms | 12.479–13.438 ms | 14.10 MiB | 11.35 MiB | 971 |
+
+The function-only cold pass used about **83% less resolver CPU** and reduced the observed process peak from about **119 MiB to 14 MiB** in this microbenchmark. This is a resolver measurement, **not an 83% pipeline speedup or a general profiler RSS limit**. Warm cache reuse took about 0.08 ms in either mode. Peak RSS is cumulative within each process; later phases inherit earlier peaks. Post-resolution RSS includes allocator retention, while the retained-byte column counts only cached frames/strings.
+
+Both modes retain at most 4096 resolved addresses and 4 MiB of frame/string data. Mapping identity includes address range, file offset, device and inode. Tests verify that unrelated mappings preserve cached allocations, changed mappings invalidate their symbols, and capacity pressure keeps the current hot set while evicting stale entries. A separate real-upload test verifies function-only profiles still contain element attribution and omit source locations. The loader-lock regression test and all required repository checks pass. Audit retains the existing allowed Tokio advisory.
+
+For source-level investigations keep `full`. For lower temporary debug-parsing cost, choose `functions`; private functions missing from stripped ELF symbol tables may appear only by library name. Other allocations and large symbol tables can still increase process memory.
+
+Raw [measurements](symbolization/2026-10-25/results.csv), [source/build metadata](symbolization/2026-10-25/metadata.json), and per-run output are retained. Reproduce using the test executable path printed by the build:
+
+```sh
+cargo test --profile profiling -p gst-otel-tracer --features profiles --lib --no-run
+python3 tracer/otel/bench/symbolization.py --binary PATH_TO_TEST_EXECUTABLE \
+  --output reports/otel/symbolization/recheck
+```

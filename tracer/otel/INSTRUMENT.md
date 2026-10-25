@@ -59,6 +59,7 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 | `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
 | `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
 | `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
+| `MARS_PROFILE_SYMBOLIZATION` | `full` | `full` source/inline resolution or `functions` using ELF symbols only |
 | `MARS_PROFILE_SIGNAL` | `SIGRTMIN+6` | Reserved realtime sampling signal |
 
 `MARS_METRIC_*` collector controls also work with `mars-metrics`. Their original

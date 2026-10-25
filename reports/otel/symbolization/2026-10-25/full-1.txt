@@ -1,0 +1,9 @@
+
+running 1 test
+SYMBOLS mode=full phase=cold wall_ns=79586749 cpu_ns=79579083 rss_before_kb=7340 rss_after_kb=49136 peak_kb=122400 entries=6 retained_bytes=4041
+SYMBOLS mode=full phase=warm wall_ns=84281 cpu_ns=84106 rss_before_kb=49136 rss_after_kb=49136 peak_kb=122400 entries=6 retained_bytes=4041
+SYMBOLS mode=full phase=cache_cleared wall_ns=69761374 cpu_ns=69762488 rss_before_kb=49136 rss_after_kb=54556 peak_kb=125000 entries=6 retained_bytes=4041
+test profiles::symbols::tests::symbolization_measurement ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 59 filtered out; finished in 0.15s
+

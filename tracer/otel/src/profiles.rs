@@ -63,6 +63,14 @@ use linux as platform;
 #[path = "profilearch.rs"]
 mod arch;
 
+#[cfg(all(
+    feature = "profiles",
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[path = "profilesymbols.rs"]
+mod symbols;
+
 #[cfg(not(all(
     feature = "profiles",
     target_os = "linux",
@@ -114,6 +122,7 @@ pub fn profile_stats() -> ProfileStats {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 mod linux {
+    use super::symbols::{Symbolization, Symbols};
     use super::*;
     use prost::Message;
     use pyroscope::{
@@ -129,9 +138,6 @@ mod linux {
         cell::{RefCell, UnsafeCell},
         collections::HashMap,
         ffi::c_void,
-        fs::File,
-        os::unix::fs::MetadataExt,
-        path::PathBuf,
         sync::{
             atomic::{
                 AtomicBool, AtomicI32, AtomicU64, AtomicUsize,
@@ -316,6 +322,7 @@ mod linux {
         rate: u32,
         pid: i32,
         handlers: AtomicUsize,
+        symbolization: Symbolization,
     }
     impl Sampler {
         fn new(rate: u32, signal: i32) -> Self {
@@ -328,6 +335,7 @@ mod linux {
                 // SAFETY: getpid has no preconditions.
                 pid: unsafe { libc::getpid() },
                 handlers: AtomicUsize::new(0),
+                symbolization: Symbolization::Full,
             }
         }
         fn stop(&self) {
@@ -353,254 +361,7 @@ mod linux {
         }
     }
 
-    const MAX_SYMBOLS: usize = 4096;
-    const SYMBOL_BYTES: usize = 4 * 1024 * 1024;
     const MAX_PROFILE_BYTES: usize = 8 * 1024 * 1024;
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct Mapping {
-        start: usize,
-        end: usize,
-        offset: u64,
-        device: u64,
-        inode: u64,
-        path: PathBuf,
-    }
-    impl Mapping {
-        fn parse(line: &str) -> Option<Self> {
-            let mut rest = line;
-            let mut field = || {
-                rest = rest.trim_start();
-                let (value, remaining) =
-                    rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                rest = remaining;
-                value
-            };
-            let (start, end) = field().split_once('-')?;
-            if !field().contains('x') {
-                return None;
-            }
-            let offset = u64::from_str_radix(field(), 16).ok()?;
-            let (major, minor) = field().split_once(':')?;
-            let device = libc::makedev(
-                u32::from_str_radix(major, 16).ok()?,
-                u32::from_str_radix(minor, 16).ok()?,
-            );
-            let inode = field().parse().ok()?;
-            let path = rest.trim_start();
-            if !path.starts_with('/') || path.ends_with(" (deleted)") {
-                return None;
-            }
-            // proc escapes newlines; spaces (including consecutive spaces) are literal.
-            let path = PathBuf::from(path.replace("\\012", "\n"));
-            Some(Self {
-                start: usize::from_str_radix(start, 16).ok()?,
-                end: usize::from_str_radix(end, 16).ok()?,
-                offset,
-                device,
-                inode,
-                path,
-            })
-        }
-        fn open(&self) -> Option<File> {
-            let file = File::open(&self.path).ok()?;
-            let metadata = file.metadata().ok()?;
-            // Do not symbolize against a replacement file at the same path.
-            (metadata.ino() == self.inode && metadata.dev() == self.device).then_some(file)
-        }
-    }
-
-    #[derive(Default)]
-    struct Symbols {
-        mappings: Vec<Mapping>,
-        frames: HashMap<usize, Vec<StackFrame>>,
-        bytes: usize,
-    }
-    impl Symbols {
-        fn refresh(&mut self, pcs: &[usize]) {
-            let mut evicted = 0;
-            let mappings: Vec<_> = std::fs::read_to_string("/proc/self/maps")
-                .unwrap_or_default()
-                .lines()
-                .filter_map(Mapping::parse)
-                .collect();
-            if self.mappings != mappings {
-                evicted += self.frames.len();
-                self.frames.clear();
-                self.bytes = 0;
-                self.mappings = mappings;
-            }
-            // Evict between reports, never while encoding a report. Bound both
-            // the address count and retained strings/inline frames.
-            if self.frames.len()
-                + pcs
-                    .iter()
-                    .filter(|pc| !self.frames.contains_key(pc))
-                    .count()
-                > MAX_SYMBOLS
-            {
-                evicted += self.frames.len();
-                self.frames.clear();
-                self.bytes = 0;
-            }
-            let hits = if gst_mars_metrics_core::monitoring::level()
-                == gst_mars_metrics_core::monitoring::Monitoring::All
-            {
-                pcs.iter().filter(|pc| self.frames.contains_key(pc)).count()
-            } else {
-                0
-            };
-            // PCs are sorted, so each ELF/DWARF context is built once per report
-            // and dropped before loading the next file. No global resolver lock,
-            // libunwind, dladdr, or dl_iterate_phdr (which takes the loader lock).
-            for mapping in &self.mappings {
-                let first = pcs.partition_point(|pc| *pc < mapping.start);
-                let last = pcs.partition_point(|pc| *pc < mapping.end);
-                let missing: Vec<_> = pcs[first..last]
-                    .iter()
-                    .copied()
-                    .filter(|pc| !self.frames.contains_key(pc))
-                    .collect();
-                if missing.is_empty()
-                    || self.frames.len() == MAX_SYMBOLS
-                    || self.bytes >= SYMBOL_BYTES
-                {
-                    continue;
-                }
-                let Some(file) = mapping.open() else { continue };
-                use object::{Object, ObjectSegment};
-                let cache = object::read::ReadCache::new(&file);
-                let Ok(object) = object::File::parse(&cache) else {
-                    continue;
-                };
-                let segments: Vec<_> = object
-                    .segments()
-                    .map(|s| (s.file_range(), s.address()))
-                    .collect();
-                // Prefer the installed build-id debug file when available. The
-                // open fd keeps the original inode stable while Loader opens it.
-                use std::os::fd::AsRawFd;
-                let binary = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-                let debug = object
-                    .build_id()
-                    .ok()
-                    .flatten()
-                    .filter(|id| id.len() >= 2)
-                    .and_then(|id| {
-                        let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
-                        let path = PathBuf::from(format!(
-                            "/usr/lib/debug/.build-id/{}/{}.debug",
-                            &id[..2],
-                            &id[2..]
-                        ));
-                        let debug_file = File::open(&path).ok()?;
-                        let debug_cache = object::read::ReadCache::new(debug_file);
-                        let debug_object = object::File::parse(&debug_cache).ok()?;
-                        (debug_object.build_id().ok()? == object.build_id().ok()?).then_some(path)
-                    });
-                let loader = debug
-                    .as_ref()
-                    .and_then(|p| addr2line::Loader::new(p).ok())
-                    .or_else(|| addr2line::Loader::new(&binary).ok());
-                for pc in missing {
-                    if self.frames.len() == MAX_SYMBOLS {
-                        break;
-                    }
-                    let offset = mapping.offset + (pc - mapping.start) as u64;
-                    let address = segments.iter().find_map(|&((start, len), address)| {
-                        let relative = offset.checked_sub(start)?;
-                        (relative < len).then(|| address + relative)
-                    });
-                    let mut frames = resolve_file(pc, address, loader.as_ref());
-                    if frames.len() == 1 && frames[0].name.as_deref() == Some(&format!("0x{pc:x}"))
-                    {
-                        // Keep the instruction address on the pprof location,
-                        // but group unnamed code by its mapped library instead
-                        // of making ASLR-dependent addresses the function name.
-                        frames[0].name = Some(format!(
-                            "[unresolved native] {}",
-                            mapping
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        ));
-                    }
-                    let bytes = frames.capacity() * std::mem::size_of::<StackFrame>()
-                        + frames
-                            .iter()
-                            .map(|f| {
-                                f.name.as_ref().map_or(0, String::capacity)
-                                    + f.filename.as_ref().map_or(0, String::capacity)
-                            })
-                            .sum::<usize>();
-                    if self.bytes + bytes > SYMBOL_BYTES {
-                        break;
-                    }
-                    self.bytes += bytes;
-                    self.frames.insert(pc, frames);
-                }
-            }
-            gst_mars_metrics_core::monitoring::symbol_cache(
-                hits,
-                pcs.len() - hits,
-                evicted,
-                self.frames.len(),
-                self.bytes,
-            );
-        }
-    }
-
-    fn short_string(value: &str) -> String {
-        let mut end = value.len().min(1024);
-        while !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        value[..end].to_owned()
-    }
-
-    fn resolve_file(
-        pc: usize,
-        address: Option<u64>,
-        loader: Option<&addr2line::Loader>,
-    ) -> Vec<StackFrame> {
-        let mut frames = Vec::new();
-        if let (Some(address), Some(loader)) = (address, loader) {
-            if let Ok(mut resolved) = loader.find_frames(address) {
-                while let Ok(Some(frame)) = resolved.next() {
-                    frames.push(StackFrame {
-                        name: frame
-                            .function
-                            .and_then(|f| f.demangle().ok().map(|v| short_string(&v))),
-                        filename: frame
-                            .location
-                            .as_ref()
-                            .and_then(|l| l.file.map(short_string)),
-                        line: frame.location.and_then(|l| l.line),
-                        ..Default::default()
-                    });
-                    if frames.len() == 16 {
-                        break;
-                    }
-                }
-            }
-            if frames.is_empty() {
-                if let Some(name) = loader.find_symbol(address) {
-                    frames.push(StackFrame {
-                        name: Some(short_string(&addr2line::demangle_auto(name.into(), None))),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-        if frames.is_empty() {
-            frames.push(StackFrame {
-                name: Some(format!("0x{pc:x}")),
-                ..Default::default()
-            });
-        }
-        frames
-    }
 
     // Intern once per report. The upload queue holds protobuf bytes, not a copy
     // of every resolved frame/string for every distinct span/stack combination.
@@ -737,9 +498,10 @@ mod linux {
     }
     impl ProfileBackend {
         fn new(sampler: Arc<Sampler>) -> Self {
+            let symbols = Symbols::new(sampler.symbolization);
             Self {
                 sampler,
-                symbols: Symbols::default(),
+                symbols,
                 previous: std::time::Instant::now(),
                 pending: 0,
             }
@@ -1317,6 +1079,15 @@ mod linux {
             return Err("GST_OTEL_PROFILE_HZ must be 1..=1000".into());
         }
         crate::profilecontext::configure()?;
+        let symbolization = setting("SYMBOLIZATION")
+            .map(|v| {
+                v.into_string()
+                    .map_err(|_| "profile SYMBOLIZATION is not UTF-8")
+            })
+            .transpose()?
+            .as_deref()
+            .unwrap_or("full")
+            .parse()?;
         let signal = setting("SIGNAL")
             .map(|v| v.into_string().map_err(|_| "profile SIGNAL is not UTF-8"))
             .transpose()?
@@ -1337,7 +1108,9 @@ mod linux {
             if previous.sa_sigaction != libc::SIG_DFL {
                 return Err("profile signal already has a handler".into());
             }
-            let state = Arc::new(Sampler::new(rate, signal));
+            let mut sampler = Sampler::new(rate, signal);
+            sampler.symbolization = symbolization;
+            let state = Arc::new(sampler);
             STATE
                 .set(state.clone())
                 .map_err(|_| "embedded profiler already initialized")?;
@@ -1462,69 +1235,6 @@ mod linux {
         use super::*;
 
         #[test]
-        fn file_symbolization_progresses_while_dynamic_loader_is_locked() {
-            struct Probe {
-                start: std::sync::mpsc::Sender<()>,
-                done: std::sync::mpsc::Receiver<bool>,
-                passed: bool,
-            }
-            unsafe extern "C" fn locked(
-                _: *mut libc::dl_phdr_info,
-                _: usize,
-                data: *mut c_void,
-            ) -> i32 {
-                // glibc invokes this callback while holding its loader lock.
-                // A timeout releases it, so a regression fails instead of
-                // leaving the test runner deadlocked.
-                let probe = unsafe { &mut *data.cast::<Probe>() };
-                let _ = probe.start.send(());
-                probe.passed = probe
-                    .done
-                    .recv_timeout(Duration::from_secs(15))
-                    .unwrap_or(false);
-                1
-            }
-            let (start, ready) = std::sync::mpsc::channel();
-            let (finished, done) = std::sync::mpsc::channel();
-            let worker = std::thread::spawn(move || {
-                ready.recv().unwrap();
-                let pc = resolve_file as *const () as usize;
-                let mut symbols = Symbols::default();
-                symbols.refresh(&[pc]);
-                let valid = symbols.frames.get(&pc).is_some_and(|frames| {
-                    frames.iter().any(|f| {
-                        f.name.as_ref().is_some_and(|n| n.contains("resolve_file"))
-                            && f.filename
-                                .as_ref()
-                                .is_some_and(|n| n.ends_with("profiles.rs"))
-                            && f.line.is_some_and(|line| line > 0)
-                    })
-                });
-                let old = symbols.frames.get(&pc).map(Vec::as_ptr);
-                let mappings = symbols.mappings.clone();
-                symbols.refresh(&[pc]);
-                // Other tests may load GStreamer plugins concurrently. Reuse
-                // cached frames only when the executable mappings stayed put.
-                let _ = finished.send(
-                    valid
-                        && (mappings != symbols.mappings
-                            || old == symbols.frames.get(&pc).map(Vec::as_ptr)),
-                );
-            });
-            let mut probe = Probe {
-                start,
-                done,
-                passed: false,
-            };
-            // SAFETY: callback borrows probe only for the duration of this call.
-            unsafe {
-                libc::dl_iterate_phdr(Some(locked), (&mut probe as *mut Probe).cast());
-            }
-            worker.join().unwrap();
-            assert!(probe.passed, "symbolization must preserve file/line information without waiting for the loader lock");
-        }
-
-        #[test]
         fn full_or_failed_upload_queue_never_blocks_processing() {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             let counters = Counters::default();
@@ -1551,23 +1261,6 @@ mod linux {
                 Err(FlushError::ExportFailed)
             );
             assert_eq!(counters.dropped_upload.load(Relaxed), 5007);
-        }
-
-        #[test]
-        fn executable_map_parser_preserves_paths_and_offsets() {
-            let map =
-                Mapping::parse("00401000-00405000 r-xp 00001000 08:01 123 /a path/with  spaces.so")
-                    .unwrap();
-            assert_eq!(
-                (map.start, map.end, map.offset, map.inode),
-                (0x401000, 0x405000, 0x1000, 123)
-            );
-            assert_eq!(map.path, PathBuf::from("/a path/with  spaces.so"));
-            assert!(Mapping::parse(
-                "00401000-00405000 r-xp 00001000 08:01 123 /removed.so (deleted)"
-            )
-            .is_none());
-            assert!(Mapping::parse("00401000-00405000 rw-p 00001000 08:01 123 /data.so").is_none());
         }
 
         #[test]

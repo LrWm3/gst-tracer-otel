@@ -25,6 +25,7 @@ and original source/binary checksums are retained.
 - [Combined instrumentation measurements](otel/INSTRUMENT_RESULTS.md)
 - [Combined instrumentation on 1080p video, including profiles and logs](otel/INSTRUMENT_VIDEO_RESULTS.md)
 - [Current CPU profiling and log overhead on 1080p video](otel/PROFILE_VIDEO_RESULTS.md)
+- [Cold/warm symbolization and function-only memory costs](otel/PROFILE_VIDEO_RESULTS.md#symbolization-cost-and-cache-retention--2026-10-25)
 - [Element-attributed profiles: Grafana screenshots and validation](otel/PROFILE_ELEMENT_REVIEW.md)
 - [Grafana trace/profile correlation: provisioning and backend validation](otel/CORRELATION_REVIEW.md)
 - [Explicit signals and metric → trace → profile correlation validation](otel/SIGNALS_REVIEW.md)
