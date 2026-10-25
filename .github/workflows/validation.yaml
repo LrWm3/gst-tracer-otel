@@ -1,0 +1,118 @@
+name: Correlation and lifecycle validation
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      soak_seconds:
+        description: Native lifecycle soak duration per architecture
+        type: choice
+        options: ['120', '1800', '3600']
+        default: '1800'
+  # Exercise workflow edits promptly; ordinary source changes use the daily run.
+  push:
+    branches: [main]
+    paths: ['.github/workflows/validation.yaml']
+  pull_request:
+    paths: ['.github/workflows/validation.yaml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+  RUSTFLAGS: -C force-frame-pointers=yes
+
+jobs:
+  correlation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
+          rustup toolchain install stable --profile minimal --no-self-update
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/release
+          key: validation-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-fp-v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install the pinned browser driver
+        run: |
+          npm install --global agent-browser@0.31.1
+          agent-browser install --with-deps
+      - name: Start disposable backends
+        run: docker compose -f tracer/otel/bench/correlation/compose.yaml up -d
+      - name: Build the four-signal example
+        run: cargo build --locked --release -p gst-otel-tracer --features profiles --example profile_correlation
+      - name: Verify backend data and actual Grafana navigation
+        run: |
+          python3 tracer/otel/bench/correlation/check.py --showcase
+          python3 tracer/otel/bench/correlation/record.py --result target/correlation/result.json --dry-run
+      - name: Verify health alert rules
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/tracer/otel/bench/correlation:/work:ro" --workdir /work prom/prometheus:v3.3.0 test rules health-alerts.test.yaml
+      - name: Save backend logs and remove containers
+        if: always()
+        run: |
+          mkdir -p target/correlation
+          docker compose -f tracer/otel/bench/correlation/compose.yaml logs --no-color > target/correlation/backends.log
+          docker compose -f tracer/otel/bench/correlation/compose.yaml down --volumes
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: correlation-${{ github.run_id }}
+          path: |
+            target/correlation/*.json
+            target/correlation/*.log
+            target/correlation/video-logs/*.json
+            target/correlation/video-logs/*.png
+          retention-days: 14
+          if-no-files-found: warn
+
+  lifecycle:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    env:
+      SOAK_SECONDS: ${{ github.event_name == 'schedule' && '1800' || inputs.soak_seconds || '120' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
+          rustup toolchain install stable --profile minimal --no-self-update
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/release
+          key: validation-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-fp-v1
+      - name: Build and run native lifecycle validation
+        run: |
+          case "$SOAK_SECONDS" in 120|1800|3600) ;; *) exit 1 ;; esac
+          cargo build --locked --release -p gst-otel-tracer --features profiles --example lifecycle_soak
+          python3 tracer/otel/bench/lifecycle_soak.py --seconds "$SOAK_SECONDS" --output target/lifecycle-validation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lifecycle-${{ runner.arch }}-${{ github.run_id }}
+          path: |
+            target/lifecycle-validation/*.json
+            target/lifecycle-validation/*.log
+          retention-days: 14
+          if-no-files-found: warn

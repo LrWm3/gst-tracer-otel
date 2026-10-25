@@ -401,7 +401,7 @@ def main():
     print('Open metrics:', metrics_explore)
     print('Open logs:', logs_explore)
     print('Results:', args.output)
-    print('Browser click-through is a separate manual check; see the correlation guide.')
+    print('Browser click-through is checked separately by record.py; see the correlation guide.')
 
 
 if __name__ == '__main__':

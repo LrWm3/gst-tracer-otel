@@ -58,6 +58,34 @@ tests check metrics, traces, logs, and profile correlation. Profiler tests requi
 Linux x86-64 or AArch64. `cargo audit` and `cargo udeps` require the corresponding Cargo
 tools; `udeps` also requires a nightly toolchain.
 
+The [correlation and lifecycle workflow](.github/workflows/validation.yaml) runs
+daily at 04:23 UTC. It checks all four backends and actual Grafana navigation,
+then runs independent 30-minute native lifecycle soaks on x86-64 and ARM64.
+The soaks recreate pipelines and threads, exercise loader locks and collector
+outages/recovery, and verify delivery accounting and repeated shutdown. Failed
+profile uploads must match decoded receiver totals, rather than only reaching a
+local queue.
+
+Use **Actions → Correlation and lifecycle validation → Run workflow** to select
+a 2-, 30-, or 60-minute soak. Workflow edits run a two-minute smoke check. Logs,
+counter snapshots, backend responses and browser screenshots are retained as CI
+artifacts for 14 days; browser profiles are excluded. These checks use disposable
+local backends and do not contact private application environments. A finite
+soak does not establish production memory stability or eliminate every deadlock.
+
+To reproduce the lifecycle check locally:
+
+```sh
+RUSTFLAGS='-C force-frame-pointers=yes' cargo build --locked --release \
+  -p gst-otel-tracer --features profiles --example lifecycle_soak
+python3 tracer/otel/bench/lifecycle_soak.py --seconds 1800 \
+  --output target/lifecycle-validation
+```
+
+See the [Grafana demo guide](tracer/otel/CORRELATION.md#try-the-local-demo) for
+the backend and browser checks. Keep private application evidence outside the
+repository.
+
 The native caller-chain test additionally requires frame pointers and is run
 explicitly by [ARM CI](.github/workflows/profiles-arm64.yaml):
 

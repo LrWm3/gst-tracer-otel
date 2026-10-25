@@ -219,6 +219,12 @@ python3 tracer/otel/bench/correlation/render.py
 The demo creates fresh IDs each run; the video's Explore URLs expire with
 backend retention.
 
+The [daily validation workflow](../../.github/workflows/validation.yaml) runs the
+backend checker and browser recorder in `--dry-run` mode against a fresh stack.
+It retains JSON results, logs and screenshots as artifacts without changing the
+README recording. Workflow runs also exercise native lifecycle soaks on both
+supported CPU architectures; see [local reproduction and run controls](../../CONTRIBUTING.md#build-and-test).
+
 To remove the demo containers and their temporary data:
 
 ```sh
