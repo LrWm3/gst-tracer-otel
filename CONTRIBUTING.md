@@ -166,11 +166,13 @@ profiling optimizations.
 
 ### Performance and profiler lifetime
 
-- [ ] Increase sustained trace export throughput. Benchmark larger batches,
+- [x] Increase sustained trace export throughput. Benchmark larger batches,
   compression, and a small bounded number of concurrent requests against the
   serialized exporter. Compare local and delayed receivers, measuring loss,
   CPU, memory, and final drain time. A larger queue alone does not increase
   sustained throughput. Preserve bounded memory and cleanup behavior.
+  Optional gzip and 1–4 concurrent trace requests are implemented; the defaults
+  remain unchanged. See the [local/delayed receiver measurements](reports/otel/DIRECT_RESULTS.md#bounded-export-tuning--2026-10-25).
 - [x] Retire profile element descriptions safely after queued samples no longer
   reference them. The 4,096-description bound now applies to live and pending
   descriptions; IDs are never reused. Test beyond that limit without relabeling

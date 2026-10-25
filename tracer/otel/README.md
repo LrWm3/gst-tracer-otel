@@ -272,7 +272,9 @@ exclusive element processing time or end-to-end buffer latency.
 | `OTEL_TRACES_SAMPLER_ARG` | Required for ratio sampler | Finite number between 0 and 1 |
 | `GST_OTEL_QUEUE_CAPACITY` | 8192 | Pending compact records, 1–1048576 |
 | `GST_OTEL_BATCH_SIZE` | 512, capped by queue size | Worker batch, 1–queue capacity |
-| `GST_OTEL_HTTP_CLIENT` | blocking | `blocking` or `async`; both send one batch at a time |
+| `GST_OTEL_HTTP_CLIENT` | blocking | `blocking` or `async`; each request worker sends one batch at a time |
+| `GST_OTEL_EXPORT_CONCURRENCY` | 1 | Concurrent trace requests, 1–4; flush/shutdown wait for every earlier request |
+| `OTEL_EXPORTER_OTLP_COMPRESSION` | none | `none` or `gzip`; signal-specific `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_COMPRESSION` takes precedence |
 | `GST_OTEL_EXPORT_INTERVAL_MS` | 200 | Partial batch export interval, 1–60000 ms |
 | `GST_OTEL_FLUSH_TIMEOUT_MS` | 10000 | Pipeline-stop drain deadline, 1–60000 ms |
 | `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT` | 128 | 0–4096; omitted attributes increment OTLP's dropped count |
@@ -285,11 +287,14 @@ configure this worker; there is no SDK batch span processor. No events or links
 are currently produced. SDK span processors and custom global tracer providers
 do not intercept this export path.
 
-The memory bound is a queue plus one export batch, up to 256 nested frames per
+With the default serialized export, the memory bound is a queue plus one export
+batch. Concurrent export adds at most one batch per request worker, plus the
+dispatcher's accumulating batch; there is no additional waiting-job queue.
+Other bounds include up to 256 nested frames per
 streaming thread, and metadata for live pads/buffers. Counters and in-progress
 submission counts use 64 fixed, cache-aligned shards selected per thread;
 additional threads share shards safely, and retired threads leave their totals
-available without an accumulating registry. The worker's reusable OTLP buffers
+available without an accumulating registry. Each request worker's reusable OTLP buffers
 are bounded by the batch and a 64 MiB encoded request limit. Cached encoded
 attributes live with their descriptors; invalidation creates a new descriptor
 while pending records retain the old one. Thread and pipeline counts remain
@@ -302,6 +307,17 @@ Responses are consumed for connection reuse and capped
 at 4 MiB. Non-success HTTP status, request timeout, oversized responses, and
 encoded bodies over 64 MiB count the attempted trace batch as failed. A timeout can leave
 delivery uncertain, and collector acceptance does not guarantee durable storage.
+
+Larger batches amortize request latency; concurrency can help when a collector
+has spare capacity but each request is slow. Both increase temporary memory,
+and concurrent requests may complete out of order. Gzip reduces bytes sent at
+the cost of compression CPU and an additional compressed body per request.
+These options do not enlarge the capture queue or add retries. Metrics and logs
+retain one export worker each; the concurrency setting applies only to traces.
+Caller deadlines remain shared across signals, and timed-out cleanup continues
+on the workers so a later call can observe completion.
+See the [local and delayed receiver measurements](../../reports/otel/DIRECT_RESULTS.md#bounded-export-tuning--2026-10-25)
+before changing these defaults.
 
 ## Sampling
 

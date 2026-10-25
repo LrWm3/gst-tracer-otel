@@ -71,7 +71,8 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 Traces and OTLP metrics retain the standard
 `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,
 with fallback to generic OTLP settings. Signal-specific endpoint URLs are used
-literally. Use `http/protobuf` without compression. Profiles and OTLP signals
+literally. Use `http/protobuf`; compression defaults to `none`, with optional
+`OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. Profiles and OTLP signals
 share `OTEL_SERVICE_NAME`; other OTLP resource fields come from
 `OTEL_RESOURCE_ATTRIBUTES`. Trace sampling and queue controls are described in
 the [trace guide](README.md#configuration).

@@ -35,12 +35,25 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
     let stopping = stop.clone();
     let slow = mode == "slow";
     let fail = mode.ends_with("fail");
-    let response_mode = mode.strip_prefix("async-").unwrap_or(mode).to_owned();
+    let response_mode = response_mode(mode).to_owned();
     let receiver = std::thread::spawn(move || {
         while !stopping.load(Ordering::Relaxed) {
             if let Some(mut request) = server.recv_timeout(Duration::from_millis(20)).unwrap() {
                 let mut data = Vec::new();
                 request.as_reader().read_to_end(&mut data).unwrap();
+                if request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Content-Encoding") && h.value.as_str() == "gzip")
+                {
+                    use std::io::Read;
+                    let mut decoded = Vec::new();
+                    libflate::gzip::Decoder::new(data.as_slice())
+                        .unwrap()
+                        .read_to_end(&mut decoded)
+                        .unwrap();
+                    data = decoded;
+                }
                 if request.url() == "/v1/logs" {
                     let decoded = ExportLogsServiceRequest::decode(data.as_slice()).unwrap();
                     for resource in decoded.resource_logs {
@@ -157,6 +170,18 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
         .env("OTEL_TRACES_SAMPLER_ARG", ratio)
         .env("GST_OTEL_QUEUE_CAPACITY", if slow { "16" } else { "65536" })
         .env("GST_OTEL_BATCH_SIZE", if slow { "8" } else { "128" })
+        .env(
+            "GST_OTEL_EXPORT_CONCURRENCY",
+            if mode.contains("parallel") { "4" } else { "1" },
+        )
+        .env(
+            "OTEL_EXPORTER_OTLP_COMPRESSION",
+            if mode.contains("gzip") {
+                "gzip"
+            } else {
+                "none"
+            },
+        )
         .env("OTEL_TEST_PIPELINE", pipeline)
         .env("OTEL_TEST_MODE", mode)
         .output()
@@ -356,7 +381,7 @@ fn metadata_refreshes_after_rename() {
 
 #[test]
 fn trace_responses_account_for_rejections_and_warnings_without_retries() {
-    for adapter in ["", "async-"] {
+    for adapter in ["", "async-", "parallel-", "async-parallel-"] {
         for mode in [
             "partial",
             "reject",
@@ -373,6 +398,19 @@ fn trace_responses_account_for_rejections_and_warnings_without_retries() {
             );
             assert_eq!(complete_traces(&spans, 5), 100);
         }
+    }
+}
+
+fn response_mode(mode: &str) -> &str {
+    let mode = mode.strip_prefix("async-").unwrap_or(mode);
+    mode.strip_prefix("parallel-").unwrap_or(mode)
+}
+
+#[test]
+fn gzip_with_parallel_requests_preserves_complete_traces() {
+    for mode in ["parallel-gzip", "async-parallel-gzip"] {
+        let spans = collect(LINEAR, "parentbased_always_on", "1", mode);
+        assert_eq!(complete_traces(&spans, 5), 100);
     }
 }
 
@@ -441,7 +479,7 @@ fn pipeline_child() {
     );
     assert_eq!(stats.mismatched_hooks, 0);
     assert_eq!(stats.propagation_misses, 0, "{stats:?}");
-    match mode.strip_prefix("async-").unwrap_or(&mode) {
+    match response_mode(&mode) {
         "unsampled" => {
             assert_eq!(stats.started_spans, 0);
             assert_eq!(stats.unsampled_pushes, 2000);

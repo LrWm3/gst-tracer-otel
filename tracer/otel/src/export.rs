@@ -18,6 +18,8 @@ use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 use opentelemetry_sdk::Resource;
 
 use crate::capture::Record;
+#[path = "export_pool.rs"]
+mod pool;
 #[cfg(test)]
 use crate::capture::Token;
 
@@ -96,6 +98,7 @@ pub(crate) struct Config {
     pub traces: bool,
     pub queue_capacity: usize,
     pub batch_size: usize,
+    pub concurrency: usize,
     pub interval: Duration,
     pub flush_timeout: Duration,
     pub attribute_limit: usize,
@@ -109,6 +112,7 @@ impl Default for Config {
             traces: true,
             queue_capacity: 8192,
             batch_size: 512,
+            concurrency: 1,
             interval: Duration::from_millis(200),
             flush_timeout: Duration::from_secs(10),
             attribute_limit: 128,
@@ -166,6 +170,7 @@ impl Config {
             c.queue_capacity,
             false,
         )?;
+        c.concurrency = number("GST_OTEL_EXPORT_CONCURRENCY", 1, 4, false)?;
         c.interval = Duration::from_millis(number(
             "GST_OTEL_EXPORT_INTERVAL_MS",
             200,
@@ -232,6 +237,14 @@ pub(crate) struct ExportOutcome {
 }
 
 pub(crate) trait RecordExporter: Send + 'static {
+    fn fork(&self, _resource: &Resource) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        Err(std::io::Error::other(
+            "exporter does not support concurrent requests",
+        ))
+    }
     fn set_resource(&mut self, _resource: &Resource) {}
     fn export(
         &mut self,
@@ -246,6 +259,14 @@ pub(crate) trait RecordExporter: Send + 'static {
 
 pub(crate) struct OptionalExporter(pub Option<crate::transport::OtlpExporter>);
 impl RecordExporter for OptionalExporter {
+    fn fork(&self, resource: &Resource) -> std::io::Result<Self> {
+        self.0
+            .as_ref()
+            .map(|_| crate::transport::OtlpExporter::new(resource))
+            .transpose()
+            .map(Self)
+            .map_err(std::io::Error::other)
+    }
     fn export(
         &mut self,
         records: &[Record],
@@ -297,6 +318,17 @@ impl Runtime {
         let worker_config = config.clone();
         let worker_stats = stats.clone();
         let worker_anchor = anchor.clone();
+        let exporter = if config.traces {
+            Some(pool::BatchExporter::new(
+                exporter,
+                &config,
+                stats.clone(),
+                anchor.clone(),
+                &resource,
+            )?)
+        } else {
+            None
+        };
         let (finished, worker_done) = bounded(0);
         let worker = if config.traces {
             Some(
@@ -305,7 +337,7 @@ impl Runtime {
                     .spawn(move || {
                         let _finished = finished;
                         worker_loop(
-                            exporter,
+                            exporter.unwrap(),
                             receiver,
                             &worker_config,
                             &worker_stats,
@@ -575,7 +607,7 @@ pub(crate) fn span_data(
 }
 
 fn worker_loop<E: RecordExporter>(
-    mut exporter: E,
+    mut exporter: pool::BatchExporter<E>,
     receiver: Receiver<Message>,
     config: &Config,
     stats: &Counters,
@@ -612,8 +644,8 @@ fn worker_loop<E: RecordExporter>(
                 }
             }
             Ok(Message::Flush(reply)) => {
-                failed_since_flush |=
-                    export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
+                failed_since_flush |= exporter.submit(&mut batch, stats, anchor, config).is_err();
+                failed_since_flush |= exporter.drain().is_err();
                 let result = if failed_since_flush {
                     Err(FlushError::ExportFailed)
                 } else {
@@ -625,8 +657,7 @@ fn worker_loop<E: RecordExporter>(
                 continue;
             }
             Ok(Message::Shutdown(reply)) => {
-                failed_since_flush |=
-                    export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
+                failed_since_flush |= exporter.submit(&mut batch, stats, anchor, config).is_err();
                 failed_since_flush |= exporter.shutdown(config.flush_timeout).is_err();
                 let result = if failed_since_flush {
                     Err(FlushError::ExportFailed)
@@ -638,14 +669,13 @@ fn worker_loop<E: RecordExporter>(
                 break;
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                let _ = export_batch(&mut exporter, &mut batch, stats, anchor, config);
+                let _ = exporter.submit(&mut batch, stats, anchor, config);
                 let _ = exporter.shutdown(config.flush_timeout);
                 break;
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
         }
-        failed_since_flush |=
-            export_batch(&mut exporter, &mut batch, stats, anchor, config).is_err();
+        failed_since_flush |= exporter.submit(&mut batch, stats, anchor, config).is_err();
         deadline = Instant::now() + config.interval;
         drained = 0;
     }

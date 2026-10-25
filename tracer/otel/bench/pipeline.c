@@ -118,7 +118,9 @@ int main(int argc, char **argv) {
   GstMessage *msg = gst_bus_timed_pop_filtered(bus, 45 * GST_SECOND, GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
   guint64 elapsed = gst_util_get_timestamp() - start;
   int result = (!msg || GST_MESSAGE_TYPE(msg) != GST_MESSAGE_EOS) ? 5 : 0;
+  guint64 null_start = gst_util_get_timestamp();
   gst_element_set_state(pipeline, GST_STATE_NULL);
+  guint64 null_ns = gst_util_get_timestamp() - null_start;
   GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink0");
   GstPad *pad = sink ? gst_element_get_static_pad(sink, "sink") : NULL;
   int refs = pad ? GST_OBJECT_REFCOUNT_VALUE(pad) : -1;
@@ -146,9 +148,9 @@ int main(int argc, char **argv) {
   g_free(streams);
   printf("RESULT max_rss_kb=%lu elapsed_ns=%" G_GUINT64_FORMAT " stream_cpu_ns=%" G_GUINT64_FORMAT
          " process_cpu_ns=%" G_GUINT64_FORMAT " exporter_cpu_ns=%" G_GUINT64_FORMAT
-         " sink_pad_refs=%d status=%d\n", peak_rss_kb(), elapsed, stream_cpu,
+         " null_ns=%" G_GUINT64_FORMAT " sink_pad_refs=%d status=%d\n", peak_rss_kb(), elapsed, stream_cpu,
          cpu_time(CLOCK_PROCESS_CPUTIME_ID) - process_start,
-         exporter_ticks() * 1000000000 / sysconf(_SC_CLK_TCK), refs, result);
+         exporter_ticks() * 1000000000 / sysconf(_SC_CLK_TCK), null_ns, refs, result);
   GList *tracers = gst_tracing_get_active_tracers();
   for (GList *item = tracers; item; item = item->next) {
     if (g_object_class_find_property(G_OBJECT_GET_CLASS(item->data), "stats")) {

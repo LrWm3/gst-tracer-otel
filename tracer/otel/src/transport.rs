@@ -1,4 +1,4 @@
-//! A single bounded OTLP/HTTP request at a time, with reference-counted bodies.
+//! One bounded OTLP/HTTP request per worker, with reference-counted bodies.
 //! Shared by traces, metrics, and logs. Trace encoding is in wire.rs.
 use crate::{
     capture::Record,
@@ -23,6 +23,7 @@ struct Settings {
     headers: HeaderMap,
     timeout: Duration,
     asynchronous: bool,
+    gzip: bool,
 }
 impl Settings {
     fn read(signal: &str, get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
@@ -33,9 +34,11 @@ impl Settings {
         if setting("PROTOCOL").is_some_and(|p| !p.is_empty() && p != "http/protobuf") {
             return Err("OTLP export requires http/protobuf".into());
         }
-        if setting("COMPRESSION").is_some_and(|p| !p.is_empty() && p != "none") {
-            return Err("OTLP compression is not enabled in this build".into());
-        }
+        let gzip = match setting("COMPRESSION").as_deref() {
+            None | Some("" | "none") => false,
+            Some("gzip") => true,
+            _ => return Err("OTLP compression must be none or gzip".into()),
+        };
         let endpoint = if let Some(url) =
             get(&format!("OTEL_EXPORTER_OTLP_{signal}_ENDPOINT")).filter(|s| !s.is_empty())
         {
@@ -86,6 +89,13 @@ impl Settings {
             CONTENT_TYPE,
             HeaderValue::from_static("application/x-protobuf"),
         );
+        headers.remove(reqwest::header::CONTENT_ENCODING);
+        if gzip {
+            headers.insert(
+                reqwest::header::CONTENT_ENCODING,
+                HeaderValue::from_static("gzip"),
+            );
+        }
         let asynchronous = match get("GST_OTEL_HTTP_CLIENT").as_deref() {
             None | Some("blocking") => false,
             Some("async") => true,
@@ -101,6 +111,7 @@ impl Settings {
             headers,
             timeout: Duration::from_millis(timeout),
             asynchronous,
+            gzip,
         })
     }
 }
@@ -149,6 +160,19 @@ impl HttpExporter {
     }
     pub fn send_response(&self, body: Bytes) -> Result<Vec<u8>, FlushError> {
         let _work = gst_mars_metrics_core::monitoring::work(self.settings.stage, body.len(), 0);
+        let body = if self.settings.gzip {
+            use std::io::Write;
+            let mut gzip =
+                libflate::gzip::Encoder::new(Vec::new()).map_err(|_| FlushError::ExportFailed)?;
+            gzip.write_all(&body)
+                .map_err(|_| FlushError::ExportFailed)?;
+            gzip.finish()
+                .into_result()
+                .map_err(|_| FlushError::ExportFailed)?
+                .into()
+        } else {
+            body
+        };
         let failed = |_| FlushError::ExportFailed;
         match &self.client {
             Client::Blocking(client) => {
@@ -256,6 +280,59 @@ mod tests {
         })
     }
     #[test]
+    fn gzip_round_trips_all_signals_with_both_http_adapters() {
+        use std::io::Read;
+        for signal in ["TRACES", "METRICS", "LOGS"] {
+            for mode in ["blocking", "async"] {
+                let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+                let endpoint = format!("http://{}", server.server_addr());
+                let body = vec![42u8; 8192];
+                let expected = body.clone();
+                let receiver = std::thread::spawn(move || {
+                    let mut request = server
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap();
+                    assert!(request
+                        .headers()
+                        .iter()
+                        .any(|h| h.field.equiv("Content-Encoding") && h.value.as_str() == "gzip"));
+                    let mut compressed = Vec::new();
+                    request.as_reader().read_to_end(&mut compressed).unwrap();
+                    assert!(compressed.len() < expected.len());
+                    let mut decoded = Vec::new();
+                    libflate::gzip::Decoder::new(compressed.as_slice())
+                        .unwrap()
+                        .read_to_end(&mut decoded)
+                        .unwrap();
+                    assert_eq!(decoded, expected);
+                    request
+                        .respond(tiny_http::Response::from_data(b"response".to_vec()))
+                        .unwrap();
+                });
+                let settings = Settings::read(signal, |key| match key {
+                    "OTEL_EXPORTER_OTLP_ENDPOINT" => Some(endpoint.clone()),
+                    "OTEL_EXPORTER_OTLP_COMPRESSION" => Some("gzip".into()),
+                    "GST_OTEL_HTTP_CLIENT" => Some(mode.into()),
+                    _ => None,
+                })
+                .unwrap();
+                let client = HttpExporter::with_settings(settings).unwrap();
+                assert_eq!(client.send_response(body.into()).unwrap(), b"response");
+                receiver.join().unwrap();
+            }
+        }
+        let override_ = settings(&[
+            ("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip"),
+            ("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none"),
+        ])
+        .unwrap();
+        assert!(!override_.gzip);
+        assert!(!override_
+            .headers
+            .contains_key(reqwest::header::CONTENT_ENCODING));
+    }
+    #[test]
     fn endpoint_headers_timeout_and_transport_follow_signal_precedence() {
         let base = settings(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "https://host/prefix/")]).unwrap();
         assert_eq!(base.endpoint.as_str(), "https://host/prefix/v1/traces");
@@ -286,7 +363,7 @@ mod tests {
         for (key, value) in [
             ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "bad"),
             ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
-            ("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip"),
+            ("OTEL_EXPORTER_OTLP_COMPRESSION", "brotli"),
             ("GST_OTEL_HTTP_CLIENT", "typo"),
         ] {
             assert!(settings(&[(key, value)]).is_err());

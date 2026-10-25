@@ -26,15 +26,15 @@ pyroscope = { version = "=2.1.2", optional = true }
 libc = "0.2"
 addr2line = { version = "0.27.1", optional = true }
 object = { version = "0.40", default-features = false, features = ["read", "std"], optional = true }
-# Decode gzip uploads in feature-gated integration tests; also used by Pyroscope.
-libflate = { version = "2", optional = true }
+# OTLP request compression; also used to decode Pyroscope test uploads.
+libflate = "2"
 [dev-dependencies]
 futures-executor = "0.3"
 
 [features]
 noop = []
 capi = []
-profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "dep:libflate", "gstreamer/v1_22"]
+profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "gstreamer/v1_22"]
 
 [[example]]
 name = "profile_video"

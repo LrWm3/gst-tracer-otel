@@ -20,6 +20,7 @@ and original source/binary checksums are retained.
 - [Compact capture follow-up](otel/FOLLOWUP_RESULTS.md)
 - [OpenTelemetry SDK upgrade](otel/UPGRADE_RESULTS.md)
 - [Direct OTLP encoding](otel/DIRECT_RESULTS.md)
+- [Batch size, gzip and bounded trace-export concurrency](otel/DIRECT_RESULTS.md#bounded-export-tuning--2026-10-25)
 - [Capture propagation](otel/CAPTURE_RESULTS.md)
 - [Rejected-push overhead](otel/REJECTED_RESULTS.md)
 - [Combined instrumentation measurements](otel/INSTRUMENT_RESULTS.md)

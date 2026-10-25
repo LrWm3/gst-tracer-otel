@@ -236,3 +236,45 @@ with `git apply --unidiff-zero` to this branch in a separate checkout, format/bu
 it, and compare the two
 plugins using identical 512/blocking settings. The patch is experimental evidence,
 not an additional patch required to build the normal tracer.
+
+## Bounded export tuning — 2026-10-25
+
+Traces now support optional `GST_OTEL_EXPORT_CONCURRENCY=1..4` (default 1). Each request worker has its own encoder/client, with no waiting-job queue; capture still uses the existing bounded FIFO. Flush/shutdown barriers wait for every earlier request, including out-of-order completions. Standard OTLP `none|gzip` request compression is supported for traces, metrics and logs. Metrics/log export remains serialized. Partial acceptance is accounted per request without retries.
+
+The defaults remain **512 spans, one request, no compression**. Against a receiver with 50 ms added request latency, increasing batches to 2048 eliminated loss in this workload with less memory than four concurrent 512-span requests. Gzip reduced bytes by about 90%, but approximately doubled process CPU on the local receiver; it is a bandwidth tradeoff. More concurrency is useful only when the collector can handle parallel work.
+
+The synthetic workload emits 10,000 buffers through five push sites, with a 100 µs pause per buffer: 50,000 spans per run. Each configuration used one discarded warm-up and three measured repetitions in rotating order, an 8192-record queue, a 200 ms partial-batch interval, and a persistent local HTTP receiver on a separate CPU. The delayed case adds 50 ms per request and permits concurrent requests. This is a sustained, paced trace-delivery test, not a video-pipeline overhead estimate.
+
+All values below are medians. CPU covers PLAYING through NULL; startup is excluded. NULL includes the final trace drain. Peak RSS covers the entire child. Receiver CPU/storage are excluded.
+
+| Receiver delay | Batch | Compression | Concurrency | Accepted / 50,000 | Process CPU | Peak RSS | Final NULL/drain | Wire bytes |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 512 | none | 1 | 50,000 | 188.5 ms | 16.92 MiB | 0.81 ms | 28.86 MiB |
+| 0 ms | 2048 | none | 1 | 50,000 | 187.8 ms | 18.68 MiB | 1.57 ms | 28.85 MiB |
+| 0 ms | 512 | gzip | 1 | 50,000 | 413.1 ms | 19.52 MiB | 2.75 ms | 2.92 MiB |
+| 0 ms | 512 | none | 4 | 50,000 | 197.9 ms | 20.00 MiB | 0.89 ms | 28.91 MiB |
+| 0 ms | 2048 | none | 4 | 50,000 | 193.7 ms | 27.33 MiB | 1.47 ms | 28.89 MiB |
+| 0 ms | 2048 | gzip | 4 | 50,000 | 398.8 ms | 54.18 MiB | 5.69 ms | 2.87 MiB |
+| 50 ms | 512 | none | 1 | 24,064 | 101.8 ms | 16.93 MiB | 833.89 ms | 13.88 MiB |
+| 50 ms | 2048 | none | 1 | 50,000 | 120.7 ms | 18.68 MiB | 78.03 ms | 28.85 MiB |
+| 50 ms | 512 | gzip | 1 | 23,230 | 208.3 ms | 19.47 MiB | 916.34 ms | 1.35 MiB |
+| 50 ms | 512 | none | 4 | 50,000 | 197.5 ms | 20.00 MiB | 51.74 ms | 28.91 MiB |
+| 50 ms | 2048 | none | 4 | 50,000 | 192.3 ms | 27.27 MiB | 52.09 ms | 28.89 MiB |
+| 50 ms | 2048 | gzip | 4 | 50,000 | 398.1 ms | 53.28 MiB | 56.11 ms | 2.87 MiB |
+
+Every accepted span was decoded at the receiver, with zero pending spans or failed requests after drain. Missing spans in the two delayed 512-span/one-request cases were explicitly counted as queue-full drops. Their lower CPU and bytes reflect lost work, not better efficiency. Four concurrent 512-span requests reached four simultaneous receiver operations; 2048-span requests needed at most two at this producer rate. On the local receiver only one request was active at a time, so added concurrency gave no throughput benefit. The delayed default lost about 52% of generated spans; either 2048-span batches or four concurrent 512-span requests delivered all 50,000 in every measured repetition.
+
+Concurrency adds one in-flight batch/encoder per worker plus the dispatcher batch. Gzip adds compressed-body and compressor allocations. The four-worker/2048/gzip case peaked near **54 MiB**, versus about **17 MiB** for the default. Queue growth alone would only postpone sustained overload. These results do not establish optimal settings for a remote collector or an application that produces bursts at a different rate.
+
+Unit and decoded-receiver tests cover gzip on all three OTLP signals and both HTTP adapters, four independently blocked requests, out-of-order completion, partial/all rejection, malformed responses, exporter panic accounting, repeated cleanup deadlines, and no duplicate delivery. All required formatting, Clippy, test, audit and dependency-use checks passed; audit retains the existing allowed Tokio advisory.
+
+Raw [CSV](export-throughput/2026-10-25/results.csv), [source/build settings](export-throughput/2026-10-25/metadata.json), and per-run counter output are retained. Reproduce from the repository root:
+
+```sh
+cargo build --release -p gst-otel-tracer --features profiles
+mkdir -p target/otel-bench
+cc -O2 -Wall -Wextra tracer/otel/bench/pipeline.c -o target/otel-bench/pipeline \
+  $(pkg-config --cflags --libs gstreamer-1.0)
+python3 tracer/otel/bench/export_throughput.py \
+  --output reports/otel/export-throughput/recheck
+```
