@@ -196,14 +196,19 @@ successful server ingestion.
 
 ## Measured overhead
 
-The [1080p video comparison](../../reports/otel/PROFILE_VIDEO_RESULTS.md)
-measures profiles-only against an untraced baseline and `mars-otel` with profiles
-and logs. It includes CPU work, peak memory, delivery checks, and the observed
-timing variability. Results use 100 Hz sampling and the stock native libraries;
-different workloads, sample rates, and debug symbols can change the cost.
-Those measurements predate element attribution. The
-[element review](../../reports/otel/PROFILE_ELEMENT_REVIEW.md) includes a matched
-attribution-on/off check.
+The current [1080p signal matrix](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
+uses 100 Hz profiles with element attribution enabled. It measures profiles-only,
+full instrumentation, compatibility presets, and each monitoring level, including
+CPU, steady/peak memory, delivery checks, and shutdown. Profiles-only added about
+2% CPU cycles and 42 MiB peak RSS on that workload; the report retains the run
+variation. Different pipelines, sample rates, native libraries, and debug symbols
+can change these costs.
+
+The [profiling report](../../reports/otel/PROFILE_VIDEO_RESULTS.md) also retains
+older comparisons, symbolization measurements, and native lifecycle soaks.
+Its historical pre-attribution results are separate from the current matrix.
+The [element review](../../reports/otel/PROFILE_ELEMENT_REVIEW.md) includes a
+matched attribution-on/off check.
 
 With attribution enabled, the [check on an integrated memory nvidia device](../../reports/otel/ARM64_PROFILES.md)
 measured approximately 1.3% extra process CPU time for profiles-only and 3.1% for

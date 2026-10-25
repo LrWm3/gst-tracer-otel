@@ -221,9 +221,11 @@ collector with an explicit signal list, and update dashboards to its metric
 names and labels. The old histogram limits and CPU-only sample setting do not
 configure the full collector.
 
-Existing [video overhead measurements](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md)
-cover those compatibility defaults. Full-metrics signal configurations have not
-yet been benchmarked; their costs should be measured on the target workload.
+The current [18-configuration video matrix](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
+covers full metrics, compatibility defaults, all signal combinations tested,
+and `none`/`core`/`all` monitoring. It includes CPU, memory, delivery, and shutdown
+measurements. Use its rounded costs for planning and measure the target workload;
+older compatibility-only results remain separately labeled in the report.
 Tests exercise both exporters, actual list/pull/queue measurements, trace links,
 disabled settings, collector rejection, and bounded shutdown. Feature-enabled
 tests also match exemplars to real uploaded CPU samples and log records.
