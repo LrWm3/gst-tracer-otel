@@ -44,6 +44,7 @@ pub use metrics::MetricStats;
 pub use profiles::{profile_stats, ProfileStats};
 #[cfg(feature = "profiles")]
 pub use profiletracer::ProfilesTracer;
+pub use propagation::propagate_input_contexts;
 pub use tracer::{InstrumentTracer, TelemetryTracer};
 
 /// Drain traces, logs, profiles and snapshot cumulative metrics, bounded by `timeout`.

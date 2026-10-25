@@ -1,6 +1,6 @@
 //! Owned trace tokens in buffer metadata. Metadata transformations clone ownership.
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 
 use glib::translate::IntoGlib;
 use gstreamer::{self as gst};
@@ -8,10 +8,72 @@ use gstreamer::{self as gst};
 use crate::capture::Token;
 use crate::export::Counters;
 
+// Bounded by input count, never by pipeline lifetime. The usual single-input
+// buffer carries no allocation. Links are immutable once published in metadata.
+pub(crate) const MAX_LINKS: usize = 8;
+#[derive(Clone, Default)]
+pub(crate) struct Links {
+    pub tokens: Vec<Token>,
+    pub dropped: u32,
+}
+impl Links {
+    pub fn insert(&mut self, token: &Token, parent: &Token) {
+        if token.trace_id == opentelemetry::trace::TraceId::INVALID
+            || token.span_id == opentelemetry::trace::SpanId::INVALID
+            || same_span(token, parent)
+            || self.tokens.iter().any(|t| same_span(t, token))
+        {
+            return;
+        }
+        if self.tokens.len() < MAX_LINKS {
+            self.tokens.push(token.clone());
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+    pub fn extend(&mut self, input: &Input, parent: &Token) {
+        self.insert(&input.token, parent);
+        if let Some(links) = &input.links {
+            for token in &links.tokens {
+                self.insert(token, parent);
+            }
+            self.dropped = self.dropped.saturating_add(links.dropped);
+        }
+    }
+    pub fn finish(self) -> Option<Arc<Self>> {
+        (!self.tokens.is_empty() || self.dropped != 0).then(|| Arc::new(self))
+    }
+    pub fn sdk(&self) -> opentelemetry_sdk::trace::SpanLinks {
+        let mut links = opentelemetry_sdk::trace::SpanLinks::default();
+        links.links = self
+            .tokens
+            .iter()
+            .map(|t| opentelemetry::trace::Link::new(t.context(), vec![], 0))
+            .collect();
+        links.dropped_count = self.dropped;
+        links
+    }
+}
+fn same_span(a: &Token, b: &Token) -> bool {
+    a.trace_id == b.trace_id && a.span_id == b.span_id
+}
+#[derive(Clone)]
+pub(crate) struct Input {
+    pub token: Token,
+    pub links: Option<Arc<Links>>,
+}
+impl Input {
+    fn merge(&mut self, other: &Input) {
+        let mut links = self.links.as_deref().cloned().unwrap_or_default();
+        links.extend(other, &self.token);
+        self.links = links.finish();
+    }
+}
+
 #[repr(C)]
 struct ContextMeta {
     meta: gst::ffi::GstMeta,
-    token: std::mem::ManuallyDrop<Token>,
+    input: std::mem::ManuallyDrop<Input>,
     // Shared roots may override the immutable common ancestor. Keep that rare
     // state with the meta so normal reads/writes never consult mini-object qdata.
     shared: std::mem::ManuallyDrop<OnceLock<Box<Fallback>>>,
@@ -21,7 +83,7 @@ fn api() -> glib::ffi::GType {
     static API: OnceLock<glib::ffi::GType> = OnceLock::new();
     *API.get_or_init(|| unsafe {
         let mut tags = [std::ptr::null()];
-        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV3API".as_ptr(), tags.as_mut_ptr())
+        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV4API".as_ptr(), tags.as_mut_ptr())
     })
 }
 fn info() -> *const gst::ffi::GstMetaInfo {
@@ -30,7 +92,7 @@ fn info() -> *const gst::ffi::GstMetaInfo {
     *INFO.get_or_init(|| unsafe {
         gst::ffi::gst_meta_register(
             api(),
-            c"GstOtelContextV3".as_ptr(),
+            c"GstOtelContextV4".as_ptr(),
             std::mem::size_of::<ContextMeta>(),
             Some(init),
             Some(free),
@@ -49,8 +111,8 @@ unsafe extern "C" fn init(
         (*(params as *const Token)).clone()
     };
     std::ptr::write(
-        std::ptr::addr_of_mut!((*(meta as *mut ContextMeta)).token),
-        std::mem::ManuallyDrop::new(token),
+        std::ptr::addr_of_mut!((*(meta as *mut ContextMeta)).input),
+        std::mem::ManuallyDrop::new(Input { token, links: None }),
     );
     std::ptr::write(
         std::ptr::addr_of_mut!((*(meta as *mut ContextMeta)).shared),
@@ -59,7 +121,7 @@ unsafe extern "C" fn init(
     glib::ffi::GTRUE
 }
 unsafe extern "C" fn free(meta: *mut gst::ffi::GstMeta, _: *mut gst::ffi::GstBuffer) {
-    std::mem::ManuallyDrop::drop(&mut (*(meta as *mut ContextMeta)).token);
+    std::mem::ManuallyDrop::drop(&mut (*(meta as *mut ContextMeta)).input);
     std::mem::ManuallyDrop::drop(&mut (*(meta as *mut ContextMeta)).shared);
 }
 unsafe extern "C" fn transform(
@@ -69,21 +131,34 @@ unsafe extern "C" fn transform(
     _: glib::ffi::GQuark,
     _: glib::ffi::gpointer,
 ) -> glib::ffi::gboolean {
-    let token =
-        read_raw(source).unwrap_or_else(|| Token::clone(&(*(meta as *const ContextMeta)).token));
-    // Avoid duplicating a context if an element combines metadata from inputs.
-    // Multi-input causality needs element-specific links; retain the first input.
-    if !gst::ffi::gst_buffer_get_meta(dest, api()).is_null() {
+    let input =
+        read_raw(source).unwrap_or_else(|| Input::clone(&(*(meta as *const ContextMeta)).input));
+    let existing = gst::ffi::gst_buffer_get_meta(dest, api()) as *mut ContextMeta;
+    if !existing.is_null() {
+        // A metadata-copy destination is writable. Preserve the first parent,
+        // adding bounded links for other inputs rather than another ContextMeta.
+        let mut first = read_raw(dest).unwrap();
+        first.merge(&input);
+        let existing = &mut *existing;
+        if let Some(shared) = existing.shared.get() {
+            *shared.token.write().unwrap() = None;
+        }
+        *existing.input = first;
         return glib::ffi::GTRUE;
     }
-    install_meta(dest, &token).into_glib()
+    if !install_meta(dest, &input.token) {
+        return glib::ffi::GFALSE;
+    }
+    let dest_meta = gst::ffi::gst_buffer_get_meta(dest, api()) as *mut ContextMeta;
+    *(*dest_meta).input = input;
+    glib::ffi::GTRUE
 }
 
 // Initially shared buffers without our meta still need a qdata sidecar. Pointers
 // remain stable until buffer destruction. INSTALL_LOCK covers first installation;
 // GStreamer's qdata getter also takes its own global lock on every lookup.
 static FALLBACK_QUARK: LazyLock<glib::Quark> =
-    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v3"));
+    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v4"));
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 struct Fallback {
     token: RwLock<Option<Token>>,
@@ -122,29 +197,74 @@ unsafe fn install_meta(buffer: *mut gst::ffi::GstBuffer, token: &Token) -> bool 
     !gst::ffi::gst_buffer_add_meta(buffer, info(), token as *const Token as *mut _).is_null()
 }
 
-unsafe fn read_raw(buffer: *mut gst::ffi::GstBuffer) -> Option<Token> {
+unsafe fn read_raw(buffer: *mut gst::ffi::GstBuffer) -> Option<Input> {
     let meta = gst::ffi::gst_buffer_get_meta(buffer, api()) as *const ContextMeta;
     if !meta.is_null() {
         if let Some(shared) = (*meta).shared.get() {
             if let Some(token) = &*shared.token.read().unwrap() {
-                return Some(token.clone());
+                return Some(Input {
+                    token: token.clone(),
+                    links: None,
+                });
             }
         }
-        return Some(Token::clone(&(*meta).token));
+        return Some(Input::clone(&(*meta).input));
     }
     // The caller's buffer reference keeps this permanently installed slot alive.
     let sidecar = gst::ffi::gst_mini_object_get_qdata(buffer.cast(), FALLBACK_QUARK.into_glib())
         as *const Fallback;
     if let Some(sidecar) = sidecar.as_ref() {
         if let Some(token) = &*sidecar.token.read().unwrap() {
-            return Some(token.clone());
+            return Some(Input {
+                token: token.clone(),
+                links: None,
+            });
         }
     }
     None
 }
 
 pub(crate) fn read(buffer: &gst::Buffer) -> Option<Token> {
+    read_input(buffer).map(|input| input.token)
+}
+
+pub(crate) fn read_input(buffer: &gst::BufferRef) -> Option<Input> {
     unsafe { read_raw(buffer.as_ptr() as *mut _) }
+}
+
+/// Explicit propagation for aggregators whose outputs do not copy input metadata.
+/// The first known input supplies the parent/sampling decision; other inputs
+/// become links (up to eight). Missing inputs never cause a fresh sampled root.
+/// Returns the number of inputs with known context, including rejected contexts.
+pub fn propagate_input_contexts(output: &mut gst::BufferRef, inputs: &[&gst::BufferRef]) -> usize {
+    let mut merged: Option<Input> = None;
+    let mut count = 0;
+    for input in inputs.iter().filter_map(|buffer| read_input(buffer)) {
+        count += 1;
+        match &mut merged {
+            Some(first) => first.merge(&input),
+            first @ None => *first = Some(input),
+        }
+    }
+    let input = merged.unwrap_or(Input {
+        token: Token::rejected(),
+        links: None,
+    });
+    unsafe {
+        let ptr = output.as_mut_ptr();
+        let mut meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
+        if meta.is_null() {
+            if !install_meta(ptr, &input.token) {
+                return 0;
+            }
+            meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
+        }
+        if let Some(shared) = (*meta).shared.get() {
+            *shared.token.write().unwrap() = None;
+        }
+        *(*meta).input = input;
+    }
+    count
 }
 
 pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters: &Counters) {
@@ -161,12 +281,14 @@ pub(crate) fn write(buffer: &gst::Buffer, token: &Token, is_root: bool, counters
                 if let Some(shared) = (*meta).shared.get() {
                     *shared.token.write().unwrap() = None;
                 }
+                let input = &mut *(*meta).input;
+                input.links = None;
                 // No outstanding borrowed token escapes read(); buffer writability
                 // excludes concurrent access to its metadata.
                 // Rejected descendants carry the same decision and identity.
                 // Compare the owned token, never just the recyclable buffer address.
-                if is_root || token.sampled() || *(*meta).token != *token {
-                    *(*meta).token = token.clone();
+                if is_root || token.sampled() || input.token != *token {
+                    input.token = token.clone();
                 }
             }
         } else {
@@ -209,6 +331,93 @@ mod tests {
                 TraceState::from_key_value([("vendor", "state")]).unwrap(),
             )),
         }
+    }
+
+    #[test]
+    fn fan_in_copy_and_explicit_api_preserve_one_parent_and_bounded_owned_links() {
+        gst::init().unwrap();
+        let stats = Counters::default();
+        let inputs: Vec<_> = (1..=12)
+            .map(|id| {
+                let buffer = gst::Buffer::new();
+                write(&buffer, &token(id), true, &stats);
+                buffer
+            })
+            .collect();
+        let mut output = gst::Buffer::new();
+        for input in &inputs {
+            input
+                .copy_into(output.get_mut().unwrap(), gst::BufferCopyFlags::META, ..)
+                .unwrap();
+        }
+        // Repeating a retained context does not add a duplicate or a drop.
+        inputs[1]
+            .copy_into(output.get_mut().unwrap(), gst::BufferCopyFlags::META, ..)
+            .unwrap();
+        let merged = read_input(&output).unwrap();
+        assert_eq!(merged.token.span_id, SpanId::from(1));
+        let links = merged.links.unwrap();
+        assert_eq!(links.tokens.len(), MAX_LINKS);
+        assert_eq!(links.dropped, 3);
+        let refs: Vec<_> = inputs.iter().map(|b| b.as_ref()).collect();
+        let mut explicit = gst::Buffer::new();
+        assert_eq!(
+            propagate_input_contexts(explicit.get_mut().unwrap(), &refs),
+            12
+        );
+        assert_eq!(
+            read_input(&explicit).unwrap().links.unwrap().tokens,
+            links.tokens
+        );
+        let copy = output.copy_deep().unwrap();
+        drop(inputs);
+        drop(output);
+        assert_eq!(
+            read_input(&copy).unwrap().links.unwrap().tokens,
+            links.tokens
+        );
+        let weak = Arc::downgrade(&links);
+        drop(links);
+        write(&copy, &token(99), false, &stats);
+        assert!(read_input(&copy).unwrap().links.is_none());
+        assert!(
+            weak.upgrade().is_none(),
+            "consuming the last meta releases its link set"
+        );
+        assert_eq!(
+            propagate_input_contexts(explicit.get_mut().unwrap(), &[]),
+            0
+        );
+        assert!(!read(&explicit).unwrap().sampled());
+        assert!(read_input(&explicit).unwrap().links.is_none());
+    }
+
+    #[test]
+    fn fan_in_keeps_rejection_and_shared_root_override_clears_old_links() {
+        gst::init().unwrap();
+        let stats = Counters::default();
+        let rejected = gst::Buffer::new();
+        write(&rejected, &Token::rejected(), true, &stats);
+        let sampled = gst::Buffer::new();
+        write(&sampled, &token(2), true, &stats);
+        let mut output = gst::Buffer::new();
+        propagate_input_contexts(output.get_mut().unwrap(), &[&rejected, &sampled]);
+        assert!(!read(&output).unwrap().sampled());
+        assert_eq!(read_input(&output).unwrap().links.unwrap().tokens.len(), 1);
+        let shared = output.clone();
+        write(&shared, &token(3), true, &stats);
+        assert!(read_input(&output).unwrap().links.is_none());
+        assert!(read_input(&output.copy()).unwrap().links.is_none());
+        // Copying only memory deliberately strips our metadata.
+        let mut stripped = gst::Buffer::new();
+        output
+            .copy_into(
+                stripped.get_mut().unwrap(),
+                gst::BufferCopyFlags::MEMORY,
+                ..,
+            )
+            .unwrap();
+        assert!(read(&stripped).is_none());
     }
 
     #[test]

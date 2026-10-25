@@ -600,7 +600,10 @@ pub(crate) fn span_data(
         attributes,
         dropped_attributes_count: dropped as u32,
         events: Default::default(),
-        links: Default::default(),
+        links: record
+            .links
+            .as_ref()
+            .map_or_else(Default::default, |links| links.sdk()),
         status: record
             .operation
             .error(record.flow_return)
@@ -803,6 +806,7 @@ pub(crate) mod tests {
             buffer_id: 123,
             buffer_size: 256,
             list_len: None,
+            links: None,
             thread: Arc::new(ThreadInfo {
                 encoded: Default::default(),
                 id: "thread1".into(),

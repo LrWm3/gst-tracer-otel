@@ -160,6 +160,9 @@ one-to-one to video frames. Elements must preserve buffer metadata across
 asynchronous boundaries. A buffer-list push creates one `gst.pad.push_list`
 span with `buffer.list.length` and total `buffer.size`, then propagates that
 context to its members. A later individual push can inherit the list span.
+Batches and outputs combining input metadata preserve one parent and up to eight
+span links for other known inputs. Links do not change sampling decisions or
+recover metadata that an element discarded; see [correlation boundaries](README.md#correlation-boundaries).
 A locally rejected trace
 cannot replace an exemplar. Later export failure or backend retention can still
 leave a missing trace, and short spans may have no CPU samples.

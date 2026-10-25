@@ -203,8 +203,11 @@ profiling optimizations.
   propagates its context to every member. Queue-crossing tests cover list and
   individual-buffer descendants, sampled/unsampled paths, both metric formats,
   shared lists, empty lists, and failed calls.
-- [ ] Add span links for fan-in and batched inputs, with explicit limits and
-  documented behavior when elements replace buffers or strip metadata.
+- [x] Add span links for fan-in and batched inputs, with explicit limits and
+  documented behavior when elements replace buffers or strip metadata. Metadata
+  merges and buffer lists preserve up to eight other input contexts; custom Rust
+  aggregators can explicitly propagate their inputs. Tests cover deduplication,
+  loss counts, rejected sampling, shared/recycled buffers, and wire encoding.
 - [ ] Investigate per-buffer queue residence measurements separately from
   synchronous call duration, including matching and cleanup on flush/seek/drop.
 

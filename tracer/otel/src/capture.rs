@@ -97,6 +97,7 @@ pub(crate) struct Record {
     pub buffer_id: usize,
     pub buffer_size: usize,
     pub list_len: Option<usize>,
+    pub links: Option<Arc<crate::propagation::Links>>,
     pub thread: Arc<ThreadInfo>,
     pub flow_return: i32,
     pub profiled: bool,
@@ -245,6 +246,25 @@ fn begin_local(
             }
         })
     };
+    // Read fan-in evidence before replacing the input metadata with this span.
+    // Sources can recycle buffers; stale metadata must not become input links.
+    let links = if parent_token.sampled() && runtime.accepting() && !is_root {
+        let mut links = crate::propagation::Links::default();
+        if let Some(list) = list {
+            for input in list.iter().filter_map(crate::propagation::read_input) {
+                links.extend(&input, &parent_token);
+            }
+        } else if let Some(input) = buffer.and_then(|b| crate::propagation::read_input(b)) {
+            // Single-input shared branches retain a common ancestor; do not
+            // invent a link to it on every synchronous downstream call.
+            if input.links.is_some() {
+                links.extend(&input, &parent_token);
+            }
+        }
+        links.finish()
+    } else {
+        None
+    };
     let parent = parent_token.span_id;
     let parent_is_remote = parent_token.is_remote;
     let mut token = parent_token;
@@ -296,6 +316,7 @@ fn begin_local(
             buffer_size: list
                 .map_or_else(|| buffer.map_or(0, |b| b.size()), |l| l.calculate_size()),
             list_len: list.map(|l| l.len()),
+            links,
             thread,
             flow_return: 0,
             profiled: false,
@@ -495,6 +516,66 @@ mod tests {
     };
     use opentelemetry::KeyValue;
     use std::time::Duration;
+
+    #[test]
+    fn mixed_input_lists_and_aggregated_metadata_export_links_without_resampling() {
+        gst::init().unwrap();
+        let identity = gst::ElementFactory::make("identity").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        identity.link(&sink).unwrap();
+        let pad = identity.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffers: Vec<_> = (1..=12)
+            .map(|id| {
+                let buffer = gst::Buffer::new();
+                let token = Token {
+                    trace_id: TraceId::from(id as u128),
+                    span_id: SpanId::from(id),
+                    flags: TraceFlags::SAMPLED,
+                    is_remote: false,
+                    trace_state: None,
+                };
+                crate::propagation::write(&buffer, &token, true, &runtime.stats);
+                buffer
+            })
+            .collect();
+        let mut merged = gst::Buffer::new();
+        let refs: Vec<_> = buffers.iter().map(|b| b.as_ref()).collect();
+        crate::propagation::propagate_input_contexts(merged.get_mut().unwrap(), &refs);
+        begin(&runtime, 100, &pad, &merged);
+        end(&runtime, 120, &pad, 0);
+        // Metadata was consumed, so a later hop does not repeat the input links.
+        begin(&runtime, 125, &pad, &merged);
+        end(&runtime, 130, &pad, 0);
+        let mut list = gst::BufferList::new();
+        for buffer in buffers {
+            list.get_mut().unwrap().add(buffer);
+        }
+        begin_list(&runtime, 140, &pad, &list);
+        end_list(&runtime, 160, &pad, 0);
+        // A missing or rejected first member cannot be resampled from a later one.
+        let rejected = gst::Buffer::new();
+        crate::propagation::write(&rejected, &Token::rejected(), true, &runtime.stats);
+        list.get_mut().unwrap().insert(0, rejected);
+        begin_list(&runtime, 170, &pad, &list);
+        end_list(&runtime, 180, &pad, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 3);
+        assert_eq!(stats.unsampled_lists, 1);
+        let spans = collector.0.lock().unwrap();
+        for index in [0, 2] {
+            assert_eq!(spans[index].parent_span_id, SpanId::from(1));
+            assert_eq!(spans[index].links.len(), crate::propagation::MAX_LINKS);
+            assert_eq!(spans[index].links.dropped_count, 3);
+            assert_eq!(
+                spans[index].links[0].span_context.trace_id(),
+                TraceId::from(2)
+            );
+        }
+        assert!(spans[1].links.is_empty());
+        assert_eq!(spans[1].parent_span_id, spans[0].span_context.span_id());
+    }
 
     #[test]
     fn list_roots_replace_shared_context_and_empty_or_failed_lists_remain_balanced() {

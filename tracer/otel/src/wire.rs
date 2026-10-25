@@ -228,6 +228,15 @@ impl Encoder {
                 10,
                 total_attributes.saturating_sub(config.attribute_limit - remaining) as u64,
             );
+            if let Some(links) = &record.links {
+                for link in links.sdk() {
+                    let link: opentelemetry_proto::tonic::trace::v1::span::Link = link.into();
+                    varint(span, (13 << 3) | 2);
+                    varint(span, link.encoded_len() as u64);
+                    link.encode(span).unwrap();
+                }
+                integer(span, 14, links.dropped as u64);
+            }
             if let Some(message) = record.operation.error(record.flow_return) {
                 varint(span, (15 << 3) | 2);
                 varint(
@@ -391,6 +400,17 @@ mod tests {
             r.parent = SpanId::INVALID;
             r.token.flags = TraceFlags::new(0x81);
             r.token.trace_state = None;
+            let mut links = crate::propagation::Links::default();
+            for id in 100..112 {
+                let mut token = record(id).token;
+                token.flags = opentelemetry::trace::TraceFlags::new(if id.is_multiple_of(2) {
+                    0
+                } else {
+                    0x81
+                });
+                links.insert(&token, &r.token);
+            }
+            r.links = links.finish();
             r.buffer_id = usize::MAX;
             r.buffer_size = 0;
             r.flow_return = i32::MIN;

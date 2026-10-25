@@ -618,14 +618,26 @@ retain all failures, including ones already reported during pipeline stop.
   A later asynchronous
   push with missing context is counted and suppressed, never resampled as a root.
 - Elements that strip metadata or create unrelated buffers asynchronously need
-  element-specific propagation. Generic fan-in retains the first copied input
-  context and does not reconstruct multi-input links. Each buffer-list push
+  element-specific propagation. When an output copies metadata from several
+  inputs, the first known input remains the parent and the others become span
+  links. Custom Rust aggregators can call `propagate_input_contexts` on their
+  writable output with the input buffers. Each buffer-list push
   creates one span and propagates its context to all members. Across an
-  asynchronous boundary it inherits the first member's context. Top-level pull
+  asynchronous boundary it inherits the first member's context and links other
+  known member contexts. Top-level pull
   reads create roots and attach their sampling
   decision to the returned buffer; downstream pushes inherit it when metadata
   survives. Nested pulls inherit the active span. Pull EOS is normal completion.
   A read is not necessarily a video frame: demuxers can split or combine reads.
+- Fan-in keeps at most **eight links** per buffer/span, deduplicated by trace and
+  span ID, excluding the chosen parent. `dropped_links_count` records omitted
+  candidates (duplicates already beyond the bound can count again). The first
+  input's sampling decision wins; a later sampled input cannot revive a rejected
+  trace. Missing first-member context suppresses an asynchronous list span.
+  Sources ignore recycled metadata. Writable downstream buffers consume incoming
+  links after capture; shared buffers may retain them as part of their common
+  ancestor. Links describe observed inputs, not timing or inferred completion.
+  Buffers that lose metadata have no recoverable generic fan-in history.
 - Capture does not attach SDK contexts per call. Application instrumentation can
   explicitly bridge `current_span_context()` if it needs a child SDK span. The
   optional log bridge uses native log trace/span fields from the capture stack.
