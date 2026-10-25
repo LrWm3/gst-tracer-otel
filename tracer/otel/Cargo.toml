@@ -20,7 +20,7 @@ opentelemetry-proto = { version = "0.33.1", default-features = false, features =
 prost = "0.14"
 bytes = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
-tokio = { version = "1", features = ["rt", "time", "net"] }
+tokio = { version = "1.53.3", features = ["rt", "time", "net"] }
 percent-encoding = "2"
 pyroscope = { version = "=2.1.2", optional = true }
 libc = "0.2"
