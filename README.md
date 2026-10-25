@@ -1,13 +1,13 @@
 # Mars GStreamer Tracers
 
 Find where your GStreamer pipeline spends time and CPU. Mars adds metrics,
-traces, and CPU profiles through `GST_TRACERS`, without changing your pipeline
-code.
+traces, CPU profiles, and correlated GStreamer logs through `GST_TRACERS`,
+without changing your pipeline code.
 
-Follow a slow measurement to its trace, then inspect the CPU calls for that
-element span:
+Follow a slow measurement to its trace, read the matching log, then inspect the
+CPU calls for that element span:
 
-[![Grafana walkthrough: a metric exemplar opens its trace, then the heavy element's CPU profile](docs/media/correlation.gif)](docs/media/correlation.mp4)
+[![Grafana walkthrough: metric exemplar → trace → matching log → same trace → CPU profile](docs/media/correlation.gif)](docs/media/correlation.mp4)
 
 [Watch the video](docs/media/correlation.mp4) ·
 [Try the demo](tracer/otel/CORRELATION.md#try-the-local-demo)

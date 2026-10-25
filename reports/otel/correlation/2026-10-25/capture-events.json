@@ -1,0 +1,54 @@
+[
+  {
+    "name": "unknown-trace",
+    "seconds": null
+  },
+  {
+    "name": "unrelated-span",
+    "seconds": null
+  },
+  {
+    "name": "01-metrics",
+    "seconds": 1.742
+  },
+  {
+    "name": "02-exemplar",
+    "seconds": 5.862
+  },
+  {
+    "name": "03-trace-split",
+    "seconds": 10.926
+  },
+  {
+    "name": "04-selected-span",
+    "seconds": 11.954
+  },
+  {
+    "name": "05-log-split",
+    "seconds": 18.638
+  },
+  {
+    "name": "06-matching-log",
+    "seconds": 20.693
+  },
+  {
+    "name": "07-return-trace",
+    "seconds": 28.244
+  },
+  {
+    "name": "08-same-span",
+    "seconds": 29.072
+  },
+  {
+    "name": "09-profile-query",
+    "seconds": 33.718
+  },
+  {
+    "name": "10-profile",
+    "seconds": 34.456
+  },
+  {
+    "name": "end",
+    "seconds": 42.551
+  }
+]

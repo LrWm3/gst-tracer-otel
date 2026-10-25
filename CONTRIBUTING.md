@@ -94,11 +94,11 @@ mode for performance comparisons.
 [mars-noop](tracer/noop/README.md) is a hook-testing plugin and basic template,
 built from `gst-noop-tracer`. It is not a telemetry collector.
 
-## Remaining work
+## Development work
 
-Unchecked items are planned changes, not currently supported options. Prioritize delivery
-correctness, lifecycle handling, and instrumentation health before export and
-profiling optimizations.
+The items below record the completed delivery, lifecycle, instrumentation health,
+performance, and correlation work. Follow the linked reports for measurements
+and remaining limitations.
 
 ### Delivery and lifecycle
 
@@ -156,13 +156,16 @@ profiling optimizations.
   missing peers, and factory-less elements, and update queries and documentation
   that match the old names. The duration remains the inclusive synchronous call
   duration; a factory name does not make it exclusive element CPU time.
-- [ ] Extend the README correlation video with logs. Add a logs backend to the
+- [x] Extend the README correlation video with logs. Add a logs backend to the
   demo and provision trace-to-logs and log-to-trace navigation. Emit a useful log
   inside the selected sampled span, then show metric exemplar → trace → matching
   log → the same trace, alongside the existing span-to-profile navigation.
   Verify trace/span IDs and time ranges in both backend data and the Grafana UI,
   including an unrelated-ID control. Re-record with factory-based span names,
   and update the demo scripts, provisioning, captions, and correlation guide.
+  The [four-signal walkthrough](reports/otel/SIGNALS_REVIEW.md#four-signal-walkthrough--2026-10-25)
+  includes backend assertions, actual browser navigation, screenshots, and the
+  refreshed README MP4/GIF.
 
 ### Performance and profiler lifetime
 

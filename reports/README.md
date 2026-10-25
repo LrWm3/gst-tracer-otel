@@ -32,7 +32,7 @@ and original source/binary checksums are retained.
 - [Thirty-minute native lifecycle soaks: memory, outages and shutdown](otel/PROFILE_VIDEO_RESULTS.md#thirty-minute-lifecycle-soaks--2026-10-25)
 - [Element-attributed profiles: Grafana screenshots and validation](otel/PROFILE_ELEMENT_REVIEW.md)
 - [Grafana trace/profile correlation: provisioning and backend validation](otel/CORRELATION_REVIEW.md)
-- [Explicit signals and metric → trace → profile correlation validation](otel/SIGNALS_REVIEW.md)
+- [Metric → trace → log → trace → profile walkthrough and validation](otel/SIGNALS_REVIEW.md#four-signal-walkthrough--2026-10-25)
 - [Linux arm64 profiling: validation on an integrated memory nvidia device, CPU costs, and lifecycle checks](otel/ARM64_PROFILES.md)
 
 Historical correlated-profile measurements are described in the

@@ -1,10 +1,17 @@
-//! Small trace/profile demo for bench/correlation/check.py. Deliberately long
+//! Small four-signal demo for bench/correlation/check.py. Deliberately long
 //! CPU work gives each selected push enough samples for a useful span profile.
 use gstreamer::{self as gst, prelude::*};
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, LazyLock,
+    },
+    time::{Duration, Instant},
 };
+
+static LOG: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new("mars-correlation", gst::DebugColorFlags::empty(), None)
+});
 
 fn thread_cpu() -> u64 {
     let mut value = std::mem::MaybeUninit::<libc::timespec>::uninit();
@@ -33,6 +40,7 @@ fn main() {
     let showcase = std::env::var("MARS_DEMO_SHOWCASE").as_deref() == Ok("1");
     let buffers = if showcase { 48 } else { 4 };
     let _tracer = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+    gst::info!(LOG, "demo started outside a sampled span");
     let pipeline = gst::parse::launch(&format!(
         "fakesrc num-buffers={buffers} ! identity name=light ! queue name=handoff ! \
          identity name=heavy ! fakesink name=output sync=false"
@@ -40,8 +48,10 @@ fn main() {
     .unwrap()
     .downcast::<gst::Pipeline>()
     .unwrap();
+    let slow_finished = Arc::new(AtomicBool::new(false));
     for (name, milliseconds) in [("light", 100), ("heavy", 250)] {
         let sequence = AtomicU64::new(0);
+        let slow_finished = slow_finished.clone();
         pipeline
             .by_name(name)
             .unwrap()
@@ -63,7 +73,30 @@ fn main() {
                     milliseconds
                 };
                 simulated_cpu_work(milliseconds);
+                if showcase && name == "heavy" && frame == 24 {
+                    gst::warning!(
+                        LOG,
+                        "slow frame: element={name} frame={} cpu_work_ms={milliseconds}",
+                        frame + 1
+                    );
+                    slow_finished.store(true, Ordering::Release);
+                } else {
+                    gst::info!(
+                        LOG,
+                        "processed frame: element={name} frame={} cpu_work_ms={milliseconds}",
+                        frame + 1
+                    );
+                }
                 if showcase && name == "light" {
+                    if frame == 25 {
+                        // Keep the slow measurement in the bounded recent-exemplar
+                        // slot for an export interval before sending another frame.
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        while !slow_finished.load(Ordering::Acquire) {
+                            assert!(Instant::now() < deadline, "slow demo frame stalled");
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(250));
                 }
                 None
@@ -82,6 +115,7 @@ fn main() {
         panic!("{} {:?}", error.error(), error.debug());
     }
     pipeline.set_state(gst::State::Null).unwrap();
+    gst::info!(LOG, "demo completed outside a sampled span");
     let traces = gstoteltracer::shutdown(Duration::from_secs(20)).unwrap();
     let profiles = gstoteltracer::profile_stats();
     assert_eq!(traces.started_spans, buffers * 4);
@@ -100,7 +134,14 @@ fn main() {
     let metrics = gstoteltracer::metric_stats().unwrap();
     assert_eq!(metrics.recorded_pushes, buffers * 4);
     assert_eq!(metrics.failed_exports + metrics.dropped_capacity, 0);
+    let logs = gstoteltracer::log_stats();
+    assert_eq!(logs.exported, buffers * 2 + 2);
+    assert_eq!(
+        logs.pending + logs.failed + logs.dropped_queue_full + logs.dropped_closed,
+        0
+    );
     println!("TRACE {traces:?}");
     println!("PROFILE {profiles:?}");
     println!("METRICS {metrics:?}");
+    println!("LOGS {logs:?}");
 }

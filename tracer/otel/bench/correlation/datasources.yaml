@@ -19,6 +19,16 @@ datasources:
     url: http://tempo:3200
     isDefault: true
     jsonData:
+      tracesToLogsV2:
+        datasourceUid: mars-correlation-loki
+        spanStartTimeShift: '-1s'
+        spanEndTimeShift: '1s'
+        tags:
+          - key: service.name
+            value: service_name
+        customQuery: true
+        # Native OTLP IDs are structured metadata, not text inside the message.
+        query: '{$${__tags}} | trace_id = "$${__trace.traceId}" | span_id = "$${__span.spanId}"'
       tracesToProfiles:
         datasourceUid: mars-correlation-pyroscope
         tags:
@@ -30,3 +40,16 @@ datasources:
     type: grafana-pyroscope-datasource
     access: proxy
     url: http://pyroscope:4040
+  - name: Mars logs
+    uid: mars-correlation-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: '^trace_id$'
+          datasourceUid: mars-correlation-tempo
+          url: '$${__value.raw}'
+          urlDisplayLabel: Inspect trace

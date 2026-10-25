@@ -1,0 +1,78 @@
+{
+  "raw_seconds": 38.9,
+  "initial_trim_seconds": 0.15,
+  "rendered_seconds": 38.75,
+  "width": 1440,
+  "height": 996,
+  "mp4_fps": 24,
+  "gif_width": 960,
+  "gif_fps": 8,
+  "caption_alignment": {
+    "01-metrics": {
+      "wall_seconds": 1.742,
+      "video_seconds": 0.3,
+      "ssim": 0.997464
+    },
+    "02-exemplar": {
+      "wall_seconds": 5.862,
+      "video_seconds": 4.5,
+      "ssim": 0.997816
+    },
+    "03-trace-split": {
+      "wall_seconds": 10.926,
+      "video_seconds": 9.0,
+      "ssim": 0.997839
+    },
+    "04-selected-span": {
+      "wall_seconds": 11.954,
+      "video_seconds": 10.0,
+      "ssim": 0.959757
+    },
+    "05-log-split": {
+      "wall_seconds": 18.638,
+      "video_seconds": 15.5,
+      "ssim": 0.997291
+    },
+    "06-matching-log": {
+      "wall_seconds": 20.693,
+      "video_seconds": 17.4,
+      "ssim": 0.99785
+    },
+    "07-return-trace": {
+      "wall_seconds": 28.244,
+      "video_seconds": 24.5,
+      "ssim": 0.997924
+    },
+    "08-same-span": {
+      "wall_seconds": 29.072,
+      "video_seconds": 25.4,
+      "ssim": 0.997966
+    },
+    "09-profile-query": {
+      "wall_seconds": 33.718,
+      "video_seconds": 29.8,
+      "ssim": 0.998278
+    },
+    "10-profile": {
+      "wall_seconds": 34.456,
+      "video_seconds": 31.5,
+      "ssim": 0.998021
+    }
+  },
+  "sha256": {
+    "correlation-raw.webm": "4014b44a20adfefe5117195808ede598d5d10ec3977b16c5385812e7492d3edb",
+    "correlation.mp4": "dc2397f38eb8dd58cfa0fddceaacd5ef0c42299105aa5e7ce32628dd995cc1a2",
+    "correlation.gif": "1024469a21b3f378996e534b8191bb57ee935f1f3b081005bfcdc802c9b5b306"
+  },
+  "actual_duration_seconds": {
+    "mp4": 38.708333,
+    "gif": 38.76
+  },
+  "tools": {
+    "agent-browser": "0.31.1"
+  },
+  "source_sha256": {
+    "tracer/otel/bench/correlation/record.py": "a17e4f24e01a365e40f006cd32473c010895e7f9f731953edfd0e7b854e93d4c",
+    "tracer/otel/bench/correlation/render.py": "88156b583a1a9a9c56b08e3201d8a82ee3612be4e68ddf056785a596390b4b13"
+  }
+}
