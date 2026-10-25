@@ -39,7 +39,8 @@ struct PadState {
 #[cfg(feature = "profiles")]
 struct ProfileSite {
     epoch: u64,
-    id: u64,
+    capacity_epoch: u64,
+    id: crate::profilecontext::Description,
 }
 impl PadState {
     fn invalidate(&self) {
@@ -116,11 +117,14 @@ fn state(object: &impl IsA<gst::Object>) -> &Arc<PadState> {
 /// Immutable, bounded profile descriptions. Cache hits avoid name/path lookups
 /// and registry locks. Old IDs remain valid for queued CPU samples.
 #[cfg(feature = "profiles")]
-pub(crate) fn profile_id(object: &gst::Object) -> u64 {
+pub(crate) fn profile_id(object: &gst::Object) -> crate::profilecontext::Description {
     let state = state(object);
     let epoch = state.epoch.load(Relaxed);
-    if let Some(site) = state.profile.load_full().filter(|s| s.epoch == epoch) {
-        return site.id;
+    if let Some(site) = state.profile.load_full().filter(|s| {
+        s.epoch == epoch
+            && (s.id.is_some() || s.capacity_epoch == crate::profilecontext::capacity_epoch())
+    }) {
+        return site.id.clone();
     }
     watch_path(object, state);
     let element = object.downcast_ref::<gst::Element>().cloned().or_else(|| {
@@ -128,7 +132,8 @@ pub(crate) fn profile_id(object: &gst::Object) -> u64 {
             .downcast_ref::<gst::Pad>()
             .and_then(|p| p.parent_element())
     });
-    let id = element.map_or(0, |element| {
+    let capacity_epoch = crate::profilecontext::capacity_epoch();
+    let id = element.and_then(|element| {
         let path = text_value(&element.path_string(), 512);
         let factory = element.factory().map_or_else(
             || element.type_().name().to_owned(),
@@ -136,9 +141,11 @@ pub(crate) fn profile_id(object: &gst::Object) -> u64 {
         );
         crate::profilecontext::intern(&path, &text_value(&factory, 128))
     });
-    state
-        .profile
-        .store(Some(Arc::new(ProfileSite { epoch, id })));
+    state.profile.store(Some(Arc::new(ProfileSite {
+        epoch,
+        capacity_epoch,
+        id: id.clone(),
+    })));
     id
 }
 
@@ -376,12 +383,12 @@ mod tests {
         pipeline.add(&element).unwrap();
         let pad = element.static_pad("sink").unwrap();
         let refs = element.ref_count();
-        let before = profile_id(pad.upcast_ref());
+        let before = profile_id(pad.upcast_ref()).unwrap();
         pipeline.set_property("name", "profile-new");
-        let after = profile_id(pad.upcast_ref());
-        assert_ne!(before, after);
-        assert!(crate::profilecontext::frame(before << 1).contains("profile-old"));
-        assert!(crate::profilecontext::frame(after << 1).contains("profile-new"));
+        let after = profile_id(pad.upcast_ref()).unwrap();
+        assert_ne!(before.id, after.id);
+        assert!(crate::profilecontext::frame(before.id << 1).contains("profile-old"));
+        assert!(crate::profilecontext::frame(after.id << 1).contains("profile-new"));
         assert_eq!(element.ref_count(), refs);
         let weak = element.downgrade();
         drop(pad);

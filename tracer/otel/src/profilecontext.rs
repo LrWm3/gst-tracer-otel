@@ -7,8 +7,11 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
-        Arc, LazyLock, Mutex,
+        atomic::{
+            AtomicBool, AtomicU64,
+            Ordering::{Acquire, Relaxed, Release},
+        },
+        Arc, LazyLock, Mutex, Weak,
     },
 };
 
@@ -16,11 +19,102 @@ const MAX_DESCRIPTIONS: usize = 4096;
 const MAX_DEPTH: usize = 256;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static REJECTED: AtomicU64 = AtomicU64::new(0);
+static CAPACITY_EPOCH: AtomicU64 = AtomicU64::new(0);
+static RETAINED: AtomicU64 = AtomicU64::new(0);
+static RETIRED: AtomicU64 = AtomicU64::new(0);
+
+/// Normal-thread ownership only. Metadata and every published TLS scope hold
+/// a lease; the signal handler still reads just its immutable integer ID.
+#[derive(Debug)]
+pub(crate) struct Lease {
+    pub id: u64,
+    retired: Arc<AtomicBool>,
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        // The target thread cleared its published ID before releasing its last
+        // lease. Any signal that read it has finished its ring write by now.
+        self.retired.store(true, Release);
+    }
+}
+pub(crate) type Description = Option<Arc<Lease>>;
+struct Entry {
+    key: (String, String),
+    lease: Weak<Lease>,
+    retired: Arc<AtomicBool>,
+    frames: [Arc<str>; 2],
+}
 
 #[derive(Default)]
 struct Descriptions {
     ids: HashMap<(String, String), u64>,
-    frames: Vec<[Arc<str>; 2]>,
+    entries: HashMap<u64, Entry>,
+    next: u64,
+}
+impl Descriptions {
+    fn intern(&mut self, path: &str, factory: &str) -> Description {
+        let key = (path.to_owned(), factory.to_owned());
+        if let Some(lease) = self
+            .ids
+            .get(&key)
+            .and_then(|id| self.entries.get(id))
+            .and_then(|entry| entry.lease.upgrade())
+        {
+            return Some(lease);
+        }
+        if self.entries.len() == MAX_DESCRIPTIONS || self.next == u64::MAX >> 1 {
+            return None;
+        }
+        self.next += 1;
+        let id = self.next;
+        let retired = Arc::new(AtomicBool::new(false));
+        let lease = Arc::new(Lease {
+            id,
+            retired: retired.clone(),
+        });
+        let leaf = path.rsplit('/').next().unwrap_or(path);
+        let name = leaf.split_once(':').map_or(leaf, |(_, name)| name);
+        self.entries.insert(
+            id,
+            Entry {
+                key: key.clone(),
+                lease: Arc::downgrade(&lease),
+                retired,
+                frames: [
+                    format!("[element] {name} [{factory}] — {path}").into(),
+                    format!("[task owner] {name} [{factory}] — {path}").into(),
+                ],
+            },
+        );
+        self.ids.insert(key, id);
+        Some(lease)
+    }
+    fn candidates(&self) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter_map(|(&id, entry)| entry.retired.load(Acquire).then_some(id))
+            .collect()
+    }
+    fn retire(&mut self, candidates: Vec<u64>) -> usize {
+        let mut count = 0;
+        for id in candidates {
+            if let Some(entry) = self.entries.remove(&id) {
+                // Recreating the same path receives a new ID, even while the
+                // original description is awaiting its last sample drain.
+                if self.ids.get(&entry.key) == Some(&id) {
+                    self.ids.remove(&entry.key);
+                }
+                count += 1;
+            }
+        }
+        count
+    }
+    fn frame(&self, key: u64) -> Arc<str> {
+        self.entries.get(&(key >> 1)).map_or_else(
+            || "[unattributed GStreamer CPU]".into(),
+            |entry| entry.frames[(key & 1) as usize].clone(),
+        )
+    }
 }
 static DESCRIPTIONS: LazyLock<Mutex<Descriptions>> = LazyLock::new(Default::default);
 
@@ -43,44 +137,53 @@ pub(crate) fn rejected() -> u64 {
     REJECTED.load(Relaxed)
 }
 
-pub(crate) fn intern(path: &str, factory: &str) -> u64 {
+pub(crate) fn intern(path: &str, factory: &str) -> Description {
     let mut descriptions = DESCRIPTIONS.lock().unwrap();
-    let key = (path.to_owned(), factory.to_owned());
-    if let Some(id) = descriptions.ids.get(&key) {
-        return *id;
-    }
-    if descriptions.frames.len() == MAX_DESCRIPTIONS {
+    let lease = descriptions.intern(path, factory);
+    if lease.is_none() {
         REJECTED.fetch_add(1, Relaxed);
-        return 0;
     }
-    let id = descriptions.frames.len() as u64 + 1;
-    let leaf = path.rsplit('/').next().unwrap_or(path);
-    let name = leaf.split_once(':').map_or(leaf, |(_, name)| name);
-    descriptions.frames.push([
-        format!("[element] {name} [{factory}] — {path}").into(),
-        format!("[task owner] {name} [{factory}] — {path}").into(),
-    ]);
-    descriptions.ids.insert(key, id);
-    id
+    RETAINED.store(descriptions.entries.len() as u64, Relaxed);
+    lease
 }
 
-/// Reporting thread only. IDs are never recycled, including after rename or
-/// destruction, so queued samples cannot acquire another element's description.
-pub(crate) fn frame(key: u64) -> Arc<str> {
-    let id = key >> 1;
-    if id != 0 {
-        if let Some(frames) = DESCRIPTIONS.lock().unwrap().frames.get(id as usize - 1) {
-            return frames[(key & 1) as usize].clone();
-        }
+pub(crate) fn capacity_epoch() -> u64 {
+    CAPACITY_EPOCH.load(Relaxed)
+}
+pub(crate) fn retained() -> u64 {
+    RETAINED.load(Relaxed)
+}
+pub(crate) fn retired() -> u64 {
+    RETIRED.load(Relaxed)
+}
+
+/// Sole report worker: snapshot BEFORE draining every sampler slot. Acquire on
+/// the retired flag observes all preceding ring writes for these IDs. IDs never
+/// revive: a new lease for the same path always receives a fresh integer.
+pub(crate) fn before_drain() -> Vec<u64> {
+    DESCRIPTIONS.lock().unwrap().candidates()
+}
+/// Call only AFTER encoding the drained samples into self-contained pprof.
+pub(crate) fn after_report(candidates: Vec<u64>) {
+    let mut descriptions = DESCRIPTIONS.lock().unwrap();
+    let count = descriptions.retire(candidates) as u64;
+    RETAINED.store(descriptions.entries.len() as u64, Relaxed);
+    RETIRED.fetch_add(count, Relaxed);
+    if count != 0 {
+        CAPACITY_EPOCH.fetch_add(1, Relaxed);
     }
-    "[unattributed GStreamer CPU]".into()
+}
+
+/// Reporting thread only; strings stay valid through the report's encoding.
+pub(crate) fn frame(key: u64) -> Arc<str> {
+    DESCRIPTIONS.lock().unwrap().frame(key)
 }
 
 #[derive(Default)]
 struct State {
     // Identity, operation (chain/list/pull), immutable description ID.
-    calls: Vec<(usize, u8, u64)>,
-    owner: Option<(usize, u64)>,
+    calls: Vec<(usize, u8, Description)>,
+    owner: Option<(usize, Description)>,
     overflow: usize,
     invalid: bool,
 }
@@ -90,13 +193,14 @@ impl State {
             return 0;
         }
         if let Some((_, _, id)) = self.calls.last() {
-            return id << 1;
+            return id.as_ref().map_or(0, |id| id.id << 1);
         }
         self.owner
-            .filter(|(_, id)| *id != 0)
-            .map_or(0, |(_, id)| (id << 1) | 1)
+            .as_ref()
+            .and_then(|(_, id)| id.as_ref())
+            .map_or(0, |id| (id.id << 1) | 1)
     }
-    fn enter(&mut self, pad: usize, operation: u8, id: u64) {
+    fn enter(&mut self, pad: usize, operation: u8, id: Description) {
         if self.overflow != 0 || self.calls.len() == MAX_DEPTH {
             self.overflow += 1;
         } else {
@@ -109,7 +213,7 @@ impl State {
         } else if self
             .calls
             .last()
-            .is_some_and(|&(p, op, _)| p == pad && op == operation)
+            .is_some_and(|(p, op, _)| *p == pad && *op == operation)
         {
             self.calls.pop();
             if self.calls.is_empty() {
@@ -120,7 +224,16 @@ impl State {
         }
     }
 }
-thread_local! { static LOCAL: RefCell<State> = RefCell::new(State::default()); }
+#[derive(Default)]
+struct Local(RefCell<State>);
+impl Drop for Local {
+    fn drop(&mut self) {
+        // Clear before State drops its leases. If sampler TLS was destroyed
+        // first, Registration already cleared the slot and removed the timer.
+        crate::profiles::publish_element(0);
+    }
+}
+thread_local! { static LOCAL: Local = Local::default(); }
 
 fn active() -> bool {
     enabled() && crate::profiles::active()
@@ -134,12 +247,12 @@ pub(crate) fn begin(pad: &gst::Pad, operation: u8) {
     // In pull mode the receiving sink invokes the upstream source's getrange.
     let id = if operation == 2 {
         pad.peer()
-            .map_or(0, |p| crate::metadata::profile_id(p.upcast_ref()))
+            .and_then(|p| crate::metadata::profile_id(p.upcast_ref()))
     } else {
         crate::metadata::profile_id(pad.upcast_ref())
     };
     LOCAL.with(|local| {
-        if let Ok(mut state) = local.try_borrow_mut() {
+        if let Ok(mut state) = local.0.try_borrow_mut() {
             state.enter(pad.as_ptr() as usize, operation, id);
             crate::profiles::publish_element(state.current());
         }
@@ -151,7 +264,7 @@ pub(crate) fn end(pad: &gst::Pad, operation: u8) {
     }
     crate::profiles::publish_element(0);
     let _ = LOCAL.try_with(|local| {
-        if let Ok(mut state) = local.try_borrow_mut() {
+        if let Ok(mut state) = local.0.try_borrow_mut() {
             state.leave(pad.as_ptr() as usize, operation);
             crate::profiles::publish_element(state.current());
         }
@@ -181,7 +294,7 @@ pub(crate) fn message(element: &gst::Element, message: &gst::Message) {
     let id = (kind == gst::StreamStatusType::Enter)
         .then(|| crate::metadata::profile_id(owner.upcast_ref()));
     LOCAL.with(|local| {
-        if let Ok(mut state) = local.try_borrow_mut() {
+        if let Ok(mut state) = local.0.try_borrow_mut() {
             if let Some(id) = id {
                 *state = State {
                     owner: Some((owner.as_ptr() as usize, id)),
@@ -189,7 +302,8 @@ pub(crate) fn message(element: &gst::Element, message: &gst::Message) {
                 };
             } else if state
                 .owner
-                .is_some_and(|(p, _)| p == owner.as_ptr() as usize)
+                .as_ref()
+                .is_some_and(|(p, _)| *p == owner.as_ptr() as usize)
             {
                 *state = State::default();
             }
@@ -254,19 +368,84 @@ pub(crate) use methods;
 mod tests {
     use super::*;
     #[test]
+    fn retirement_waits_for_a_drain_and_never_reuses_an_id() {
+        let mut registry = Descriptions::default();
+        let original = registry
+            .intern("pipeline/identity:first", "identity")
+            .unwrap();
+        let original_id = original.id;
+        let queued_key = original_id << 1;
+        assert!(registry.candidates().is_empty());
+        drop(original);
+        let candidates = registry.candidates();
+        let replacement = registry
+            .intern("pipeline/identity:first", "identity")
+            .unwrap();
+        assert_ne!(replacement.id, original_id);
+        // Encode the queued sample before retiring its description. Recreating
+        // the same path must not move it to a new ID or remove the new key.
+        let encoded = registry.frame(queued_key);
+        assert!(encoded.contains("identity:first"));
+        assert_eq!(registry.retire(candidates), 1);
+        assert_eq!(&*registry.frame(queued_key), "[unattributed GStreamer CPU]");
+        assert!(encoded.contains("identity:first"));
+        assert_eq!(
+            registry
+                .intern("pipeline/identity:first", "identity")
+                .unwrap()
+                .id,
+            replacement.id
+        );
+        let candidates = registry.candidates();
+        drop(replacement); // released after this report's drain boundary
+        assert_eq!(registry.retire(candidates), 0);
+        assert_eq!(registry.entries.len(), 1);
+        assert_eq!(registry.retire(registry.candidates()), 1);
+    }
+
+    #[test]
+    fn repeated_lifetimes_reclaim_capacity_without_retiring_live_scopes() {
+        let mut registry = Descriptions::default();
+        let live = registry.intern("active", "identity").unwrap();
+        let mut last_id = live.id;
+        for cycle in 0..3 {
+            for i in 1..MAX_DESCRIPTIONS {
+                let entry = registry
+                    .intern(&format!("{cycle}/{i}"), "identity")
+                    .unwrap();
+                assert!(entry.id > last_id);
+                last_id = entry.id;
+            }
+            assert_eq!(registry.entries.len(), MAX_DESCRIPTIONS);
+            assert!(registry.intern("overflow", "identity").is_none());
+            assert_eq!(registry.retire(registry.candidates()), MAX_DESCRIPTIONS - 1);
+            assert_eq!(registry.entries.len(), 1);
+            assert!(registry.frame(live.id << 1).contains("active"));
+        }
+    }
+
+    fn lease(id: u64) -> Description {
+        (id != 0).then(|| {
+            Arc::new(Lease {
+                id,
+                retired: Arc::new(AtomicBool::new(false)),
+            })
+        })
+    }
+    #[test]
     fn nested_calls_restore_ownership_and_overflow_does_not_misattribute() {
         let mut state = State {
-            owner: Some((1, 10)),
+            owner: Some((1, lease(10))),
             ..Default::default()
         };
         assert_eq!(state.current(), 21);
-        state.enter(1, 0, 20);
-        state.enter(2, 0, 30);
+        state.enter(1, 0, lease(20));
+        state.enter(2, 0, lease(30));
         assert_eq!(state.current(), 60);
         state.leave(2, 0);
         assert_eq!(state.current(), 40);
         for _ in 1..=MAX_DEPTH {
-            state.enter(3, 0, 40);
+            state.enter(3, 0, lease(40));
         }
         assert_eq!(state.current(), 0);
         for _ in 1..=MAX_DEPTH {
@@ -277,7 +456,7 @@ mod tests {
         assert_eq!(state.current(), 0);
         state.leave(1, 0);
         assert_eq!(state.current(), 21);
-        state.enter(4, 0, 0);
+        state.enter(4, 0, lease(0));
         assert_eq!(
             state.current(),
             0,

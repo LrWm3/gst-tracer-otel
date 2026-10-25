@@ -35,6 +35,8 @@ pub struct ProfileStats {
     pub element_samples: u64,
     pub task_samples: u64,
     pub context_capacity_rejections: u64,
+    pub context_descriptions: u64,
+    pub context_retired: u64,
     pub dropped_full: u64,
     pub timer_overruns: u64,
     pub failed_stack_reads: u64,
@@ -757,6 +759,7 @@ mod linux {
                 0,
                 0,
             );
+            let retired = crate::profilecontext::before_drain();
             let samples = self.sampler.drain();
             self.pending = samples.values().sum::<usize>() as u64;
             let mut pcs: Vec<_> = samples
@@ -809,6 +812,7 @@ mod linux {
                     .profile
                     .encode_to_vec()
             };
+            crate::profilecontext::after_report(retired);
             Ok(ReportBatch {
                 // Processing bytes are distinct from SDK upload acknowledgement.
                 profile_type: "process_cpu".into(),
@@ -1435,6 +1439,8 @@ mod linux {
             element_samples: s.counters.element_samples.load(Relaxed),
             task_samples: s.counters.task_samples.load(Relaxed),
             context_capacity_rejections: crate::profilecontext::rejected(),
+            context_descriptions: crate::profilecontext::retained(),
+            context_retired: crate::profilecontext::retired(),
             dropped_full: s.counters.dropped_full.load(Relaxed),
             timer_overruns: s.counters.timer_overruns.load(Relaxed),
             failed_stack_reads: s.counters.failed_stack_reads.load(Relaxed),

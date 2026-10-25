@@ -39,6 +39,22 @@ fn snapshot() -> Vec<proto::MetricFamily> {
     let metrics = runtime.metric_stats();
     let logs = crate::log_stats();
     let profiles = crate::profile_stats();
+    sample(
+        &mut families,
+        "mars_instrument_profile_descriptions",
+        "Live and pending-retirement element descriptions; capacity 4096",
+        true,
+        profiles.context_descriptions,
+        &[],
+    );
+    sample(
+        &mut families,
+        "mars_instrument_profile_descriptions_retired_total",
+        "Element descriptions reclaimed after their final sample drain",
+        false,
+        profiles.context_retired,
+        &[],
+    );
     for (signal, capacity) in [
         (
             "traces",

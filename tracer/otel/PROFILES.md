@@ -127,9 +127,14 @@ starts at the first push, buffer-list push, or pull-range call. Samples carry
 native `thread_id` labels, without trace or span IDs.
 
 The context stack is bounded at 256 calls per thread; immutable descriptions are
-bounded at 4096 per process, with names derived from paths capped at 512 characters
-and factories at 128 characters. Description IDs are never recycled, so already
-queued samples keep their original names. Overflow becomes unattributed. The
+bounded at 4096 live or awaiting retirement, with names derived from paths capped
+at 512 characters and factories at 128 characters. Metadata and active execution
+scopes retain a description lease. Once its final lease is released, the report
+worker drains all sample rings and encodes their original names before reclaiming
+the description. IDs are never reused, including when the same path is recreated.
+Pipeline recreation can therefore exceed 4096 descriptions over process lifetime.
+Overflow becomes unattributed until a report releases capacity; cached misses
+retry after that reclamation. The
 signal handler reads only an atomic integer; all name lookup and synthetic frame
 construction happen outside signals. No GStreamer objects are retained by the
 description registry.
@@ -152,8 +157,10 @@ per-signal results. Pipeline NULL transitions do not drain profiles automaticall
 `gst-launch-1.0` relies on periodic uploads and may lose the final interval when
 exiting.
 
-Sampling buffers and immutable element descriptions are bounded but intentionally
-remain allocated until process exit. Temporary symbolization allocations and
+Sampling buffers are bounded and intentionally remain allocated until process
+exit to protect pending signals. Element descriptions are reclaimed after their
+last sample drain; an idle active task can retain its owner description until
+LEAVE or thread exit. Temporary symbolization allocations and
 allocator retention can make process RSS much larger than the retained caches.
 The [native ARM lifecycle check](../../reports/otel/ARM64_PROFILES.md#deadlock-and-memory-growth-check)
 observed settled memory usage and prompt shutdown after repeated pipeline
@@ -162,7 +169,10 @@ creation and destruction; it does not rule out every production leak or hang.
 `gstoteltracer::profile_stats()` exposes sampling, registration, processing,
 and upload-queue counters. `element_samples` and `task_samples` count accepted
 samples with those contexts; `context_capacity_rejections` counts descriptions
-rejected by the registry limit. Trace and metric counters remain zero. The SDK does
+rejected by the registry limit. `context_descriptions` is the current retained
+count and `context_retired` is the cumulative reclaimed count. The `core` health
+metrics expose both when metrics are selected. Trace and metric counters remain
+zero in profiles-only mode. The SDK does
 not expose delivery acknowledgements; a drained upload queue does not prove
 successful server ingestion.
 

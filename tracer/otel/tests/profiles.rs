@@ -231,6 +231,21 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn pipeline_churn_reclaims_descriptions_and_preserves_early_and_late_samples() {
+    let (received, stdout) = collect("profiles-only-churn");
+    assert!(stdout.contains("CHURN cycles=1800"));
+    for name in ["cycle0", "cycle1799"] {
+        assert!(
+            received.profiles.iter().any(|profile| profile
+                .sample
+                .iter()
+                .any(|sample| scope_frame(profile, sample).contains(name))),
+            "missing {name} samples: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
     let (received, stdout) = collect("sampled");
     let expected: HashMap<_, _> = stdout
@@ -483,7 +498,56 @@ fn profile_child() {
     let _duplicate_traces = glib::Object::new::<gstoteltracer::TelemetryTracer>();
     let _duplicate_instrument = glib::Object::new::<gstoteltracer::InstrumentTracer>();
 
-    if mode == "profiles-only-elements" {
+    if mode == "profiles-only-churn" {
+        for cycle in 0..1800 {
+            let pipeline = gst::parse::launch(
+                "fakesrc num-buffers=1 ! identity name=work ! fakesink sync=false",
+            )
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+            pipeline.set_property("name", format!("cycle{cycle}"));
+            if cycle == 0 || cycle == 1799 {
+                pipeline
+                    .by_name("work")
+                    .unwrap()
+                    .connect("handoff", false, |_| {
+                        busy_cpu(80);
+                        None
+                    });
+            }
+            let weak = pipeline.downgrade();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let message = pipeline
+                .bus()
+                .unwrap()
+                .timed_pop_filtered(
+                    gst::ClockTime::from_seconds(5),
+                    &[gst::MessageType::Eos, gst::MessageType::Error],
+                )
+                .unwrap();
+            assert_eq!(message.type_(), gst::MessageType::Eos);
+            pipeline.set_state(gst::State::Null).unwrap();
+            drop(message);
+            drop(pipeline);
+            // A task may release its final message/object reference just after
+            // the NULL transition. Require destruction within a bounded grace.
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while weak.upgrade().is_some() {
+                assert!(Instant::now() < deadline, "pipeline retained at {cycle}");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if cycle % 200 == 199 {
+                gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+                let stats = gstoteltracer::profile_stats();
+                assert_eq!(stats.context_capacity_rejections, 0, "{stats:?}");
+                assert!(stats.context_descriptions < 20, "{stats:?}");
+            }
+        }
+        let stats = gstoteltracer::profile_stats();
+        assert!(stats.context_retired > 4096, "{stats:?}");
+        println!("CHURN cycles=1800 {stats:?}");
+    } else if mode == "profiles-only-elements" {
         profile_element_work();
     } else if mode == "profiles-only-stack" {
         let pipeline = gst::parse::launch(

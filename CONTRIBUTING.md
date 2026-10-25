@@ -171,11 +171,12 @@ profiling optimizations.
   serialized exporter. Compare local and delayed receivers, measuring loss,
   CPU, memory, and final drain time. A larger queue alone does not increase
   sustained throughput. Preserve bounded memory and cleanup behavior.
-- [ ] Retire profile element descriptions safely after queued samples no longer
-  reference them. The current 4,096-description limit applies over the process
-  lifetime, so repeated pipeline creation with new names can exhaust attribution
-  capacity. Test beyond that limit without relabeling old samples or retaining
-  destroyed GStreamer objects.
+- [x] Retire profile element descriptions safely after queued samples no longer
+  reference them. The 4,096-description bound now applies to live and pending
+  descriptions; IDs are never reused. Test beyond that limit without relabeling
+  old samples or retaining destroyed GStreamer objects. Coverage includes 1,800
+  recreated pipelines with early and late samples decoded from actual uploads,
+  plus delayed-release and same-path-recreation tests.
 - [ ] Reduce symbolization cost and temporary memory peaks. Measure cold/warm
   caches and large debug files; compare selective eviction with whole-cache
   clearing and evaluate an optional lightweight symbolization mode. Keep
