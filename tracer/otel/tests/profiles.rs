@@ -266,6 +266,7 @@ fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
         .collect();
     let mut phases = HashSet::new();
     let mut tids = HashSet::new();
+    let mut nested_body = false;
     for profile in &received.profiles {
         assert_eq!(profile.period, 10_000_000);
         for sample in &profile.sample {
@@ -303,7 +304,18 @@ fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
                         root.starts_with("[element]") && root.contains("GstIdentity:worker"),
                         "{root}"
                     ),
-                    "nested" => assert_eq!(root, "[unattributed GStreamer CPU]"),
+                    "nested" => {
+                        // A push span includes dispatch before chain-pre and
+                        // after chain-post. That work still executes in outer;
+                        // the factory-less nested chain body is unattributed.
+                        nested_body |= root == "[unattributed GStreamer CPU]";
+                        assert!(
+                            root == "[unattributed GStreamer CPU]"
+                                || (root.starts_with("[element]")
+                                    && root.contains("GstIdentity:outer")),
+                            "{root}"
+                        );
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -315,6 +327,10 @@ fn real_samples_match_nested_and_queue_spans_in_uploaded_pprof() {
     assert!(phases.contains("outer"), "{phases:?}");
     assert!(phases.contains("nested"), "{phases:?}");
     assert!(phases.contains("queue"), "{phases:?}");
+    assert!(
+        nested_body,
+        "the nested chain body must not inherit its caller's element"
+    );
     assert!(tids.len() >= 2, "queue must sample its own native thread");
 }
 
