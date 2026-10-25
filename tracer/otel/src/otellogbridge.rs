@@ -1,73 +1,92 @@
-//! Optional debug logging is deliberately separate from compact span capture.
+//! Optional GStreamer logs with bounded background delivery and native context.
+use crate::{
+    export::FlushError,
+    logexport::{LogStats, Logs},
+};
 use gstreamer as gst;
-use opentelemetry::logs::{LogRecord, Logger, LoggerProvider, Severity};
-use opentelemetry_otlp::{RetryPolicy, WithHttpConfig};
-use opentelemetry_sdk::{logs::SdkLoggerProvider, Resource};
-use std::cell::Cell;
-use std::sync::OnceLock;
-use std::time::Duration;
+use opentelemetry_proto::tonic::{
+    common::v1::{any_value::Value, AnyValue, KeyValue},
+    logs::v1::{LogRecord, SeverityNumber},
+};
+use opentelemetry_sdk::Resource;
+use std::{
+    cell::Cell,
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-static PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
+static LOGS: OnceLock<Logs> = OnceLock::new();
 thread_local! { static IN_LOG: Cell<bool> = const { Cell::new(false) }; }
 
 pub(crate) fn initialize(resource: Resource) -> Result<(), String> {
-    let exporter = opentelemetry_otlp::LogExporter::builder()
-        .with_http()
-        .with_retry_policy(RetryPolicy::disabled())
-        .build()
-        .map_err(|e| e.to_string())?;
-    let provider = SdkLoggerProvider::builder()
-        .with_resource(resource)
-        .with_batch_exporter(exporter)
-        .build();
-    let logger = provider.logger("mars-otel");
-    let _ = PROVIDER.set(provider);
+    let logs = Logs::new(resource)?;
+    LOGS.set(logs).map_err(|_| "logs already initialized")?;
     gst::log::add_log_function(
         move |category, level, file, function, line, _object, message| {
-            if IN_LOG.with(|v| v.replace(true)) {
+            // Worker diagnostics must never recursively create export traffic.
+            if category.name().starts_with("mars-") || IN_LOG.with(|v| v.replace(true)) {
                 return;
             }
-            let mut record = logger.create_log_record();
-            record.set_severity_number(match level {
-                gst::DebugLevel::Error | gst::DebugLevel::Fixme => Severity::Error,
-                gst::DebugLevel::Warning => Severity::Warn,
-                gst::DebugLevel::Info => Severity::Info,
-                gst::DebugLevel::Debug | gst::DebugLevel::Log => Severity::Debug,
-                _ => Severity::Trace,
-            });
-            record.set_timestamp(std::time::SystemTime::now());
-            record.set_body(
-                message
-                    .get()
-                    .map(|m| m.to_string())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            record.add_attribute("gst.category", category.name().to_string());
-            record.add_attribute("code.file", file.to_string());
-            record.add_attribute("code.function", function.to_string());
-            record.add_attribute("code.line", line as i64);
-            if let Some(context) = crate::capture::current_context().filter(|c| c.is_valid()) {
-                record.set_trace_context(
-                    context.trace_id(),
-                    context.span_id(),
-                    Some(context.trace_flags()),
-                );
-            }
-            logger.emit(record);
+            let text = |value: &str, limit| {
+                Value::StringValue(crate::export::text_value(value, limit).to_string())
+            };
+            let attribute = |key: &str, value| KeyValue {
+                key: key.into(),
+                value: Some(AnyValue { value: Some(value) }),
+                ..Default::default()
+            };
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+                .min(u64::MAX as u128) as u64;
+            let context = crate::capture::current_context().filter(|c| c.is_valid());
+            let record = LogRecord {
+                time_unix_nano: now,
+                observed_time_unix_nano: now,
+                severity_number: match level {
+                    gst::DebugLevel::Error | gst::DebugLevel::Fixme => SeverityNumber::Error,
+                    gst::DebugLevel::Warning => SeverityNumber::Warn,
+                    gst::DebugLevel::Info => SeverityNumber::Info,
+                    gst::DebugLevel::Debug | gst::DebugLevel::Log => SeverityNumber::Debug,
+                    _ => SeverityNumber::Trace,
+                } as i32,
+                body: Some(AnyValue {
+                    value: Some(text(message.get().as_deref().unwrap_or_default(), 16384)),
+                }),
+                attributes: vec![
+                    attribute("gst.category", text(category.name(), 256)),
+                    attribute("code.file", text(file, 4096)),
+                    attribute("code.function", text(function, 4096)),
+                    attribute("code.line", Value::IntValue(line as i64)),
+                ],
+                trace_id: context
+                    .as_ref()
+                    .map(|c| c.trace_id().to_bytes().to_vec())
+                    .unwrap_or_default(),
+                span_id: context
+                    .as_ref()
+                    .map(|c| c.span_id().to_bytes().to_vec())
+                    .unwrap_or_default(),
+                flags: context
+                    .as_ref()
+                    .map(|c| c.trace_flags().to_u8() as u32)
+                    .unwrap_or_default(),
+                ..Default::default()
+            };
+            LOGS.get().unwrap().emit(record);
             IN_LOG.with(|v| v.set(false));
         },
     );
     Ok(())
 }
 
-pub(crate) fn flush() {
-    if let Some(provider) = PROVIDER.get() {
-        let _ = provider.force_flush();
-    }
+pub(crate) fn flush(timeout: Duration) -> Result<(), FlushError> {
+    LOGS.get().map_or(Ok(()), |logs| logs.flush(timeout))
 }
-pub(crate) fn shutdown(timeout: Duration) {
-    if let Some(provider) = PROVIDER.get() {
-        let _ = provider.shutdown_with_timeout(timeout);
-    }
+pub(crate) fn shutdown(timeout: Duration) -> Result<(), FlushError> {
+    LOGS.get().map_or(Ok(()), |logs| logs.shutdown(timeout))
+}
+pub(crate) fn stats() -> LogStats {
+    LOGS.get().map_or_else(LogStats::default, Logs::stats)
 }

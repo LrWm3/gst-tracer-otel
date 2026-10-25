@@ -427,6 +427,14 @@ impl Runtime {
     }
 
     pub fn flush(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
+        let (traces, metrics) = self.flush_parts(timeout);
+        traces.and_then(|stats| metrics.map(|()| stats))
+    }
+
+    pub fn flush_parts(
+        &self,
+        timeout: Duration,
+    ) -> (Result<ExportStats, FlushError>, Result<(), FlushError>) {
         let start = Instant::now();
         let traces = self.finish(timeout, false);
         let metrics = self
@@ -437,10 +445,19 @@ impl Runtime {
             .shared_metrics
             .as_ref()
             .map_or(Ok(()), |m| m.flush(timeout.saturating_sub(start.elapsed())));
-        traces.and_then(|stats| metrics.and(shared).map(|()| stats))
+        (traces, metrics.and(shared))
     }
 
+    #[cfg(test)]
     pub fn shutdown(&self, timeout: Duration) -> Result<ExportStats, FlushError> {
+        let (traces, metrics) = self.shutdown_parts(timeout);
+        traces.and_then(|stats| metrics.map(|()| stats))
+    }
+
+    pub fn shutdown_parts(
+        &self,
+        timeout: Duration,
+    ) -> (Result<ExportStats, FlushError>, Result<(), FlushError>) {
         let start = Instant::now();
         if let Some(metrics) = &self.metrics {
             metrics.request_stop();
@@ -455,7 +472,7 @@ impl Runtime {
         let shared = self.shared_metrics.as_ref().map_or(Ok(()), |m| {
             m.shutdown(timeout.saturating_sub(start.elapsed()))
         });
-        traces.and_then(|stats| metrics.and(shared).map(|()| stats))
+        (traces, metrics.and(shared))
     }
 
     fn shutdown_traces(&self, timeout: Duration) -> Result<ExportStats, FlushError> {

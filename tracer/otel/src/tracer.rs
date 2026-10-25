@@ -113,7 +113,7 @@ fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, S
         }
     };
     config.logs = settings.logs;
-    if !settings.traces && settings.metrics {
+    if !settings.traces {
         if let Ok(value) = std::env::var("GST_OTEL_FLUSH_TIMEOUT_MS") {
             let ms = value
                 .parse::<u64>()
@@ -257,7 +257,7 @@ fn activate_with_params(mode: Mode, params: Option<&str>) -> bool {
             // Do not leave its global log/profile worker running unattended.
             let timeout = std::time::Duration::from_secs(1);
             let start = std::time::Instant::now();
-            crate::otellogbridge::shutdown(timeout);
+            let _ = crate::otellogbridge::shutdown(timeout);
             let _ = crate::profiles::shutdown(timeout.saturating_sub(start.elapsed()));
         }
         result
@@ -481,9 +481,17 @@ macro_rules! tracer_impl {
                                 start.elapsed(),
                                 runtime.stats.snapshot()
                             );
-                            let start = std::time::Instant::now();
-                            crate::otellogbridge::flush();
-                            gst::debug!(CAT, "Log drain took {:?}", start.elapsed());
+                            let remaining =
+                                runtime.config.flush_timeout.saturating_sub(start.elapsed());
+                            let log_start = std::time::Instant::now();
+                            if let Err(error) = crate::otellogbridge::flush(remaining) {
+                                gst::warning!(
+                                    CAT,
+                                    "Log drain failed: {error}; counters: {:?}",
+                                    crate::log_stats()
+                                );
+                            }
+                            gst::debug!(CAT, "Log drain took {:?}", log_start.elapsed());
                         }
                     }
                 }

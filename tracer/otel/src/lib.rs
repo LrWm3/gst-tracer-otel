@@ -18,6 +18,8 @@
 use gstreamer as gst;
 mod capture;
 mod export;
+mod lifecycle;
+mod logexport;
 mod metadata;
 mod metrics;
 mod otellogbridge;
@@ -35,27 +37,25 @@ mod transport;
 mod wire;
 
 pub use export::{ExportStats, FlushError};
+pub use lifecycle::{flush_report, shutdown_report, DrainReport};
+pub use logexport::LogStats;
 pub use metrics::MetricStats;
 pub use profiles::{profile_stats, ProfileStats};
 #[cfg(feature = "profiles")]
 pub use profiletracer::ProfilesTracer;
 pub use tracer::{InstrumentTracer, TelemetryTracer};
 
-/// Drain traces and snapshot cumulative metrics, bounded by `timeout`.
-/// Stop streaming first for an exact final snapshot. Logs have a separate SDK flush.
+/// Drain traces, logs and snapshot cumulative metrics, bounded by `timeout`.
+/// Stop streaming first for an exact final snapshot.
 pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
-    tracer::runtime()?.flush(timeout)
+    flush_report(timeout).result()
 }
 
 /// Stop accepting records, drain exporters and stop the optional CPU profiler.
 /// The timeout covers all cleanup; timed-out workers may continue in background.
 /// Profile HTTP delivery acknowledgements are not exposed by the Pyroscope SDK.
 pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
-    let start = std::time::Instant::now();
-    let result = tracer::runtime()?.shutdown(timeout);
-    otellogbridge::shutdown(timeout.saturating_sub(start.elapsed()));
-    let profiles = profiles::shutdown(timeout.saturating_sub(start.elapsed()));
-    result.and_then(|stats| profiles.map(|()| stats))
+    shutdown_report(timeout).result()
 }
 
 /// Context of the current push or pull, for explicit application instrumentation bridges.
@@ -72,6 +72,11 @@ pub fn stats() -> Result<ExportStats, FlushError> {
 /// Metrics accounting, or zero counters when metrics are disabled.
 pub fn metric_stats() -> Result<MetricStats, FlushError> {
     Ok(tracer::runtime()?.metric_stats())
+}
+
+/// Cumulative log-delivery counters, or zero counters when logs are disabled.
+pub fn log_stats() -> LogStats {
+    otellogbridge::stats()
 }
 
 // ───────────────── plugin boilerplate ──────────────────

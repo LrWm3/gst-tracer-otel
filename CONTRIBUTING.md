@@ -108,10 +108,11 @@ profiling optimizations.
   required by the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/#partial-success-1).
   Cover full acceptance, partial/all rejection, warning-only responses, malformed
   bodies, and transport failures with receiver tests.
-- [ ] Apply a shared deadline to trace, metric, log, and profile cleanup. Pipeline
-  teardown currently flushes logs on a separate SDK timeout, and log flush and
-  shutdown errors are discarded. Return useful per-signal failure information
-  and test slow/unavailable receivers, repeated shutdown, and concurrent callers.
+- [x] Apply a shared deadline to trace, metric, and log flushes, and to shutdown
+  of all signals including profiles. Log export now uses a bounded worker and
+  reports failures. `flush_report` and `shutdown_report` retain per-signal
+  results; tests cover slow/failing receivers, repeated shutdown, and concurrent
+  callers. Explicit profile flushing is the next lifecycle item.
 - [ ] Provide a final profile drain accessible to C/Python applications as well
   as Rust. Distinguish local queue drain from confirmed backend delivery, and
   preserve other active pipelines when one pipeline transitions to NULL.

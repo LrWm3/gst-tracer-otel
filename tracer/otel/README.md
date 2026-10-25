@@ -289,8 +289,8 @@ application-controlled. Overflow drops the new record; it never waits for the
 receiver. A transport or malformed-response failure counts the entire attempted
 batch as failed. A valid partial-success response counts only rejected spans as
 failed and the remainder as accepted, with no additional retry queue. Trace
-transport makes one export attempt per batch; SDK log-exporter retries
-are explicitly disabled. Responses are consumed for connection reuse and capped
+transport makes one export attempt per batch, as does log export.
+Responses are consumed for connection reuse and capped
 at 4 MiB. Non-success HTTP status, request timeout, oversized responses, and
 encoded bodies over 64 MiB count the attempted trace batch as failed. A timeout can leave
 delivery uncertain, and collector acceptance does not guarantee durable storage.
@@ -502,6 +502,22 @@ exporter. It is process-wide and cannot be restarted. Records completing after
 closure increment `dropped_closed`. On a caller timeout, the worker may still be
 finishing a request; counters remain inspectable, and shutdown may be retried.
 Abrupt process termination cannot guarantee a drain.
+
+`flush` shares one deadline across traces, metrics, and logs. `shutdown` also
+includes the CPU profiler in that deadline. `flush_report(timeout)` and
+`shutdown_report(timeout)` return separate trace, metric, log, and profile
+results, so a failure in one signal does not hide another. Flush does not yet
+request a profile drain; its report has `profiles: None`.
+
+Logs use a bounded background queue, with `OTEL_BLRP_MAX_QUEUE_SIZE` (default
+2048, maximum 65536), `OTEL_BLRP_MAX_EXPORT_BATCH_SIZE` (default 512, capped by
+queue capacity), and `OTEL_BLRP_SCHEDULE_DELAY` (default 1000 ms, maximum 60000).
+All three settings must be positive. Log bodies are capped at 16384 characters,
+category names at 256, and file/function attributes at 4096. Log export uses the
+same HTTP/protobuf transport and signal-specific OTLP settings as traces.
+`log_stats()` exposes accepted, failed, rejected, dropped, and pending records.
+Mars diagnostic categories are excluded from the log bridge to prevent export
+failures from generating more telemetry for the failing destination.
 
 C and other GStreamer applications can find the tracer through
 `gst_tracing_get_active_tracers()` and read its `stats` property, a `GstStructure`.

@@ -1,5 +1,5 @@
 //! A single bounded OTLP/HTTP request at a time, with reference-counted bodies.
-//! Logs continue to use the upstream exporter. Trace encoding is in wire.rs.
+//! Shared by traces, metrics, and logs. Trace encoding is in wire.rs.
 use crate::{
     capture::Record,
     export::{Anchor, Config, ExportOutcome, FlushError, RecordExporter},
