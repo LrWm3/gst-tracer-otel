@@ -244,6 +244,7 @@ fn snapshot() -> Vec<proto::MetricFamily> {
             ("traces", "enqueued", traces.enqueued_spans),
             ("traces", "unsampled_pushes", traces.unsampled_pushes),
             ("traces", "unsampled_pulls", traces.unsampled_pulls),
+            ("traces", "unsampled_lists", traces.unsampled_lists),
             (
                 "traces",
                 "propagation_fallbacks",

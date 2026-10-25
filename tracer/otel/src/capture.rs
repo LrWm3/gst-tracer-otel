@@ -65,12 +65,14 @@ pub(crate) struct ThreadInfo {
 pub(crate) enum Operation {
     Push,
     Pull,
+    PushList,
 }
 impl Operation {
     pub fn name(self) -> &'static str {
         match self {
             Self::Push => "gst.pad.push",
             Self::Pull => "gst.pad.pull_range",
+            Self::PushList => "gst.pad.push_list",
         }
     }
     pub fn error(self, flow_return: i32) -> Option<&'static str> {
@@ -79,6 +81,7 @@ impl Operation {
             .then_some(match self {
                 Self::Push => "GStreamer push failed",
                 Self::Pull => "GStreamer pull failed",
+                Self::PushList => "GStreamer buffer-list push failed",
             })
     }
 }
@@ -93,6 +96,7 @@ pub(crate) struct Record {
     pub end: u64,
     pub buffer_id: usize,
     pub buffer_size: usize,
+    pub list_len: Option<usize>,
     pub thread: Arc<ThreadInfo>,
     pub flow_return: i32,
     pub profiled: bool,
@@ -160,11 +164,31 @@ pub(crate) fn current_context() -> Option<SpanContext> {
 }
 
 pub(crate) fn begin(runtime: &Runtime, ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
-    LOCAL.with(|local| begin_local(local, runtime, ts, pad, Some(buffer), Operation::Push));
+    LOCAL.with(|local| begin_local(local, runtime, ts, pad, Some(buffer), Operation::Push, None));
 }
 
 pub(crate) fn begin_pull(runtime: &Runtime, ts: u64, pad: &gst::Pad) {
-    LOCAL.with(|local| begin_local(local, runtime, ts, pad, None, Operation::Pull));
+    LOCAL.with(|local| begin_local(local, runtime, ts, pad, None, Operation::Pull, None));
+}
+
+pub(crate) fn begin_list(runtime: &Runtime, ts: u64, pad: &gst::Pad, list: &gst::BufferList) {
+    use glib::translate::from_glib_borrow;
+    // The list owns its buffers throughout the hook. Borrow wrappers do not
+    // increment refcounts or change the normal metadata writability decision.
+    let first: Option<glib::translate::Borrowed<gst::Buffer>> = list
+        .get(0)
+        .map(|buffer| unsafe { from_glib_borrow(buffer.as_ptr() as *mut gst::ffi::GstBuffer) });
+    LOCAL.with(|local| {
+        begin_local(
+            local,
+            runtime,
+            ts,
+            pad,
+            first.as_deref(),
+            Operation::PushList,
+            Some(list),
+        )
+    });
 }
 
 fn begin_local(
@@ -174,6 +198,7 @@ fn begin_local(
     pad: &gst::Pad,
     buffer: Option<&gst::Buffer>,
     operation: Operation,
+    list: Option<&gst::BufferList>,
 ) {
     crate::profiles::clear();
     // Resolve TLS once. Individual borrows still end before GStreamer calls,
@@ -228,7 +253,7 @@ fn begin_local(
     let series = runtime
         .metrics
         .as_ref()
-        .filter(|_| operation == Operation::Push)
+        .filter(|_| operation != Operation::Pull)
         .and_then(|m| m.series(site.as_ref().unwrap()));
     let record = if token.sampled() && runtime.accepting() {
         let site = site.unwrap();
@@ -264,8 +289,13 @@ fn begin_local(
             parent_is_remote,
             start: ts,
             end: ts,
-            buffer_id: buffer.map_or(0, |b| b.as_ptr() as usize),
-            buffer_size: buffer.map_or(0, |b| b.size()),
+            buffer_id: list.map_or_else(
+                || buffer.map_or(0, |b| b.as_ptr() as usize),
+                |l| l.as_ptr() as usize,
+            ),
+            buffer_size: list
+                .map_or_else(|| buffer.map_or(0, |b| b.size()), |l| l.calculate_size()),
+            list_len: list.map(|l| l.len()),
             thread,
             flow_return: 0,
             profiled: false,
@@ -278,13 +308,22 @@ fn begin_local(
             match operation {
                 Operation::Push => &stats.unsampled_pushes,
                 Operation::Pull => &stats.unsampled_pulls,
+                Operation::PushList => &stats.unsampled_lists,
             }
             .fetch_add(1, Relaxed);
         }
         None
     };
     if runtime.config.traces {
-        if let Some(buffer) = buffer {
+        if let Some(list) = list {
+            for buffer in list.iter() {
+                // SAFETY: each borrowed buffer remains owned by the input list.
+                let buffer: glib::translate::Borrowed<gst::Buffer> = unsafe {
+                    glib::translate::from_glib_borrow(buffer.as_ptr() as *mut gst::ffi::GstBuffer)
+                };
+                crate::propagation::write(&buffer, &token, is_root, &runtime.stats);
+            }
+        } else if let Some(buffer) = buffer {
             crate::propagation::write(buffer, &token, is_root, &runtime.stats);
         }
     }
@@ -341,6 +380,15 @@ fn publish_profile(state: &ThreadState) -> bool {
 
 pub(crate) fn end(runtime: &Runtime, ts: u64, pad: &gst::Pad, flow_return: i32) -> Option<Token> {
     finish(runtime, ts, pad, flow_return, Operation::Push, None)
+}
+
+pub(crate) fn end_list(
+    runtime: &Runtime,
+    ts: u64,
+    pad: &gst::Pad,
+    flow_return: i32,
+) -> Option<Token> {
+    finish(runtime, ts, pad, flow_return, Operation::PushList, None)
 }
 
 pub(crate) fn end_pull(
@@ -445,7 +493,47 @@ mod tests {
         tests::{runtime, Collector},
         Config,
     };
+    use opentelemetry::KeyValue;
     use std::time::Duration;
+
+    #[test]
+    fn list_roots_replace_shared_context_and_empty_or_failed_lists_remain_balanced() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        source.link(&sink).unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffer = gst::Buffer::with_size(4).unwrap();
+        let mut list = gst::BufferList::new();
+        list.get_mut().unwrap().add(buffer.clone());
+        let shared = list.clone();
+        begin_list(&runtime, 100, &pad, &list);
+        let first = current_context().unwrap();
+        assert_eq!(crate::propagation::read(&buffer).unwrap().context(), first);
+        end_list(&runtime, 120, &pad, 0);
+        begin_list(&runtime, 130, &pad, &shared);
+        let next = current_context().unwrap();
+        assert_ne!(first.trace_id(), next.trace_id());
+        assert_eq!(crate::propagation::read(&buffer).unwrap().context(), next);
+        end_list(&runtime, 150, &pad, gst::ffi::GST_FLOW_ERROR);
+        begin_list(&runtime, 160, &pad, &gst::BufferList::new());
+        end_list(&runtime, 180, &pad, 0);
+        assert!(current_context().is_none());
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 3);
+        assert_eq!(stats.mismatched_hooks + stats.propagation_misses, 0);
+        let spans = collector.0.lock().unwrap();
+        assert!(spans.iter().all(|s| s.name == "gst.pad.push_list fakesink"));
+        assert!(matches!(
+            spans[1].status,
+            opentelemetry::trace::Status::Error { .. }
+        ));
+        assert!(spans[2]
+            .attributes
+            .contains(&KeyValue::new("buffer.list.length", 0_i64)));
+    }
 
     #[test]
     fn nested_pulls_seed_owned_context_for_downstream_pushes() {

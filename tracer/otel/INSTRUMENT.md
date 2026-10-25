@@ -149,15 +149,18 @@ translation: for example, the legacy `gst_element_latency_count_count` becomes
 `gst_element_latency_count_count_total`. `mars-metrics` keeps its existing text
 format and names. No trace or span IDs are added to metric-series labels.
 
-Ordinary pushes and pull reads produce trace spans and metric exemplars.
+Ordinary pushes, buffer-list pushes, and pull reads produce trace spans and
+metric exemplars.
 A top-level `gst.pad.pull_range` span starts a trace before the buffer exists,
 then attaches context to the returned buffer for downstream pushes. This covers
 file sources read by demuxers without adding a queue to force push scheduling.
 Nested reads inherit the active span; EOS ends the read normally. Reads can
 contain part of a frame or several frames, so traces are not guaranteed to map
 one-to-one to video frames. Elements must preserve buffer metadata across
-asynchronous boundaries. Buffer lists produce metrics and element-attributed
-profiles without creating their own spans. A locally rejected trace
+asynchronous boundaries. A buffer-list push creates one `gst.pad.push_list`
+span with `buffer.list.length` and total `buffer.size`, then propagates that
+context to its members. A later individual push can inherit the list span.
+A locally rejected trace
 cannot replace an exemplar. Later export failure or backend retention can still
 leave a missing trace, and short spans may have no CPU samples.
 

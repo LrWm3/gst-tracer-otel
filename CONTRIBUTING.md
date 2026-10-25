@@ -199,8 +199,10 @@ profiling optimizations.
 
 ### Trace coverage
 
-- [ ] Add buffer-list spans and exemplars. Individual push and pull calls already
-  create spans; lists currently have metrics and attributed CPU profiles only.
+- [x] Add buffer-list spans and exemplars. Each list push creates one span and
+  propagates its context to every member. Queue-crossing tests cover list and
+  individual-buffer descendants, sampled/unsampled paths, both metric formats,
+  shared lists, empty lists, and failed calls.
 - [ ] Add span links for fan-in and batched inputs, with explicit limits and
   documented behavior when elements replace buffers or strip metadata.
 - [ ] Investigate per-buffer queue residence measurements separately from

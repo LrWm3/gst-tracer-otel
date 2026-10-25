@@ -14,6 +14,8 @@ pub struct CaptureHooks {
     pub exemplars: bool,
     pub begin: fn(u64, &gstreamer::Pad, &gstreamer::Buffer),
     pub end: fn(u64, &gstreamer::Pad, i32) -> Option<exemplars::Exemplar>,
+    pub list_begin: fn(u64, &gstreamer::Pad, &gstreamer::BufferList),
+    pub list_end: fn(u64, &gstreamer::Pad, i32) -> Option<exemplars::Exemplar>,
     pub pull_begin: fn(u64, &gstreamer::Pad),
     pub pull_end:
         fn(u64, &gstreamer::Pad, i32, Option<&gstreamer::Buffer>) -> Option<exemplars::Exemplar>,

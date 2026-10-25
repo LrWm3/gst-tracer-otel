@@ -100,8 +100,12 @@ fn run(mode: &str) -> (Received, String) {
             .env("MARS_METRIC_SAMPLE_RATE", "invalid")
             .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "invalid");
     }
-    if mode == "unsampled" {
+    if mode == "unsampled" || mode == "lists-unsampled" {
         cmd.env("OTEL_TRACES_SAMPLER", "parentbased_always_off");
+    }
+    if mode == "lists-legacy" {
+        cmd.env_remove("MARS_PROFILE_URL")
+            .env("GST_INSTRUMENT_CPU_SAMPLE_RATE", "1");
     }
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -225,6 +229,79 @@ fn full_metrics_and_exemplars_survive_otlp_translation() {
 }
 
 #[test]
+fn buffer_lists_cross_a_queue_with_connected_spans_and_matching_exemplars() {
+    for mode in ["lists", "lists-traces", "lists-legacy", "lists-unsampled"] {
+        let (received, _) = run(mode);
+        if mode == "lists-unsampled" {
+            assert!(received.spans.is_empty());
+            continue;
+        }
+        assert_eq!(
+            received.spans.len(),
+            30,
+            "{mode}: {:?}",
+            received.spans.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        let lists: Vec<_> = received
+            .spans
+            .iter()
+            .filter(|s| s.name.starts_with("gst.pad.push_list"))
+            .collect();
+        assert_eq!(lists.len(), 12);
+        for span in &lists {
+            assert!(matches!(
+                span.name.as_str(),
+                "gst.pad.push_list queue" | "gst.pad.push_list identity"
+            ));
+            assert!(span.attributes.iter().any(|a| a.key == "buffer.list.length"
+                && matches!(
+                    a.value.as_ref().and_then(|v| v.value.as_ref()),
+                    Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(3))
+                )));
+            assert!(span.attributes.iter().any(|a| a.key == "buffer.size"
+                && matches!(
+                    a.value.as_ref().and_then(|v| v.value.as_ref()),
+                    Some(opentelemetry_proto::tonic::common::v1::any_value::Value::IntValue(12))
+                )));
+        }
+        let mut traces = std::collections::HashMap::new();
+        for span in &received.spans {
+            traces
+                .entry(&span.trace_id)
+                .or_insert_with(Vec::new)
+                .push(span);
+        }
+        assert_eq!(traces.len(), 6);
+        for spans in traces.values() {
+            assert_eq!(spans.len(), 5);
+            assert_eq!(
+                spans.iter().filter(|s| s.parent_span_id.is_empty()).count(),
+                1
+            );
+            for span in spans.iter().filter(|s| !s.parent_span_id.is_empty()) {
+                assert!(spans
+                    .iter()
+                    .any(|parent| parent.span_id == span.parent_span_id));
+            }
+        }
+        if mode != "lists-traces" {
+            assert!(
+                received.metrics.iter().any(|m| match &m.data {
+                    Some(Data::Histogram(h)) => h.data_points.iter().any(|p| p
+                        .exemplars
+                        .iter()
+                        .any(|e| lists
+                            .iter()
+                            .any(|s| s.trace_id == e.trace_id && s.span_id == e.span_id))),
+                    _ => false,
+                }),
+                "list operations must carry metric exemplars: {mode}"
+            );
+        }
+    }
+}
+
+#[test]
 fn disabled_signals_ignore_exporters_and_other_signal_settings() {
     let (metrics, _) = run("metrics");
     assert_eq!(count(&metrics, "gst_element_sync_wall_seconds"), 301);
@@ -289,15 +366,68 @@ fn signals_child() {
     }
     let signals = match mode.as_str() {
         "metrics" | "prometheus" | "port-conflict" => "metrics",
-        "traces" => "traces",
+        "traces" | "lists-traces" => "traces",
         _ => "metrics,traces",
     };
     let params = format!(
         "signals=\"{signals}\",metrics-exporter={},metrics-port={port}",
         if prometheus { "prometheus" } else { "otlp" }
     );
-    let _tracer: gstoteltracer::InstrumentTracer =
-        glib::Object::builder().property("params", params).build();
+    let _tracer: gstoteltracer::InstrumentTracer = if mode == "lists-legacy" {
+        glib::Object::new()
+    } else {
+        glib::Object::builder().property("params", params).build()
+    };
+    if mode.starts_with("lists") {
+        let pipeline = gst::parse::launch(
+            "appsrc name=source format=time ! queue ! identity ! fakesink sync=false",
+        )
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let source = pipeline.by_name("source").unwrap();
+        for _ in 0..6 {
+            let mut list = gst::BufferList::new();
+            for _ in 0..3 {
+                list.get_mut()
+                    .unwrap()
+                    .add(gst::Buffer::with_size(4).unwrap());
+            }
+            assert_eq!(
+                source.emit_by_name::<gst::FlowReturn>("push-buffer-list", &[&list]),
+                gst::FlowReturn::Ok
+            );
+        }
+        assert_eq!(
+            source.emit_by_name::<gst::FlowReturn>("end-of-stream", &[]),
+            gst::FlowReturn::Ok
+        );
+        let message = pipeline
+            .bus()
+            .unwrap()
+            .timed_pop_filtered(
+                gst::ClockTime::from_seconds(5),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            )
+            .unwrap();
+        assert_eq!(message.type_(), gst::MessageType::Eos);
+        pipeline.set_state(gst::State::Null).unwrap();
+        let stats = gstoteltracer::shutdown(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            stats.mismatched_hooks
+                + stats.propagation_misses
+                + stats.failed_export_spans
+                + stats.dropped_queue_full,
+            0,
+            "{stats:?}"
+        );
+        assert_eq!(stats.pending_spans, 0);
+        if mode == "lists-unsampled" {
+            assert_eq!(stats.unsampled_lists, 12);
+        }
+        return;
+    }
     if mode == "port-conflict" {
         assert_eq!(
             gstoteltracer::stats(),

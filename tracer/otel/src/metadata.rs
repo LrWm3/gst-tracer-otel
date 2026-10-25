@@ -11,7 +11,7 @@ use std::sync::{
 use crate::export::text_value;
 
 pub(crate) struct Site {
-    pub span_names: [Arc<str>; 2],
+    pub span_names: [Arc<str>; 3],
     pub attributes: Vec<KeyValue>,
     pub metrics: OnceLock<Arc<crate::metrics::Series>>,
     pub metric_rejected_epoch: AtomicU64,
@@ -258,6 +258,7 @@ pub(crate) fn site(pad: &gst::Pad, limit: usize) -> Arc<Site> {
     let span_names = [
         span_name(crate::capture::Operation::Push, &sink_factory),
         span_name(crate::capture::Operation::Pull, &source_factory),
+        span_name(crate::capture::Operation::PushList, &sink_factory),
     ];
     let values = [
         ("src_pad.factory", source_factory),

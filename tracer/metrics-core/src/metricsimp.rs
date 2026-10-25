@@ -434,6 +434,13 @@ impl MetricsTracerImp {
             pad: *mut gst::ffi::GstPad,
             list_ptr: *mut gst::ffi::GstBufferList,
         ) {
+            if let Some(capture) = crate::CAPTURE.get() {
+                (capture.list_begin)(
+                    ts,
+                    &gst::Pad::from_glib_borrow(pad),
+                    &gst::BufferList::from_glib_borrow(list_ptr),
+                );
+            }
             let buffers = if IO {
                 u64::from(ffi::gst_buffer_list_length(list_ptr))
             } else {
@@ -451,9 +458,14 @@ impl MetricsTracerImp {
             _tracer: *mut gst::Tracer,
             ts: u64,
             pad: *mut gst::ffi::GstPad,
-            _result: gst::ffi::GstFlowReturn,
+            result: gst::ffi::GstFlowReturn,
         ) {
-            MetricsTracerImp::do_receive_and_record_latency_ts::<false, IO>(ts, pad, false);
+            MetricsTracerImp::receive::<false, IO, true>(
+                ts,
+                pad,
+                false,
+                Some((result, std::ptr::null_mut())),
+            );
         }
 
         unsafe extern "C" fn do_pull_range_pre<const IO: bool>(
@@ -475,7 +487,7 @@ impl MetricsTracerImp {
             buffer: *mut gst::ffi::GstBuffer,
             result: gst::ffi::GstFlowReturn,
         ) {
-            MetricsTracerImp::receive::<true, IO>(
+            MetricsTracerImp::receive::<true, IO, false>(
                 ts,
                 pad,
                 result >= ffi::GST_FLOW_OK && !buffer.is_null(),
@@ -1052,12 +1064,13 @@ impl MetricsTracerImp {
         });
     }
 
+    #[cfg(test)]
     unsafe fn do_receive_and_record_latency_ts<const PULL: bool, const IO: bool>(
         _ts: u64,
         src_pad: *mut gst::ffi::GstPad,
         returned_buffer: bool,
     ) {
-        Self::receive::<PULL, IO>(_ts, src_pad, returned_buffer, None);
+        Self::receive::<PULL, IO, false>(_ts, src_pad, returned_buffer, None);
     }
 
     unsafe fn finish_push<const IO: bool>(
@@ -1065,10 +1078,10 @@ impl MetricsTracerImp {
         pad: *mut ffi::GstPad,
         result: ffi::GstFlowReturn,
     ) {
-        Self::receive::<false, IO>(ts, pad, false, Some((result, std::ptr::null_mut())));
+        Self::receive::<false, IO, false>(ts, pad, false, Some((result, std::ptr::null_mut())));
     }
 
-    unsafe fn receive<const PULL: bool, const IO: bool>(
+    unsafe fn receive<const PULL: bool, const IO: bool, const LIST: bool>(
         ts: u64,
         src_pad: *mut ffi::GstPad,
         returned_buffer: bool,
@@ -1091,6 +1104,8 @@ impl MetricsTracerImp {
             if PULL {
                 let buffer = returned_buffer.then(|| gst::Buffer::from_glib_borrow(buffer));
                 (capture.pull_end)(ts, &pad, result, buffer.as_deref())
+            } else if LIST {
+                (capture.list_end)(ts, &pad, result)
             } else {
                 (capture.end)(ts, &pad, result)
             }

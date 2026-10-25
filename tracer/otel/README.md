@@ -242,8 +242,8 @@ and flags are written directly, without `SpanData` or per-span protobuf objects.
 The SDK conversion remains a test oracle for decoded message equivalence.
 
 The worker reuses its encoding buffers and sends reference-counted `Bytes`
-bodies, without cloning the encoded payload. A single request is in flight at a
-time. Both blocking and worker-owned asynchronous reqwest adapters are available;
+bodies, without cloning the encoded payload. One request is in flight by default;
+`GST_OTEL_EXPORT_CONCURRENCY` permits up to four. Both blocking and worker-owned asynchronous reqwest adapters are available;
 neither depends on an application Tokio runtime. Logs use a separate bounded
 worker with the same HTTP transport. Producer handoffs remain individual records: a measured batching
 experiment increased streaming CPU and was removed.
@@ -251,16 +251,20 @@ The first sampled hook anchors GStreamer's monotonic clock to wall time; later
 wall-clock adjustments do not change recorded durations.
 
 Spans include the callee's factory name, such as `gst.pad.push videoconvert` or
-`gst.pad.pull_range filesrc`. Pushes name the downstream receiving factory;
+`gst.pad.pull_range filesrc`. Buffer lists use `gst.pad.push_list queue`, for
+example. Pushes name the downstream receiving factory;
 pulls name the upstream serving factory. If no factory is available, the name
 falls back to the operation. There is no instance-name mode. `gst.operation`
-retains `gst.pad.push` or `gst.pad.pull_range` for operation-level queries;
+retains `gst.pad.push`, `gst.pad.push_list`, or `gst.pad.pull_range` for
+operation-level queries;
 `src_pad.factory` and `sink_pad.factory` identify both endpoint factories.
 Instance names and paths remain in `src_pad.*` and `sink_pad.*` attributes.
 Durations remain inclusive synchronous call durations, not exclusive CPU time.
 Other attributes include `buffer.id`,
 `buffer.size`, `thread.id`, `thread.name`, `ts.start`, `ts.end`, and
-`gst.flow_return` attributes. A negative flow return sets error status. Duration
+`gst.flow_return` attributes. List spans also carry `buffer.list.length`; their
+`buffer.size` is the sum of member sizes and `buffer.id` identifies the list.
+A negative flow return sets error status. Duration
 is the inclusive push call, including synchronous downstream work; it is not
 exclusive element processing time or end-to-end buffer latency.
 
@@ -615,8 +619,10 @@ retain all failures, including ones already reported during pipeline stop.
   push with missing context is counted and suppressed, never resampled as a root.
 - Elements that strip metadata or create unrelated buffers asynchronously need
   element-specific propagation. Generic fan-in retains the first copied input
-  context and does not reconstruct multi-input links. Buffer lists do not create
-  trace spans. Top-level pull reads create roots and attach their sampling
+  context and does not reconstruct multi-input links. Each buffer-list push
+  creates one span and propagates its context to all members. Across an
+  asynchronous boundary it inherits the first member's context. Top-level pull
+  reads create roots and attach their sampling
   decision to the returned buffer; downstream pushes inherit it when metadata
   survives. Nested pulls inherit the active span. Pull EOS is normal completion.
   A read is not necessarily a video frame: demuxers can split or combine reads.
@@ -624,7 +630,7 @@ retain all failures, including ones already reported during pipeline stop.
   explicitly bridge `current_span_context()` if it needs a child SDK span. The
   optional log bridge uses native log trace/span fields from the capture stack.
 - Debug log formatting still runs on the caller thread when opted in. Logs use
-  their own SDK batch processor, queue, and accounting; the trace limits and
+  their own bounded worker, queue, and accounting; the trace limits and
   counters do not cover logs. The standard GStreamer log handler remains active.
 
 ## Validation and benchmark

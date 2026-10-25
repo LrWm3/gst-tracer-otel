@@ -74,7 +74,7 @@ counters! {
     started_spans, completed_spans, enqueued_spans, exported_spans,
     dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
     rejected_spans, export_warnings,
-    unsampled_pushes, unsampled_pulls, skipped_closed, propagation_misses, propagation_fallbacks,
+    unsampled_pushes, unsampled_pulls, unsampled_lists, skipped_closed, propagation_misses, propagation_fallbacks,
     dropped_depth, mismatched_hooks,
 }
 
@@ -577,6 +577,9 @@ pub(crate) fn span_data(
     if record.profiled && !omitted_profile {
         attributes.push(KeyValue::new("pyroscope.profile.id", span_id.to_string()));
     }
+    if let Some(length) = record.list_len {
+        attributes.push(KeyValue::new("buffer.list.length", length as i64));
+    }
     let dropped =
         attributes.len().saturating_sub(config.attribute_limit) + usize::from(omitted_profile);
     attributes.truncate(config.attribute_limit);
@@ -799,6 +802,7 @@ pub(crate) mod tests {
             end: 150,
             buffer_id: 123,
             buffer_size: 256,
+            list_len: None,
             thread: Arc::new(ThreadInfo {
                 encoded: Default::default(),
                 id: "thread1".into(),

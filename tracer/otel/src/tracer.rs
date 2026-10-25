@@ -156,6 +156,17 @@ fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, S
         gst_mars_metrics_core::set_capture_hooks(gst_mars_metrics_core::CaptureHooks {
             exemplars: settings.traces,
             begin: capture_begin,
+            list_begin: capture_list_begin,
+            list_end: |ts, pad, result| {
+                let token = capture_list_end(ts, pad, result)?;
+                let runtime = crate::tracer::runtime().ok()?;
+                Some(gst_mars_metrics_core::exemplars::Exemplar {
+                    trace_id: token.trace_id.to_bytes(),
+                    span_id: token.span_id.to_bytes(),
+                    timestamp_ns: runtime.timestamp(ts),
+                    value: 0.0,
+                })
+            },
             pull_begin: capture_pull_begin,
             pull_end: |ts, pad, result, buffer| {
                 let token = capture_pull_end(ts, pad, result, buffer)?;
@@ -194,6 +205,23 @@ fn capture_begin(ts: u64, pad: &gst::Pad, buffer: &gst::Buffer) {
             crate::profiles::register_thread();
         }
     }
+}
+
+fn capture_list_begin(ts: u64, pad: &gst::Pad, list: &gst::BufferList) {
+    if let Ok(runtime) = runtime() {
+        if runtime.config.traces || runtime.metrics.is_some() {
+            capture::begin_list(runtime, ts, pad, list);
+        } else {
+            #[cfg(feature = "profiles")]
+            crate::profiles::register_thread();
+        }
+    }
+}
+fn capture_list_end(ts: u64, pad: &gst::Pad, result: i32) -> Option<capture::Token> {
+    let runtime = runtime().ok()?;
+    (runtime.config.traces || runtime.metrics.is_some())
+        .then(|| capture::end_list(runtime, ts, pad, result))
+        .flatten()
 }
 
 fn capture_pull_begin(ts: u64, pad: &gst::Pad) {
@@ -341,10 +369,13 @@ macro_rules! tracer_impl {
                     } else if runtime.config.traces || runtime.metrics.is_some() {
                         self.register_hook(TracerHook::PadPushPre);
                         self.register_hook(TracerHook::PadPushPost);
+                        self.register_hook(TracerHook::PadPushListPre);
+                        self.register_hook(TracerHook::PadPushListPost);
                     } else {
                         #[cfg(feature = "profiles")]
                         if crate::profiles::active() {
                             self.register_hook(TracerHook::PadPushPre);
+                            self.register_hook(TracerHook::PadPushListPre);
                         }
                     }
                     let pull_hooks = runtime.config.traces;
@@ -355,10 +386,6 @@ macro_rules! tracer_impl {
                     if runtime.shared_metrics.is_none() && pull_hooks {
                         self.register_hook(TracerHook::PadPullRangePre);
                         self.register_hook(TracerHook::PadPullRangePost);
-                    }
-                    #[cfg(feature = "profiles")]
-                    if crate::profiles::active() {
-                        self.register_hook(TracerHook::PadPushListPre);
                     }
                     for hook in [
                         TracerHook::PadLinkPost,
@@ -397,9 +424,16 @@ macro_rules! tracer_impl {
                     };
                     capture_pull_end(ts, pad, flow, buffer);
                 }
-                fn pad_push_list_pre(&self, _: u64, _: &gst::Pad, _: &gst::BufferList) {
-                    #[cfg(feature = "profiles")]
-                    crate::profiles::register_thread();
+                fn pad_push_list_pre(&self, ts: u64, pad: &gst::Pad, list: &gst::BufferList) {
+                    capture_list_begin(ts, pad, list);
+                }
+                fn pad_push_list_post(
+                    &self,
+                    ts: u64,
+                    pad: &gst::Pad,
+                    result: Result<gst::FlowSuccess, gst::FlowError>,
+                ) {
+                    capture_list_end(ts, pad, result.into_glib());
                 }
                 fn element_new(&self, ts: u64, element: &gst::Element) {
                     gst_mars_metrics_core::MetricsTracerImp.element_new(ts, element, 0);

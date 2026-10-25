@@ -153,13 +153,17 @@ impl Encoder {
             integer(span, 6, 1); // INTERNAL
             fixed64(span, 7, anchor.nanos(record.start));
             fixed64(span, 8, anchor.nanos(record.end.max(record.start)));
-            let total_attributes = record.site.attributes.len() + 8 + usize::from(record.profiled);
+            let total_attributes = record.site.attributes.len()
+                + 8
+                + usize::from(record.profiled)
+                + usize::from(record.list_len.is_some());
             let mut remaining = config.attribute_limit;
-            static OPERATIONS: std::sync::LazyLock<[EncodedAttributes; 2]> =
+            static OPERATIONS: std::sync::LazyLock<[EncodedAttributes; 3]> =
                 std::sync::LazyLock::new(|| {
                     [
                         crate::capture::Operation::Push,
                         crate::capture::Operation::Pull,
+                        crate::capture::Operation::PushList,
                     ]
                     .map(|op| EncodedAttributes::new([KeyValue::new("gst.operation", op.name())]))
                 });
@@ -215,16 +219,23 @@ impl Encoder {
                 span.extend_from_slice(&id);
                 remaining -= 1;
             }
+            if let Some(length) = record.list_len.filter(|_| remaining > 0) {
+                int_attribute(span, "buffer.list.length", length as i64);
+                remaining -= 1;
+            }
             integer(
                 span,
                 10,
                 total_attributes.saturating_sub(config.attribute_limit - remaining) as u64,
             );
             if let Some(message) = record.operation.error(record.flow_return) {
-                // Both operation-specific messages have the same fixed length.
-                span.extend_from_slice(b"\x7a\x19\x12\x15");
-                span.extend_from_slice(message.as_bytes());
-                span.extend_from_slice(b"\x18\x02");
+                varint(span, (15 << 3) | 2);
+                varint(
+                    span,
+                    (1 + width(message.len() as u64) + message.len() + 2) as u64,
+                );
+                bytes(span, 2, message.as_bytes());
+                integer(span, 3, 2);
             } else {
                 bytes(span, 15, &[]);
             }
@@ -295,6 +306,8 @@ mod tests {
                     false,
                 ),
                 (crate::capture::Operation::Pull, -5, true),
+                (crate::capture::Operation::PushList, 0, false),
+                (crate::capture::Operation::PushList, -5, true),
             ] {
                 for (profiled, value_length_limit) in [
                     (false, 4096),
@@ -313,11 +326,13 @@ mod tests {
                     a.flow_return = flow;
                     a.parent_is_remote = remote;
                     a.profiled = profiled;
+                    a.list_len = (operation == crate::capture::Operation::PushList).then_some(3);
                     let mut b = record(1);
                     b.operation = operation;
                     b.flow_return = flow;
                     b.parent_is_remote = remote;
                     b.profiled = profiled;
+                    b.list_len = a.list_len;
                     encoder.encode(&[a], &anchor, &config).unwrap();
                     let decoded = ExportTraceServiceRequest::decode(encoder.body.as_ref()).unwrap();
                     let expected =
