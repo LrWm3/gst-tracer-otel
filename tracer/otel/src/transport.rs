@@ -2,11 +2,13 @@
 //! Logs continue to use the upstream exporter. Trace encoding is in wire.rs.
 use crate::{
     capture::Record,
-    export::{Anchor, Config, FlushError, RecordExporter},
+    export::{Anchor, Config, ExportOutcome, FlushError, RecordExporter},
     wire::Encoder,
 };
 use bytes::Bytes;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceResponse;
 use opentelemetry_sdk::Resource;
+use prost::Message;
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
     Url,
@@ -139,13 +141,7 @@ impl HttpExporter {
         };
         Ok(Self { client, settings })
     }
-    pub fn send(&self, body: Bytes) -> Result<(), FlushError> {
-        self.request(body, false).map(|_| ())
-    }
     pub fn send_response(&self, body: Bytes) -> Result<Vec<u8>, FlushError> {
-        self.request(body, true)
-    }
-    fn request(&self, body: Bytes, retain_response: bool) -> Result<Vec<u8>, FlushError> {
         let failed = |_| FlushError::ExportFailed;
         match &self.client {
             Client::Blocking(client) => {
@@ -159,13 +155,10 @@ impl HttpExporter {
                 let status = response.status();
                 let mut limited = response.take(MAX_RESPONSE as u64 + 1);
                 let mut response = Vec::new();
-                let count = if retain_response {
-                    limited.read_to_end(&mut response).map(|n| n as u64)
-                } else {
-                    std::io::copy(&mut limited, &mut std::io::sink())
-                }
-                .map_err(|_| FlushError::ExportFailed)?;
-                if !status.is_success() || count > MAX_RESPONSE as u64 {
+                let count = limited
+                    .read_to_end(&mut response)
+                    .map_err(|_| FlushError::ExportFailed)?;
+                if status != reqwest::StatusCode::OK || count > MAX_RESPONSE {
                     return Err(FlushError::ExportFailed);
                 }
                 Ok(response)
@@ -186,11 +179,9 @@ impl HttpExporter {
                     if length > MAX_RESPONSE {
                         return Err(FlushError::ExportFailed);
                     }
-                    if retain_response {
-                        bytes.extend_from_slice(&chunk);
-                    }
+                    bytes.extend_from_slice(&chunk);
                 }
-                if status.is_success() {
+                if status == reqwest::StatusCode::OK {
                     Ok(bytes)
                 } else {
                     Err(FlushError::ExportFailed)
@@ -217,13 +208,32 @@ impl RecordExporter for OtlpExporter {
         records: &[Record],
         anchor: &Anchor,
         config: &Config,
-    ) -> Result<(), FlushError> {
+    ) -> Result<ExportOutcome, FlushError> {
         self.encoder.encode(records, anchor, config)?;
         let body = std::mem::take(&mut self.encoder.body).freeze();
-        let result = self.http.send(body.clone());
+        let result = self.http.send_response(body.clone());
         // The request has completed; normally this recovers the same allocation.
         self.encoder.body = body.try_into_mut().unwrap_or_default();
-        result
+        let response = ExportTraceServiceResponse::decode(result?.as_slice())
+            .map_err(|_| FlushError::ExportFailed)?;
+        let Some(partial) = response.partial_success else {
+            return Ok(ExportOutcome::default());
+        };
+        let rejected =
+            u64::try_from(partial.rejected_spans).map_err(|_| FlushError::ExportFailed)?;
+        if rejected > records.len() as u64 {
+            return Err(FlushError::ExportFailed);
+        }
+        let warned = !partial.error_message.is_empty();
+        if warned || rejected != 0 {
+            gstreamer::warning!(
+                crate::tracer::CAT,
+                "Trace collector rejected {rejected}/{} spans: {}",
+                records.len(),
+                crate::export::text_value(&partial.error_message, 1024)
+            );
+        }
+        Ok(ExportOutcome { rejected, warned })
     }
 }
 
@@ -304,7 +314,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                client.send(Bytes::from_static(b"test-body")),
+                client.send_response(Bytes::from_static(b"test-body")),
                 Err(FlushError::ExportFailed)
             );
             release.send(()).unwrap();

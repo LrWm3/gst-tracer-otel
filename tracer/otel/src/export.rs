@@ -36,7 +36,7 @@ struct SubmissionCount(AtomicUsize);
 
 macro_rules! counters {
     ($($name:ident),* $(,)?) => {
-        /// Cumulative counts. Export success means a successful exporter call,
+        /// Cumulative counts. Export success means collector acceptance,
         /// not a guarantee of durable collector storage. Snapshots are concurrent.
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
         pub struct ExportStats { $(pub $name: u64,)* pub pending_spans: u64 }
@@ -71,6 +71,7 @@ macro_rules! counters {
 counters! {
     started_spans, completed_spans, enqueued_spans, exported_spans,
     dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
+    rejected_spans, export_warnings,
     unsampled_pushes, unsampled_pulls, skipped_closed, propagation_misses, propagation_fallbacks,
     dropped_depth, mismatched_hooks,
 }
@@ -224,6 +225,12 @@ impl Anchor {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct ExportOutcome {
+    pub rejected: u64,
+    pub warned: bool,
+}
+
 pub(crate) trait RecordExporter: Send + 'static {
     fn set_resource(&mut self, _resource: &Resource) {}
     fn export(
@@ -231,7 +238,7 @@ pub(crate) trait RecordExporter: Send + 'static {
         records: &[Record],
         anchor: &Anchor,
         config: &Config,
-    ) -> Result<(), FlushError>;
+    ) -> Result<ExportOutcome, FlushError>;
     fn shutdown(&mut self, _timeout: Duration) -> Result<(), FlushError> {
         Ok(())
     }
@@ -244,7 +251,7 @@ impl RecordExporter for OptionalExporter {
         records: &[Record],
         anchor: &Anchor,
         config: &Config,
-    ) -> Result<(), FlushError> {
+    ) -> Result<ExportOutcome, FlushError> {
         self.0
             .as_mut()
             .ok_or(FlushError::Closed)?
@@ -635,13 +642,28 @@ fn export_batch<E: RecordExporter>(
         config,
     );
     batch.clear();
-    if result.is_ok() {
-        stats.exported_spans.fetch_add(count, Relaxed);
-    } else {
-        stats.failed_exports.fetch_add(1, Relaxed);
-        stats.failed_export_spans.fetch_add(count, Relaxed);
+    match result {
+        Ok(outcome) => {
+            stats
+                .exported_spans
+                .fetch_add(count - outcome.rejected, Relaxed);
+            stats.rejected_spans.fetch_add(outcome.rejected, Relaxed);
+            stats
+                .export_warnings
+                .fetch_add(u64::from(outcome.warned), Relaxed);
+            if outcome.rejected == 0 {
+                return Ok(());
+            }
+            stats
+                .failed_export_spans
+                .fetch_add(outcome.rejected, Relaxed);
+        }
+        Err(_) => {
+            stats.failed_export_spans.fetch_add(count, Relaxed);
+        }
     }
-    result
+    stats.failed_exports.fetch_add(1, Relaxed);
+    Err(FlushError::ExportFailed)
 }
 
 #[cfg(test)]
@@ -654,7 +676,7 @@ impl<E: SpanExporter + 'static> RecordExporter for E {
         records: &[Record],
         anchor: &Anchor,
         config: &Config,
-    ) -> Result<(), FlushError> {
+    ) -> Result<ExportOutcome, FlushError> {
         let scope = InstrumentationScope::builder("mars-otel")
             .with_version(env!("CARGO_PKG_VERSION"))
             .build();
@@ -666,6 +688,7 @@ impl<E: SpanExporter + 'static> RecordExporter for E {
                 .map(|r| span_data(r, anchor, config, &scope))
                 .collect(),
         ))
+        .map(|()| ExportOutcome::default())
         .map_err(|_| FlushError::ExportFailed)
     }
     fn shutdown(&mut self, timeout: Duration) -> Result<(), FlushError> {

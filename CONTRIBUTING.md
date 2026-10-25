@@ -96,13 +96,13 @@ built from `gst-noop-tracer`. It is not a telemetry collector.
 
 ## Remaining work
 
-These are planned changes, not currently supported options. Prioritize delivery
+Unchecked items are planned changes, not currently supported options. Prioritize delivery
 correctness, lifecycle handling, and instrumentation health before export and
 profiling optimizations.
 
 ### Delivery and lifecycle
 
-- [ ] Decode OTLP trace export responses. HTTP 200 can include rejected spans;
+- [x] Decode OTLP trace export responses. HTTP 200 can include rejected spans;
   count accepted and rejected records accurately, surface warning messages, and
   reject malformed responses. Do not retry partially accepted batches, as
   required by the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/#partial-success-1).

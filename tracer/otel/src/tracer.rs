@@ -9,7 +9,7 @@ use crate::{
 };
 
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "mars-otel",
         gst::DebugColorFlags::empty(),

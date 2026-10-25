@@ -286,13 +286,14 @@ are bounded by the batch and a 64 MiB encoded request limit. Cached encoded
 attributes live with their descriptors; invalidation creates a new descriptor
 while pending records retain the old one. Thread and pipeline counts remain
 application-controlled. Overflow drops the new record; it never waits for the
-receiver. A failed export counts the entire attempted batch as failed, with no
-additional retry queue. Trace transport makes one export attempt per batch; SDK log-exporter retries
+receiver. A transport or malformed-response failure counts the entire attempted
+batch as failed. A valid partial-success response counts only rejected spans as
+failed and the remainder as accepted, with no additional retry queue. Trace
+transport makes one export attempt per batch; SDK log-exporter retries
 are explicitly disabled. Responses are consumed for connection reuse and capped
 at 4 MiB. Non-success HTTP status, request timeout, oversized responses, and
 encoded bodies over 64 MiB count the attempted trace batch as failed. A timeout can leave
-delivery uncertain, and exporter
-success does not guarantee durable storage or detect collector partial rejection.
+delivery uncertain, and collector acceptance does not guarantee durable storage.
 
 ## Sampling
 
@@ -508,6 +509,11 @@ The same cumulative fields are available through the Rust API:
 
 - `started_spans`, `completed_spans`, `enqueued_spans`, `exported_spans`.
 - `dropped_queue_full`, `dropped_closed`, `failed_export_spans`, `failed_exports`.
+- `rejected_spans` counts explicit collector rejections (also included in
+  `failed_export_spans`); `export_warnings` counts responses with a warning
+  message. `exported_spans` counts only accepted spans. HTTP 200 partial-success
+  responses are decoded; rejected batches are not retried. Malformed responses
+  fail the batch, while warning-only responses preserve successful accounting.
 - `pending_spans`, including queued, batched, and currently exporting records.
 - `unsampled_pushes`, `unsampled_pulls`, `skipped_closed` (sampled calls begun after shutdown),
   `propagation_misses`, `propagation_fallbacks`,

@@ -2,7 +2,12 @@
 //! decoded OTLP, not merely whether the pipeline reached EOS.
 use gstreamer::{self as gst, prelude::*};
 use opentelemetry_proto::tonic::{
-    collector::{logs::v1::ExportLogsServiceRequest, trace::v1::ExportTraceServiceRequest},
+    collector::{
+        logs::v1::ExportLogsServiceRequest,
+        trace::v1::{
+            ExportTracePartialSuccess, ExportTraceServiceRequest, ExportTraceServiceResponse,
+        },
+    },
     trace::v1::Span,
 };
 use prost::Message;
@@ -30,6 +35,7 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
     let stopping = stop.clone();
     let slow = mode == "slow";
     let fail = mode.ends_with("fail");
+    let response_mode = mode.strip_prefix("async-").unwrap_or(mode).to_owned();
     let receiver = std::thread::spawn(move || {
         while !stopping.load(Ordering::Relaxed) {
             if let Some(mut request) = server.recv_timeout(Duration::from_millis(20)).unwrap() {
@@ -59,6 +65,12 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                     .any(|h| h.field.equiv("content-type")
                         && h.value.as_str() == "application/x-protobuf"));
                 let decoded = ExportTraceServiceRequest::decode(data.as_slice()).unwrap();
+                let count: usize = decoded
+                    .resource_spans
+                    .iter()
+                    .flat_map(|r| &r.scope_spans)
+                    .map(|s| s.spans.len())
+                    .sum();
                 for rs in decoded.resource_spans {
                     if rs.resource.unwrap().attributes.iter().any(|a| {
                         a.key == "service.name" && format!("{:?}", a.value).contains("otel-test")
@@ -73,10 +85,37 @@ fn collect(pipeline: &str, sampler: &str, ratio: &str, mode: &str) -> Vec<Span> 
                 if slow {
                     std::thread::sleep(Duration::from_millis(100));
                 }
+                let response = if response_mode == "malformed" {
+                    b"not protobuf".to_vec()
+                } else {
+                    ExportTraceServiceResponse {
+                        partial_success: match response_mode.as_str() {
+                            "partial" | "reject" | "warning" | "invalid-count"
+                            | "negative-count" => Some(ExportTracePartialSuccess {
+                                rejected_spans: match response_mode.as_str() {
+                                    "partial" => 1,
+                                    "reject" => count as i64,
+                                    "invalid-count" => count as i64 + 1,
+                                    "negative-count" => -1,
+                                    _ => 0,
+                                },
+                                error_message: "test collector response".into(),
+                            }),
+                            _ => None,
+                        },
+                    }
+                    .encode_to_vec()
+                };
                 request
                     // 503 is retryable by default in OTel 0.33. One received
                     // copy of each span verifies our explicit no-retry policy.
-                    .respond(tiny_http::Response::empty(if fail { 503 } else { 200 }))
+                    .respond(
+                        tiny_http::Response::from_data(response).with_status_code(if fail {
+                            503
+                        } else {
+                            200
+                        }),
+                    )
                     .unwrap();
             }
         }
@@ -282,6 +321,28 @@ fn metadata_refreshes_after_rename() {
 }
 
 #[test]
+fn trace_responses_account_for_rejections_and_warnings_without_retries() {
+    for adapter in ["", "async-"] {
+        for mode in [
+            "partial",
+            "reject",
+            "warning",
+            "malformed",
+            "invalid-count",
+            "negative-count",
+        ] {
+            let spans = collect(
+                LINEAR,
+                "parentbased_always_on",
+                "1",
+                &format!("{adapter}{mode}"),
+            );
+            assert_eq!(complete_traces(&spans, 5), 100);
+        }
+    }
+}
+
+#[test]
 #[ignore = "spawned by collector tests with a fresh process and explicit environment"]
 fn pipeline_child() {
     gst::init().unwrap();
@@ -346,13 +407,31 @@ fn pipeline_child() {
     );
     assert_eq!(stats.mismatched_hooks, 0);
     assert_eq!(stats.propagation_misses, 0, "{stats:?}");
-    match mode.as_str() {
+    match mode.strip_prefix("async-").unwrap_or(&mode) {
         "unsampled" => {
             assert_eq!(stats.started_spans, 0);
             assert_eq!(stats.unsampled_pushes, 2000);
         }
         "slow" => assert!(stats.dropped_queue_full > 0),
-        "fail" | "async-fail" => {
+        "partial" => {
+            assert!(stats.rejected_spans > 0);
+            assert_eq!(stats.failed_export_spans, stats.rejected_spans);
+            assert_eq!(stats.failed_exports, stats.rejected_spans);
+            assert_eq!(stats.export_warnings, stats.failed_exports);
+            assert_eq!(stats.exported_spans + stats.rejected_spans, 500);
+        }
+        "reject" => {
+            assert_eq!(stats.rejected_spans, 500);
+            assert_eq!(stats.failed_export_spans, 500);
+            assert_eq!(stats.exported_spans, 0);
+        }
+        "warning" => {
+            assert!(stats.export_warnings > 0);
+            assert_eq!(stats.exported_spans, 500);
+            assert_eq!(stats.failed_exports, 0);
+            assert_eq!(stats.rejected_spans, 0);
+        }
+        "fail" | "malformed" | "invalid-count" | "negative-count" => {
             assert_eq!(stats.failed_export_spans, 500);
             assert_eq!(stats.exported_spans, 0);
         }
