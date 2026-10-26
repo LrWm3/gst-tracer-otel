@@ -52,10 +52,34 @@ mod imp {
                 self.register_hook(hook);
             }
             crate::profilecontext::register(self);
+            #[cfg(target_os = "linux")]
+            if crate::nvtxcontext::enabled() {
+                self.register_hook(TracerHook::ElementChangeStatePre);
+                self.register_hook(TracerHook::ElementChangeStatePost);
+            }
         }
     }
     impl GstObjectImpl for ProfilesTracer {}
     impl TracerImpl for ProfilesTracer {
+        #[cfg(target_os = "linux")]
+        fn element_change_state_pre(
+            &self,
+            _: u64,
+            element: &gst::Element,
+            change: gst::StateChange,
+        ) {
+            crate::nvtxcontext::state_pre(element, change);
+        }
+        #[cfg(target_os = "linux")]
+        fn element_change_state_post(
+            &self,
+            _: u64,
+            element: &gst::Element,
+            change: gst::StateChange,
+            _: Result<gst::StateChangeSuccess, gst::StateChangeError>,
+        ) {
+            crate::nvtxcontext::state_post(element, change);
+        }
         fn pad_pull_range_pre(&self, _: u64, pad: &gst::Pad, _: u64, _: u32) {
             crate::profiles::register_thread();
             crate::profilecontext::begin(pad, 2);

@@ -378,6 +378,10 @@ macro_rules! tracer_impl {
                             self.register_hook(TracerHook::PadPushListPre);
                         }
                     }
+                    #[cfg(all(feature = "profiles", target_os = "linux"))]
+                    if crate::nvtxcontext::enabled() && runtime.shared_metrics.is_none() {
+                        self.register_hook(TracerHook::ElementChangeStatePre);
+                    }
                     let pull_hooks = runtime.config.traces;
                     #[cfg(feature = "profiles")]
                     let pull_hooks = pull_hooks || crate::profiles::active();
@@ -441,9 +445,12 @@ macro_rules! tracer_impl {
                 fn element_change_state_pre(
                     &self,
                     _: u64,
-                    _: &gst::Element,
+                    element: &gst::Element,
                     change: gst::StateChange,
                 ) {
+                    let _ = element;
+                    #[cfg(all(feature = "profiles", target_os = "linux"))]
+                    crate::nvtxcontext::state_pre(element, change);
                     if change == gst::StateChange::ReadyToPaused {
                         invalidate_metrics();
                     }
@@ -504,6 +511,8 @@ macro_rules! tracer_impl {
                     change: gst::StateChange,
                     result: Result<gst::StateChangeSuccess, gst::StateChangeError>,
                 ) {
+                    #[cfg(all(feature = "profiles", target_os = "linux"))]
+                    crate::nvtxcontext::state_post(element, change);
                     if element.is::<gst::Pipeline>()
                         && change == gst::StateChange::ReadyToNull
                         && result.is_ok()

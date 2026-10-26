@@ -114,7 +114,7 @@ mod platform {
         false
     }
     #[cfg(feature = "profiles")]
-    pub fn publish_element(_: u64) {}
+    pub fn publish_element(_: u64, _: bool) {}
     pub fn shutdown(_: Duration) -> Result<(), FlushError> {
         Ok(())
     }
@@ -172,6 +172,11 @@ pub(crate) fn initialize(
             .into_string()
             .map_err(|_| "MARS_PROFILE_SOURCES is not UTF-8")?,
     )?;
+    #[cfg(all(feature = "profiles", target_os = "linux"))]
+    {
+        crate::profilecontext::configure()?;
+        crate::nvtxcontext::initialize()?;
+    }
     if sources.gpu {
         #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
         {
@@ -330,6 +335,7 @@ mod linux {
         valid: AtomicBool,
         ids: [AtomicU64; 3],
         element: AtomicU64,
+        correlate_element: AtomicBool,
         head: AtomicUsize,
         tail: AtomicUsize,
         buffers: OnceLock<Box<Buffers>>,
@@ -356,6 +362,7 @@ mod linux {
                 valid: AtomicBool::new(false),
                 ids: std::array::from_fn(|_| AtomicU64::new(0)),
                 element: AtomicU64::new(0),
+                correlate_element: AtomicBool::new(true),
                 head: AtomicUsize::new(0),
                 tail: AtomicUsize::new(0),
                 buffers: OnceLock::new(),
@@ -872,6 +879,7 @@ mod linux {
         let slot = &sampler.slots[index];
         slot.prepare();
         slot.element.store(0, Relaxed);
+        slot.correlate_element.store(true, Relaxed);
         // SAFETY: pthread attributes and signal masks below refer to the calling
         // thread, all output storage is initialized before use and destroyed.
         unsafe {
@@ -986,12 +994,17 @@ mod linux {
     pub fn active() -> bool {
         ACTIVE.load(Relaxed)
     }
-    pub fn publish_element(id: u64) {
+    pub fn publish_element(id: u64, correlate: bool) {
         if active() {
             let _ = REGISTRATION.try_with(|registration| {
                 if let Ok(registration) = registration.try_borrow() {
                     if let Some(r) = registration.as_ref() {
-                        r.sampler.slots[r.index].element.store(id, Relaxed);
+                        let slot = &r.sampler.slots[r.index];
+                        // Same-thread signal publication: clear IDs before
+                        // entering an independently attributed worker scope.
+                        slot.correlate_element.store(false, Relaxed);
+                        slot.element.store(id, Relaxed);
+                        slot.correlate_element.store(correlate, Relaxed);
                     }
                 }
             });
@@ -1093,7 +1106,11 @@ mod linux {
         let sp = registers.sp;
         let fp = registers.fp;
         let mut sample = Sample {
-            ids: slot.context(),
+            ids: if slot.correlate_element.load(Relaxed) {
+                slot.context()
+            } else {
+                [0; 3]
+            },
             element: slot.element.load(Relaxed),
             tid,
             len: 1,

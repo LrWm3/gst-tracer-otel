@@ -63,8 +63,8 @@ worker joins subsequent CUPTI kernel activities using that launch's correlation
 ID. Element descriptions remain alive while the join is pending, including
 after the original element or pipeline has been destroyed.
 
-The resulting profile type is
-`gpu_kernel:gpu:nanoseconds:gpu:nanoseconds`. Each sample carries `span_id` and
+The resulting GPU profile type is
+`gpu_kernel:gpu:nanoseconds:gpu:nanoseconds`. Correlated samples carry `span_id` and
 `trace_id`, and eligible spans carry `pyroscope.profile.id`. These IDs remain
 sample labels, not profile-series labels.
 
@@ -98,6 +98,62 @@ formats the same weights as time. Its span-name column was empty in the tested
 version, but the span IDs, durations and trace navigation worked. The capture
 script uses the normal one-minute correlation padding: very short windows can
 omit the service from Drilldown's catalog even when its span profile is queryable.
+
+## Optional inference-worker attribution
+
+An element can queue work to a private thread that never enters a GStreamer
+hook. Enable the separate NVTX adapter to attribute supported `nvinfer` worker
+ranges to their owning element:
+
+```sh
+sh tracer/otel/native/build-nvtx-adapter.sh target/libmars-nvtx.so
+export MARS_PROFILE_NVTX_ADAPTER="$PWD/target/libmars-nvtx.so"
+export NVTX_INJECTION64_PATH="$MARS_PROFILE_NVTX_ADAPTER"
+# Keep the GPU adapter/settings above; optionally select cpu,gpu.
+```
+
+Set both variables **before starting the application**. The NVTX adapter needs
+no CUDA headers and also works with CPU-only `--features profiles` builds. It
+does not load CUPTI or collect GPU activities itself. The NVTX injection slot
+cannot be shared with another NVTX profiler such as Nsight.
+
+The bridge binds an NVTX domain created during `nvinfer`'s READY → PAUSED
+transition to that exact element. On the worker, domain push/pop ranges install
+and restore the shared profiling context. It does not infer ownership from
+thread names or globally match `unique-id` values: different elements and
+pipelines may reuse them. CPU sampling registers a participating worker at its
+first recognized range; GPU-only mode creates no CPU timers. CPU work outside
+the range remains unattributed unless another GStreamer scope owns it.
+
+This provides `element → CPU stack` and `element → GPU kernel` attribution.
+**It does not establish per-batch trace links.** A worker range has no submitting
+span unless that same element already has an active synchronous call on the
+thread. Unrelated spans are suppressed, and asynchronous domain start/end
+ranges are not treated as execution scopes. Exact worker trace links still
+need a context handoff through the job queue.
+
+Support depends on the plugin emitting `GstNvInfer: UID=...` domains and domain
+push/pop ranges at these boundaries. Domains initialized before Mars, domains
+created on an unknown thread, and other plugins' private workers are not
+automatically attributed. No range messages, batch numbers or kernel names are
+used to guess a missing relationship.
+
+The registry caps at 4,096 domains and holds weak element descriptions. Domain
+destruction releases entries; expired owners are reclaimed on the next domain
+creation. Thread scopes share the existing 256-entry limit. Ambiguous nesting
+and overflow suppress attribution. `nvtx_profile_stats()` exposes bound/live
+domains, entered ranges and capacity rejections. Signal handlers never read the
+domain registry or invoke NVTX.
+
+Implementation is isolated in [nvtxcontext.rs](src/nvtxcontext.rs) and
+[nvtx_adapter.c](native/nvtx_adapter.c). The no-GPU integration test exercises
+the native injection ABI with two elements sharing an inference ID, overlapping
+domain ranges, reused workers, CPU-only/GPU-only/combined modes and repeated
+element lifetimes:
+
+```sh
+cargo test -p gst-otel-tracer --features gpu-profiles --test nvtx_profiles
+```
 
 ## Demo and checks
 
@@ -181,7 +237,9 @@ GPU span exemplar back to its trace:
 - Ordinary driver kernel launches and cooperative launches are collected.
   CUDA Graph replay and device-launched work have not been validated.
 - Context on an application's separate worker thread needs explicit propagation;
-  absent context is shown as unattributed. GStreamer task ownership remains
+  the optional NVTX bridge supplies element attribution for supported inference
+  workers but does not propagate per-job spans. Absent context is shown as
+  unattributed. GStreamer task ownership remains
   distinct from an active element call, as with CPU profiles.
 - CUDA kernels are covered. Dedicated decode/encode engines, copies, utilization
   counters and device function sampling are outside this experiment.

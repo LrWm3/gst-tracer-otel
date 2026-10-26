@@ -181,13 +181,34 @@ pub(crate) fn frame(key: u64) -> Arc<str> {
 
 #[derive(Default)]
 struct State {
-    // Identity, operation (chain/list/pull), immutable description ID.
+    // Pad/domain identity, operation (chain/list/pull/worker), description lease.
     calls: Vec<(usize, u8, Description)>,
     owner: Option<(usize, Description)>,
     overflow: usize,
     invalid: bool,
 }
 impl State {
+    fn correlation_allowed(&self) -> bool {
+        if self.invalid || self.overflow != 0 {
+            return false;
+        }
+        let Some((_, operation, worker)) = self.calls.last() else {
+            return true;
+        };
+        if *operation != 3 {
+            return true;
+        }
+        // A worker scope establishes element ownership, not an async span
+        // handoff. Keep a synchronous span only when it belongs to that element.
+        worker.as_ref().is_some_and(|worker| {
+            self.calls
+                .iter()
+                .rev()
+                .find(|(_, op, _)| *op != 3)
+                .and_then(|(_, _, id)| id.as_ref())
+                .is_some_and(|id| id.id == worker.id)
+        })
+    }
     fn current(&self) -> u64 {
         if self.invalid || self.overflow != 0 {
             return 0;
@@ -203,6 +224,11 @@ impl State {
     fn enter(&mut self, pad: usize, operation: u8, id: Description) {
         if self.overflow != 0 || self.calls.len() == MAX_DEPTH {
             self.overflow += 1;
+            // Unlike pad calls, NVTX domains may pop out of global order. Once
+            // their identities no longer fit, suppress attribution until drain.
+            if operation == 3 {
+                self.invalid = true;
+            }
         } else {
             self.calls.push((pad, operation, id));
         }
@@ -223,6 +249,36 @@ impl State {
             self.invalid = true;
         }
     }
+    #[cfg(target_os = "linux")]
+    fn worker_leave(&mut self, domain: usize) -> usize {
+        let depth = self
+            .calls
+            .iter()
+            .filter(|(d, op, _)| *d == domain && *op == 3)
+            .count();
+        if self.overflow != 0 {
+            self.overflow -= 1;
+            self.invalid = true;
+        } else if let Some(index) = self
+            .calls
+            .iter()
+            .rposition(|(d, op, _)| *d == domain && *op == 3)
+        {
+            // NVTX stacks are per domain; ranges in different domains may
+            // overlap without being globally nested. Active pad calls may not.
+            if self.calls[index + 1..].iter().all(|(_, op, _)| *op == 3) {
+                self.calls.remove(index);
+                if self.calls.is_empty() {
+                    self.invalid = false;
+                }
+            } else {
+                self.invalid = true;
+            }
+        } else {
+            self.invalid = true;
+        }
+        depth
+    }
 }
 #[derive(Default)]
 struct Local(RefCell<State>);
@@ -230,13 +286,58 @@ impl Drop for Local {
     fn drop(&mut self) {
         // Clear before State drops its leases. If sampler TLS was destroyed
         // first, Registration already cleared the slot and removed the timer.
-        crate::profiles::publish_element(0);
+        crate::profiles::publish_element(0, false);
     }
 }
 thread_local! { static LOCAL: Local = Local::default(); }
 
 fn active() -> bool {
     enabled() && crate::profiles::active()
+}
+
+#[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+pub(crate) fn correlation_allowed() -> bool {
+    LOCAL
+        .try_with(|local| local.0.try_borrow().is_ok_and(|s| s.correlation_allowed()))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn worker_enter(domain: usize, owner: Description) -> usize {
+    if !active() {
+        return 0;
+    }
+    crate::profiles::register_thread();
+    crate::profiles::publish_element(0, false);
+    LOCAL
+        .try_with(|local| {
+            let Ok(mut state) = local.0.try_borrow_mut() else {
+                return 0;
+            };
+            state.enter(domain, 3, owner);
+            crate::profiles::publish_element(state.current(), state.correlation_allowed());
+            state
+                .calls
+                .iter()
+                .filter(|(d, op, _)| *d == domain && *op == 3)
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn worker_leave(domain: usize) -> usize {
+    crate::profiles::publish_element(0, false);
+    LOCAL
+        .try_with(|local| {
+            let Ok(mut state) = local.0.try_borrow_mut() else {
+                return 0;
+            };
+            let depth = state.worker_leave(domain);
+            crate::profiles::publish_element(state.current(), state.correlation_allowed());
+            depth
+        })
+        .unwrap_or(0)
 }
 /// Retain ownership until asynchronous GPU activity has been encoded.
 #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
@@ -264,7 +365,7 @@ pub(crate) fn begin(pad: &gst::Pad, operation: u8) {
         return;
     }
     crate::profiles::register_thread();
-    crate::profiles::publish_element(0);
+    crate::profiles::publish_element(0, false);
     // In pull mode the receiving sink invokes the upstream source's getrange.
     let id = if operation == 2 {
         pad.peer()
@@ -275,7 +376,7 @@ pub(crate) fn begin(pad: &gst::Pad, operation: u8) {
     LOCAL.with(|local| {
         if let Ok(mut state) = local.0.try_borrow_mut() {
             state.enter(pad.as_ptr() as usize, operation, id);
-            crate::profiles::publish_element(state.current());
+            crate::profiles::publish_element(state.current(), state.correlation_allowed());
         }
     });
 }
@@ -283,11 +384,11 @@ pub(crate) fn end(pad: &gst::Pad, operation: u8) {
     if !active() {
         return;
     }
-    crate::profiles::publish_element(0);
+    crate::profiles::publish_element(0, false);
     let _ = LOCAL.try_with(|local| {
         if let Ok(mut state) = local.0.try_borrow_mut() {
             state.leave(pad.as_ptr() as usize, operation);
-            crate::profiles::publish_element(state.current());
+            crate::profiles::publish_element(state.current(), state.correlation_allowed());
         }
     });
 }
@@ -311,7 +412,7 @@ pub(crate) fn message(element: &gst::Element, message: &gst::Message) {
         return;
     }
     crate::profiles::register_thread();
-    crate::profiles::publish_element(0);
+    crate::profiles::publish_element(0, false);
     let id = (kind == gst::StreamStatusType::Enter)
         .then(|| crate::metadata::profile_id(owner.upcast_ref()));
     LOCAL.with(|local| {
@@ -328,7 +429,7 @@ pub(crate) fn message(element: &gst::Element, message: &gst::Message) {
             {
                 *state = State::default();
             }
-            crate::profiles::publish_element(state.current());
+            crate::profiles::publish_element(state.current(), state.correlation_allowed());
         }
     });
 }
@@ -453,6 +554,64 @@ mod tests {
             })
         })
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn worker_scopes_preserve_only_matching_synchronous_correlation() {
+        let mut state = State::default();
+        state.enter(1, 0, lease(10));
+        state.enter(100, 3, lease(10));
+        assert_eq!(state.current(), 20);
+        assert!(state.correlation_allowed());
+        state.enter(200, 3, lease(20));
+        assert_eq!(state.current(), 40);
+        assert!(!state.correlation_allowed());
+        // Pop a different domain while the newest one remains active.
+        state.worker_leave(100);
+        assert_eq!(state.current(), 40);
+        assert!(!state.correlation_allowed());
+        state.worker_leave(200);
+        assert_eq!(state.current(), 20);
+        assert!(state.correlation_allowed());
+        state.leave(1, 0);
+        state.enter(200, 3, lease(20));
+        assert!(
+            !state.correlation_allowed(),
+            "ownership alone cannot restore a span"
+        );
+        state.enter(300, 3, None);
+        assert_eq!(
+            state.current(),
+            0,
+            "retired domain must not inherit its caller"
+        );
+        state.worker_leave(300);
+        assert_eq!(state.current(), 40);
+        state.worker_leave(200);
+        assert_eq!(state.current(), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn overlapping_worker_overflow_stays_unknown_until_drained() {
+        let mut state = State::default();
+        for _ in 0..MAX_DEPTH {
+            state.enter(100, 3, lease(10));
+        }
+        state.enter(200, 3, lease(20));
+        assert_eq!(state.current(), 0);
+        for _ in 0..MAX_DEPTH {
+            state.worker_leave(100);
+            assert_eq!(state.current(), 0);
+            assert!(!state.correlation_allowed());
+        }
+        state.worker_leave(200);
+        assert_eq!(state.current(), 0);
+        // Lost identities stay suppressed; no guess at recovery from the
+        // ordering of pops in independent domains.
+        state.enter(300, 3, lease(30));
+        assert_eq!(state.current(), 0);
+    }
+
     #[test]
     fn nested_calls_restore_ownership_and_overflow_does_not_misattribute() {
         let mut state = State {

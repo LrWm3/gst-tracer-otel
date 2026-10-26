@@ -168,7 +168,7 @@ unsafe extern "C" fn receive(event: *const Event) {
         return;
     }
     let owner = (event.kind == 1).then(|| Owner {
-        ids: if active() {
+        ids: if active() && crate::profilecontext::correlation_allowed() {
             IDS.try_with(Cell::get).unwrap_or([0; 3])
         } else {
             [0; 3]

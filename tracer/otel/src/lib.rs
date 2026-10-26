@@ -25,6 +25,8 @@ mod lifecycle;
 mod logexport;
 mod metadata;
 mod metrics;
+#[cfg(all(feature = "profiles", target_os = "linux"))]
+mod nvtxcontext;
 mod otellogbridge;
 #[cfg(feature = "profiles")]
 mod profilecontext;
@@ -45,6 +47,8 @@ pub use gpuprofiles::{gpu_profile_stats, GpuProfileStats};
 pub use lifecycle::{flush_report, shutdown_report, DrainReport};
 pub use logexport::LogStats;
 pub use metrics::MetricStats;
+#[cfg(all(feature = "profiles", target_os = "linux"))]
+pub use nvtxcontext::{nvtx_profile_stats, NvtxProfileStats};
 pub use profiles::{profile_stats, ProfileStats};
 #[cfg(feature = "profiles")]
 pub use profiletracer::ProfilesTracer;

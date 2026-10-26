@@ -75,10 +75,16 @@ Synthetic frames have zero **Self** time; their **Total** is the grouped CPU.
 See the [screenshots and validated example](../../reports/otel/PROFILE_ELEMENT_REVIEW.md).
 Set `GST_OTEL_PROFILE_ELEMENTS=false` for native stacks without these roots.
 
-Attribution does not recover missing native symbols or follow element-owned
-private worker pools. Events, queries, and arbitrary callbacks have no separate
-scope hooks; they retain the surrounding call/task context. Task-owner names
-are captured at ENTER; chain descriptions refresh after name/parent changes.
+The optional [NVTX worker bridge](GPU_PROFILES.md#optional-inference-worker-attribution)
+attributes supported `nvinfer` worker ranges and registers those threads for CPU
+sampling. It works with the `profiles` feature alone, independently of GPU
+collection, and needs an explicitly enabled native adapter. Other private worker
+pools remain outside automatic attribution.
+
+Attribution does not recover missing native symbols. Events, queries, and
+arbitrary callbacks have no separate scope hooks; they retain the surrounding
+call/task context. Task-owner names are captured at ENTER; chain descriptions
+refresh after name/parent changes.
 
 ## Linux arm64
 
@@ -122,9 +128,10 @@ With element attribution enabled, GStreamer task ENTER registers a native
 thread before its first buffer, including source production. Push, buffer-list,
 chain, and pull hooks also register participating threads. Sampling then includes
 CPU between calls until thread exit or shutdown, for up to 64 concurrent threads.
-Threads that never reach these hooks, work before registration, and sleeping
-time are not sampled. With attribution disabled, profiles-only registration
-starts at the first push, buffer-list push, or pull-range call. Samples carry
+Threads that never reach these hooks or a recognized optional NVTX range, work
+before registration, and sleeping time are not sampled. With attribution
+disabled, profiles-only registration starts at the first push, buffer-list push,
+or pull-range call. Samples carry
 native `thread_id` labels, without trace or span IDs.
 
 The context stack is bounded at 256 calls per thread; immutable descriptions are

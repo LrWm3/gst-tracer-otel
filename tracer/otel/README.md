@@ -130,6 +130,11 @@ slot, rather than allocating about 9 MiB for all 64 slots at startup. Retiring
 threads release their timers and slots; their buffers remain available for
 reuse and safe handling of pending signals. Full rings drop samples.
 
+The optional [NVTX worker bridge](GPU_PROFILES.md#optional-inference-worker-attribution)
+also registers supported inference workers when they enter an element-owned
+range. It works with CPU-only profiling and requires no CUPTI collection. It
+adds element attribution; per-batch trace propagation remains separate.
+
 The `mars-profiles` entry point uses the same bounded element context stack,
 without trace capture or span correlation. See its
 [configuration and migration guide](PROFILES.md).
