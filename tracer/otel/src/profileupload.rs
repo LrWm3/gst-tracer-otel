@@ -193,6 +193,14 @@ fn send(
     if response.status() != reqwest::StatusCode::OK {
         return Err(FlushError::ExportFailed);
     }
+    // Pyroscope can return gzip even when the client did not advertise it.
+    // Bound both wire bytes and inflated bytes before decoding protobuf.
+    let gzip = match response.headers().get(reqwest::header::CONTENT_ENCODING) {
+        None => false,
+        Some(value) if value == "identity" => false,
+        Some(value) if value == "gzip" => true,
+        Some(_) => return Err(FlushError::ExportFailed),
+    };
     let mut body = Vec::new();
     let length = response
         .take(MAX_RESPONSE as u64 + 1)
@@ -200,6 +208,18 @@ fn send(
         .map_err(|_| FlushError::ExportFailed)?;
     if length > MAX_RESPONSE {
         return Err(FlushError::ExportFailed);
+    }
+    if gzip {
+        let mut decoded = Vec::new();
+        let length = libflate::gzip::Decoder::new(body.as_slice())
+            .map_err(|_| FlushError::ExportFailed)?
+            .take(MAX_RESPONSE as u64 + 1)
+            .read_to_end(&mut decoded)
+            .map_err(|_| FlushError::ExportFailed)?;
+        if length > MAX_RESPONSE {
+            return Err(FlushError::ExportFailed);
+        }
+        body = decoded;
     }
     PushResponse::decode(body.as_slice()).map_err(|_| FlushError::ExportFailed)?;
     Ok(())
@@ -292,6 +312,50 @@ mod tests {
         assert_eq!(counters.accepted_profiles.load(Relaxed), 2);
         assert_eq!(counters.failed_exports.load(Relaxed), 4);
         assert_eq!(counters.dropped_upload.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn compressed_acknowledgements_are_decoded_with_an_inflated_size_limit() {
+        fn gzip(bytes: &[u8]) -> Vec<u8> {
+            let mut writer = libflate::gzip::Encoder::new(Vec::new()).unwrap();
+            writer.write_all(bytes).unwrap();
+            writer.finish().into_result().unwrap()
+        }
+        // A valid unknown protobuf field would otherwise be accepted. Its
+        // compressed representation is small but its decoded size is too large.
+        let mut oversized = vec![0x9a, 0x06];
+        prost::encoding::encode_varint((MAX_RESPONSE * 2) as u64, &mut oversized);
+        oversized.resize(oversized.len() + MAX_RESPONSE * 2, b'x');
+        assert!(PushResponse::decode(oversized.as_slice()).is_ok());
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/prefix", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            for (body, encoding) in [
+                (gzip(&[]), "gzip"),
+                (gzip(&oversized), "gzip"),
+                (vec![0xff], "gzip"),
+                (vec![], "br"),
+            ] {
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                decode(&mut request);
+                let _ = request.respond(tiny_http::Response::from_data(body).with_header(
+                    tiny_http::Header::from_bytes("Content-Encoding", encoding).unwrap(),
+                ));
+            }
+        });
+        let counters = Arc::new(Counters::default());
+        let uploader =
+            Uploader::start(config(url), Duration::from_secs(2), counters.clone()).unwrap();
+        for _ in 0..4 {
+            uploader.submit(batch(), 1, true).unwrap();
+        }
+        assert_eq!(uploader.finish(), Err(FlushError::ExportFailed));
+        worker.join().unwrap();
+        assert_eq!(counters.accepted_samples.load(Relaxed), 1);
+        assert_eq!(counters.failed_samples.load(Relaxed), 3);
     }
 
     #[test]
