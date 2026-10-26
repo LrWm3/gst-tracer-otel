@@ -72,8 +72,8 @@ pub(crate) fn enabled() -> bool {
     ENABLED.load(Relaxed)
 }
 
-pub(crate) fn initialize() -> Result<(), String> {
-    let Some(path) = std::env::var_os("MARS_PROFILE_NVTX_ADAPTER") else {
+pub(crate) fn initialize(adapter: Option<&str>) -> Result<(), String> {
+    let Some(path) = adapter else {
         return Ok(());
     };
     if !crate::profilecontext::enabled() {
@@ -83,7 +83,7 @@ pub(crate) fn initialize() -> Result<(), String> {
     let injected =
         std::env::var_os("NVTX_INJECTION64_PATH").and_then(|v| std::fs::canonicalize(v).ok());
     if injected.as_ref() != Some(&path) {
-        return Err("set NVTX_INJECTION64_PATH to MARS_PROFILE_NVTX_ADAPTER before process startup; NVTX injection cannot be shared with another profiler".into());
+        return Err("set NVTX_INJECTION64_PATH to the profile-nvtx-adapter library before process startup; NVTX injection cannot be shared with another profiler".into());
     }
     use std::os::unix::ffi::OsStrExt;
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| "NVTX path contains NUL")?;

@@ -123,6 +123,9 @@ CPU is the default profile source. The optional
 native adapter. Select `profile-sources="cpu"`, `"gpu"`, or `"cpu,gpu"` in the
 tracer parameters; for example,
 `mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")`.
+The optional [NVTX worker bridge](tracer/otel/NVTX.md) adds attribution for
+supported inference workers through `profile-nvtx-adapter`; it also works in
+CPU-only `profiles` builds.
 
 For clickable trace-to-profile links, follow the
 [Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source

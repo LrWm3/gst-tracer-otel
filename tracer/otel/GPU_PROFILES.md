@@ -129,59 +129,15 @@ omit the service from Drilldown's catalog even when its span profile is queryabl
 
 ## Optional inference-worker attribution
 
-An element can queue work to a private thread that never enters a GStreamer
-hook. Enable the separate NVTX adapter to attribute supported `nvinfer` worker
-ranges to their owning element:
+The [NVTX worker bridge](NVTX.md) attributes supported `nvinfer` worker ranges
+for either CPU or GPU profiles. It requires only the `profiles` feature on
+Linux; `gpu-profiles` is needed only to collect GPU kernel activities.
 
-```sh
-sh tracer/otel/native/build-nvtx-adapter.sh target/libmars-nvtx.so
-export MARS_PROFILE_NVTX_ADAPTER="$PWD/target/libmars-nvtx.so"
-export NVTX_INJECTION64_PATH="$MARS_PROFILE_NVTX_ADAPTER"
-# Keep the GPU adapter/settings above; optionally select cpu,gpu.
-```
-
-Set both variables **before starting the application**. The NVTX adapter needs
-no CUDA headers and also works with CPU-only `--features profiles` builds. It
-does not load CUPTI or collect GPU activities itself. The NVTX injection slot
-cannot be shared with another NVTX profiler such as Nsight.
-
-The bridge binds an NVTX domain created during `nvinfer`'s READY → PAUSED
-transition to that exact element. On the worker, domain push/pop ranges install
-and restore the shared profiling context. It does not infer ownership from
-thread names or globally match `unique-id` values: different elements and
-pipelines may reuse them. CPU sampling registers a participating worker at its
-first recognized range; GPU-only mode creates no CPU timers. CPU work outside
-the range remains unattributed unless another GStreamer scope owns it.
-
-This provides `element → CPU stack` and `element → GPU kernel` attribution.
-**It does not establish per-batch trace links.** A worker range has no submitting
-span unless that same element already has an active synchronous call on the
-thread. Unrelated spans are suppressed, and asynchronous domain start/end
-ranges are not treated as execution scopes. Exact worker trace links still
-need a context handoff through the job queue.
-
-Support depends on the plugin emitting `GstNvInfer: UID=...` domains and domain
-push/pop ranges at these boundaries. Domains initialized before Mars, domains
-created on an unknown thread, and other plugins' private workers are not
-automatically attributed. No range messages, batch numbers or kernel names are
-used to guess a missing relationship.
-
-The registry caps at 4,096 domains and holds weak element descriptions. Domain
-destruction releases entries; expired owners are reclaimed on the next domain
-creation. Thread scopes share the existing 256-entry limit. Ambiguous nesting
-and overflow suppress attribution. `nvtx_profile_stats()` exposes bound/live
-domains, entered ranges and capacity rejections. Signal handlers never read the
-domain registry or invoke NVTX.
-
-Implementation is isolated in [nvtxcontext.rs](src/nvtxcontext.rs) and
-[nvtx_adapter.c](native/nvtx_adapter.c). The no-GPU integration test exercises
-the native injection ABI with two elements sharing an inference ID, overlapping
-domain ranges, reused workers, CPU-only/GPU-only/combined modes and repeated
-element lifetimes:
-
-```sh
-cargo test -p gst-otel-tracer --features gpu-profiles --test nvtx_profiles
-```
+Set the `profile-nvtx-adapter` tracer property to the NVTX adapter library to
+opt in. For example, add `profile-nvtx-adapter="/absolute/path/libmars-nvtx.so"`
+alongside `profile-sources="cpu,gpu"`. NVIDIA's `NVTX_INJECTION64_PATH` must
+point to the same library before process startup. The [NVTX guide](NVTX.md)
+has a CPU-only setup, GObject examples, and attribution boundaries.
 
 ## Demo and checks
 

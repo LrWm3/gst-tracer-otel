@@ -58,6 +58,7 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 | `MARS_METRIC_PTS_AGE` | `false` | Sample buffer age relative to running time |
 | `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
 | `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build. No environment equivalent. |
+| `profile-nvtx-adapter` tracer property | Unset (off) | Optional NVTX attribution library; works with `profiles` on Linux, including CPU-only builds |
 | `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
 | `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-profile HTTP timeout, 1–60000 ms |
 | `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
@@ -78,6 +79,12 @@ Set `profile-sources="cpu"` to keep GPU collection off, even in that build;
 does not enable the `profiles` signal by itself. It is fixed when the tracer is
 constructed. See the [GPU guide](GPU_PROFILES.md) for the required native adapter,
 the GObject API, and current experimental limitations.
+
+NVTX worker attribution is separate from GPU collection. Set
+`profile-nvtx-adapter="/absolute/path/libmars-nvtx.so"` to enable it with either
+source; see the [NVTX guide](NVTX.md) for the NVIDIA injection setup. Omitting
+this property leaves the bridge off. Neither the property nor the injection
+environment setting enables the `profiles` signal on its own.
 
 Traces and OTLP metrics retain the standard
 `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,

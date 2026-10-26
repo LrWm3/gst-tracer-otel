@@ -73,7 +73,7 @@ glib::wrapper! { pub struct Inference(ObjectSubclass<imp::Inference>) @extends g
 
 #[test]
 fn nvtx_workers_share_attribution_without_inventing_trace_context() {
-    let path = std::env::temp_dir().join(format!("mars-nvtx-mock-{}.so", std::process::id()));
+    let path = std::env::temp_dir().join(format!("mars nvtx mock-{}.so", std::process::id()));
     assert!(Command::new("cc")
         .args([
             "-std=c11",
@@ -94,7 +94,16 @@ fn nvtx_workers_share_attribution_without_inventing_trace_context() {
         .status()
         .unwrap()
         .success());
-    let mut modes = vec!["cpu", "profiles-only"];
+    let mut modes = vec![
+        "cpu",
+        "cpu-params",
+        "profiles-only",
+        "otel",
+        "missing-injection",
+        "wrong-injection",
+        "signals-off",
+        "empty",
+    ];
     if cfg!(feature = "gpu-profiles") {
         modes.extend(["gpu", "combined"]);
     }
@@ -103,8 +112,20 @@ fn nvtx_workers_share_attribution_without_inventing_trace_context() {
             .args(["--exact", "nvtx_child", "--ignored", "--nocapture"])
             .env_clear()
             .env("NVTX_TEST_MODE", mode)
-            .env("MARS_PROFILE_NVTX_ADAPTER", &path)
-            .env("NVTX_INJECTION64_PATH", &path)
+            .env("NVTX_TEST_ADAPTER", &path)
+            .env(
+                "MARS_PROFILE_NVTX_ADAPTER",
+                "/removed-selector-is-ignored.so",
+            )
+            .env(
+                "NVTX_INJECTION64_PATH",
+                match mode {
+                    "missing-injection" => std::path::Path::new(""),
+                    "wrong-injection" => std::path::Path::new("/proc/self/exe"),
+                    _ => path.as_path(),
+                },
+            )
+            .env("GST_DEBUG", "mars-otel:3")
             .env("MARS_GPU_ADAPTER", &path)
             .output()
             .unwrap();
@@ -114,6 +135,9 @@ fn nvtx_workers_share_attribution_without_inventing_trace_context() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        if mode.ends_with("injection") {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("set NVTX_INJECTION64_PATH to the profile-nvtx-adapter library before process startup"));
+        }
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -160,6 +184,9 @@ fn nvtx_child() {
     .unwrap();
     std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "functions");
     std::env::set_var("MARS_SIGNALS", "traces,profiles");
+    if mode == "signals-off" {
+        std::env::set_var("MARS_SIGNALS", "traces");
+    }
     let (stop, stopping) = std::sync::mpsc::channel();
     let server_thread = std::thread::spawn(move || {
         let mut profiles = Vec::new();
@@ -193,19 +220,61 @@ fn nvtx_child() {
         profiles
     });
     gst::init().unwrap();
-    let _tracer: gst::Tracer = if mode == "profiles-only" {
+    let adapter_path = std::env::var("NVTX_TEST_ADAPTER").unwrap();
+    let tracer: gst::Tracer = if mode == "profiles-only" {
         glib::Object::builder::<gstoteltracer::ProfilesTracer>()
             .property("profile-sources", sources)
+            .property("params", format!("profile-nvtx-adapter=\"{adapter_path}\""))
+            .build()
+            .upcast()
+    } else if mode == "otel" {
+        glib::Object::builder::<gstoteltracer::TelemetryTracer>()
+            .property("profile-nvtx-adapter", &adapter_path)
             .build()
             .upcast()
     } else {
-        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+        let mut builder = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
             .property("profile-sources", sources)
-            .build()
-            .upcast()
+            .property(
+                "profile-nvtx-adapter",
+                if matches!(mode.as_str(), "cpu-params" | "signals-off") {
+                    "/invalid-property-is-not-loaded.so"
+                } else {
+                    &adapter_path
+                },
+            );
+        if matches!(mode.as_str(), "cpu-params" | "empty") {
+            let value = if mode == "empty" { "" } else { &adapter_path };
+            builder = builder.property(
+                "params",
+                format!("profile-nvtx-adapter=(string)\"{value}\""),
+            );
+        }
+        builder.build().upcast()
     };
+    if mode.ends_with("injection") {
+        assert_eq!(
+            gstoteltracer::stats(),
+            Err(gstoteltracer::FlushError::NotInitialized)
+        );
+        assert_eq!(gstoteltracer::profile_stats().active_threads, 0);
+        assert_eq!(gstoteltracer::nvtx_profile_stats().bound_domains, 0);
+        stop.send(()).unwrap();
+        assert!(server_thread.join().unwrap().is_empty());
+        return;
+    }
     gstoteltracer::stats().unwrap();
-    let path = std::ffi::CString::new(std::env::var("MARS_PROFILE_NVTX_ADAPTER").unwrap()).unwrap();
+    assert_eq!(
+        tracer
+            .property::<Option<String>>("profile-nvtx-adapter")
+            .as_deref(),
+        match mode.as_str() {
+            "empty" => None,
+            "signals-off" => Some("/invalid-property-is-not-loaded.so"),
+            _ => Some(adapter_path.as_str()),
+        }
+    );
+    let path = std::ffi::CString::new(adapter_path).unwrap();
     unsafe {
         let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
         assert!(!handle.is_null());
@@ -238,6 +307,21 @@ fn nvtx_child() {
         0,
         "no owning state transition"
     );
+    if matches!(mode.as_str(), "signals-off" | "empty") {
+        std::thread::spawn(move || unsafe {
+            (adapter.push)(0);
+            burn_cpu();
+            (adapter.pop)(0);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(gstoteltracer::profile_stats().active_threads, 0);
+        assert_eq!(gstoteltracer::nvtx_profile_stats().entered_ranges, 0);
+        gstoteltracer::shutdown(Duration::from_secs(5)).unwrap();
+        stop.send(()).unwrap();
+        assert!(server_thread.join().unwrap().is_empty());
+        return;
+    }
     let mut previous = 0;
     for _ in 0..3 {
         let elements: Vec<_> = ["first", "second"]

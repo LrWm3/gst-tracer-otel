@@ -137,7 +137,7 @@ pub(crate) use platform::{publish_element, register_thread};
 pub(crate) fn initialize(
     resource: &opentelemetry_sdk::Resource,
     required: bool,
-    sources: crate::ProfileSources,
+    settings: &crate::profilesettings::Settings,
 ) -> Result<(), String> {
     if !required && setting("URL").is_none() {
         return Ok(());
@@ -145,8 +145,9 @@ pub(crate) fn initialize(
     #[cfg(all(feature = "profiles", target_os = "linux"))]
     {
         crate::profilecontext::configure()?;
-        crate::nvtxcontext::initialize()?;
+        crate::nvtxcontext::initialize(settings.nvtx_adapter.as_deref())?;
     }
+    let sources = settings.sources;
     if sources.gpu() {
         #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
         {

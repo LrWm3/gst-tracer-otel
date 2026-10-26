@@ -22,6 +22,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build |
+| `profile-nvtx-adapter` tracer property | Unset (off) | Path to the optional NVTX worker-attribution adapter; requires only `profiles` on Linux |
 | `GST_OTEL_PROFILE_URL` | `http://localhost:4040` | Pyroscope base URL |
 | `GST_OTEL_PROFILE_HZ` | `100` | CPU samples per second per registered thread; 1–1000 |
 | `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-upload HTTP timeout, 1–60000 ms; fallback `GST_OTEL_PROFILE_TIMEOUT_MS` |
@@ -85,11 +86,12 @@ Synthetic frames have zero **Self** time; their **Total** is the grouped CPU.
 See the [screenshots and validated example](../../reports/otel/PROFILE_ELEMENT_REVIEW.md).
 Set `GST_OTEL_PROFILE_ELEMENTS=false` for native stacks without these roots.
 
-The optional [NVTX worker bridge](GPU_PROFILES.md#optional-inference-worker-attribution)
+The optional [NVTX worker bridge](NVTX.md)
 attributes supported `nvinfer` worker ranges and registers those threads for CPU
 sampling. It works with the `profiles` feature alone, independently of GPU
-collection, and needs an explicitly enabled native adapter. Other private worker
-pools remain outside automatic attribution.
+collection. Enable it with `profile-nvtx-adapter="/absolute/path/libmars-nvtx.so"`
+and the NVIDIA injection setup in that guide. Other private worker pools remain
+outside automatic attribution.
 
 Attribution does not recover missing native symbols. Events, queries, and
 arbitrary callbacks have no separate scope hooks; they retain the surrounding

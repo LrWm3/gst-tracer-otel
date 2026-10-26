@@ -22,6 +22,8 @@ fn profile_properties_work_on_every_entry_point() {
                 .env("MARS_PROFILE_SOURCES", "gpu")
                 .env("GST_OTEL_PROFILE_SOURCES", "gpu")
                 .env("MARS_GPU_ADAPTER", "/no-such-gpu-adapter.so")
+                .env("MARS_PROFILE_NVTX_ADAPTER", "/removed-nvtx-selector.so")
+                .env("NVTX_INJECTION64_PATH", "/no-such-nvtx-adapter.so")
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);

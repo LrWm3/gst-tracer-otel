@@ -136,7 +136,7 @@ slot, rather than allocating about 9 MiB for all 64 slots at startup. Retiring
 threads release their timers and slots; their buffers remain available for
 reuse and safe handling of pending signals. Full rings drop samples.
 
-The optional [NVTX worker bridge](GPU_PROFILES.md#optional-inference-worker-attribution)
+The optional [NVTX worker bridge](NVTX.md)
 also registers supported inference workers when they enter an element-owned
 range. It works with CPU-only profiling and requires no CUPTI collection. It
 adds element attribution; per-batch trace propagation remains separate.
