@@ -238,6 +238,27 @@ thread_local! { static LOCAL: Local = Local::default(); }
 fn active() -> bool {
     enabled() && crate::profiles::active()
 }
+/// Retain ownership until asynchronous GPU activity has been encoded.
+#[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+pub(crate) fn gpu_snapshot() -> Option<(u64, Arc<Lease>)> {
+    LOCAL
+        .try_with(|local| {
+            let state = local.0.try_borrow().ok()?;
+            let key = state.current();
+            if key == 0 {
+                return None;
+            }
+            let lease = state
+                .calls
+                .last()
+                .and_then(|(_, _, id)| id.as_ref())
+                .or_else(|| state.owner.as_ref().and_then(|(_, id)| id.as_ref()))?;
+            Some((key, lease.clone()))
+        })
+        .ok()
+        .flatten()
+}
+
 pub(crate) fn begin(pad: &gst::Pad, operation: u8) {
     if !active() {
         return;

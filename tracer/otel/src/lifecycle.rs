@@ -78,12 +78,23 @@ fn drain(timeout: Duration, shutdown: bool) -> DrainReport {
         crate::profiles::flush(remaining())
     });
     let stats = crate::profile_stats();
-    let profile_delivery_confirmed = profiles.as_ref().is_some_and(Result::is_ok)
-        && stats.reported_samples > 0
-        && stats.reported_samples == stats.accepted_samples
+    let cpu_delivery_complete = stats.reported_samples == stats.accepted_samples
         && stats.failed_samples == 0
         && stats.dropped_processing == 0
         && stats.dropped_upload == 0;
+    #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
+    let profile_delivery_confirmed = profiles.as_ref().is_some_and(Result::is_ok)
+        && stats.reported_samples > 0
+        && cpu_delivery_complete;
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    let profile_delivery_confirmed = {
+        let gpu = crate::gpu_profile_stats();
+        profiles.as_ref().is_some_and(Result::is_ok)
+            && (stats.reported_samples > 0 || gpu.reported_kernels > 0)
+            && cpu_delivery_complete
+            && gpu.reported_kernels == gpu.accepted_kernels
+            && gpu.failed_kernels + gpu.dropped_processing + gpu.dropped_upload == 0
+    };
     let report = DrainReport {
         traces,
         metrics,

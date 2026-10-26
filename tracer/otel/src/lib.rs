@@ -18,6 +18,8 @@
 use gstreamer as gst;
 mod capture;
 mod export;
+#[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+mod gpuprofiles;
 mod health;
 mod lifecycle;
 mod logexport;
@@ -38,6 +40,8 @@ mod transport;
 mod wire;
 
 pub use export::{ExportStats, FlushError};
+#[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+pub use gpuprofiles::{gpu_profile_stats, GpuProfileStats};
 pub use lifecycle::{flush_report, shutdown_report, DrainReport};
 pub use logexport::LogStats;
 pub use metrics::MetricStats;
@@ -53,7 +57,7 @@ pub fn flush(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {
     flush_report(timeout).result()
 }
 
-/// Stop accepting records, drain exporters and stop the optional CPU profiler.
+/// Stop accepting records, drain exporters and stop the optional profile sources.
 /// The timeout covers all cleanup; timed-out workers may continue in background.
 /// Profile failures include unsuccessful HTTP acknowledgements, not just queue loss.
 pub fn shutdown(timeout: std::time::Duration) -> Result<ExportStats, FlushError> {

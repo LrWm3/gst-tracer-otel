@@ -34,6 +34,7 @@ futures-executor = "0.3"
 [features]
 noop = []
 capi = []
+gpu-profiles = ["profiles"]
 profiles = ["dep:pyroscope", "dep:addr2line", "dep:object", "gstreamer/v1_22"]
 
 [[example]]
@@ -51,3 +52,7 @@ required-features = ["profiles"]
 [[example]]
 name = "lifecycle_soak"
 required-features = ["profiles"]
+
+[[example]]
+name = "gpu_correlation"
+required-features = ["gpu-profiles"]

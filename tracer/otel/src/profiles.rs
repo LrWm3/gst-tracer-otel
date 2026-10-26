@@ -80,10 +80,14 @@ mod symbols;
 #[cfg(all(
     feature = "profiles",
     target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
+    any(
+        feature = "gpu-profiles",
+        target_arch = "x86_64",
+        target_arch = "aarch64"
+    )
 ))]
 #[path = "profileupload.rs"]
-mod upload;
+pub(crate) mod upload;
 
 #[cfg(not(all(
     feature = "profiles",
@@ -120,14 +124,131 @@ mod platform {
     pub fn stats() -> ProfileStats {
         ProfileStats::default()
     }
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    pub fn reports_finished() -> bool {
+        true
+    }
 }
 
+#[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+pub(crate) use platform::reports_finished as cpu_reports_finished;
 #[cfg(feature = "profiles")]
-pub(crate) use platform::{active, publish_element, register_thread};
-pub(crate) use platform::{clear, flush, initialize, publish, shutdown};
+pub(crate) use platform::{publish_element, register_thread};
+#[derive(Debug, PartialEq)]
+struct Sources {
+    cpu: bool,
+    gpu: bool,
+}
+impl Sources {
+    fn parse(value: &str) -> Result<Self, String> {
+        let mut sources = Self {
+            cpu: false,
+            gpu: false,
+        };
+        for source in value.split(',').map(str::trim) {
+            let selected = match source {
+                "cpu" => &mut sources.cpu,
+                "gpu" => &mut sources.gpu,
+                _ => return Err("MARS_PROFILE_SOURCES must contain cpu, gpu, or cpu,gpu".into()),
+            };
+            if *selected {
+                return Err(format!("duplicate profile source: {source}"));
+            }
+            *selected = true;
+        }
+        Ok(sources)
+    }
+}
+pub(crate) fn initialize(
+    resource: &opentelemetry_sdk::Resource,
+    required: bool,
+) -> Result<(), String> {
+    if !required && setting("URL").is_none() {
+        return Ok(());
+    }
+    let sources = Sources::parse(
+        &setting("SOURCES")
+            .unwrap_or_else(|| "cpu".into())
+            .into_string()
+            .map_err(|_| "MARS_PROFILE_SOURCES is not UTF-8")?,
+    )?;
+    if sources.gpu {
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        {
+            crate::profilecontext::configure()?;
+            crate::gpuprofiles::initialize(resource, !sources.cpu)?;
+        }
+        #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
+        return Err("GPU profiles require the gpu-profiles Cargo feature on Linux".into());
+    }
+    if sources.cpu {
+        if let Err(error) = platform::initialize(resource, required) {
+            #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+            if sources.gpu {
+                let _ = crate::gpuprofiles::drain(Duration::from_secs(1), true);
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+#[cfg(feature = "profiles")]
+pub(crate) fn active() -> bool {
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    if crate::gpuprofiles::active() {
+        return true;
+    }
+    platform::active()
+}
+pub(crate) fn publish(token: Option<&Token>) -> bool {
+    let cpu = platform::publish(token);
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    {
+        crate::gpuprofiles::publish(token) || cpu
+    }
+    #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
+    cpu
+}
+pub(crate) fn clear() {
+    platform::clear();
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    crate::gpuprofiles::publish(None);
+}
+pub(crate) fn flush(timeout: Duration) -> Result<(), FlushError> {
+    drain(timeout, false)
+}
+pub(crate) fn shutdown(timeout: Duration) -> Result<(), FlushError> {
+    drain(timeout, true)
+}
+fn drain(timeout: Duration, shutdown: bool) -> Result<(), FlushError> {
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    let start = std::time::Instant::now();
+    let cpu = if shutdown {
+        platform::shutdown(timeout)
+    } else {
+        platform::flush(timeout)
+    };
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    {
+        cpu.and(crate::gpuprofiles::drain(
+            timeout.saturating_sub(start.elapsed()),
+            shutdown,
+        ))
+    }
+    #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
+    cpu
+}
 
 pub fn profile_stats() -> ProfileStats {
-    platform::stats()
+    let stats = platform::stats();
+    #[cfg(feature = "profiles")]
+    let stats = ProfileStats {
+        context_descriptions: crate::profilecontext::retained(),
+        context_retired: crate::profilecontext::retired(),
+        context_capacity_rejections: crate::profilecontext::rejected(),
+        ..stats
+    };
+    stats
 }
 
 #[cfg(all(
@@ -167,6 +288,8 @@ mod linux {
     const NO_TIMER: usize = usize::MAX;
     static STATE: OnceLock<Arc<Sampler>> = OnceLock::new();
     static ACTIVE: AtomicBool = AtomicBool::new(false);
+    #[cfg(feature = "gpu-profiles")]
+    static REPORTS_FINISHED: AtomicBool = AtomicBool::new(false);
     static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
     static STOPPING: AtomicBool = AtomicBool::new(false);
     static STOPPED: (Mutex<Option<Result<(), FlushError>>>, Condvar) =
@@ -692,6 +815,14 @@ mod linux {
                         next = std::time::Instant::now() + config.upload_interval;
                     };
                     sampler.stop();
+                    #[cfg(feature = "gpu-profiles")]
+                    {
+                        // GPU leases may outlive the last CPU report. Publish
+                        // quiescence before one final retirement pass: whichever
+                        // worker releases its final lease last performs cleanup.
+                        REPORTS_FINISHED.store(true, Release);
+                        crate::profilecontext::after_report(crate::profilecontext::before_drain());
+                    }
                     let delivered = uploader.map_or(Ok(()), |uploader| uploader.finish());
                     result.and(delivered)
                 })
@@ -1186,6 +1317,10 @@ mod linux {
             .unwrap();
         result.clone().unwrap_or(Err(FlushError::Timeout))
     }
+    #[cfg(feature = "gpu-profiles")]
+    pub fn reports_finished() -> bool {
+        STATE.get().is_none() || REPORTS_FINISHED.load(Acquire)
+    }
     pub fn stats() -> ProfileStats {
         let Some(s) = STATE.get() else {
             return ProfileStats::default();
@@ -1241,9 +1376,9 @@ mod linux {
             use gstreamer::{self as gst, prelude::*};
             if std::env::var_os("GST_OTEL_PROFILE_UNIT_CHILD").is_none() {
                 let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-                for (key, _) in std::env::vars()
-                    .filter(|(k, _)| k.starts_with("GST_") || k.starts_with("OTEL_"))
-                {
+                for (key, _) in std::env::vars().filter(|(k, _)| {
+                    k.starts_with("GST_") || k.starts_with("OTEL_") || k.starts_with("MARS_")
+                }) {
                     child.env_remove(key);
                 }
                 use std::io::Read;
@@ -1292,6 +1427,10 @@ mod linux {
                 format!("http://{}", server.server_addr()),
             );
             std::env::set_var("GST_OTEL_PROFILE_HZ", "1000");
+            // This stress test covers capture and quiescence. Full DWARF
+            // loading is tested in profilesymbols and can dominate its deadline
+            // when the test binary is large or the machine is under load.
+            std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "functions");
             let done = Arc::new(AtomicBool::new(false));
             let stop = done.clone();
             let receiver = std::thread::spawn(move || {

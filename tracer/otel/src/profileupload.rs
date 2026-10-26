@@ -23,12 +23,12 @@ use std::{
     time::Duration,
 };
 
-pub(super) const CAPACITY: usize = 10;
+pub(crate) const CAPACITY: usize = 10;
 const MAX_REQUEST: usize = 16 * 1024 * 1024;
 const MAX_RESPONSE: usize = 64 * 1024;
 
 #[derive(Default)]
-pub(super) struct Counters {
+pub(crate) struct Counters {
     pub reported_samples: AtomicU64,
     pub dropped_upload: AtomicU64,
     pub accepted_samples: AtomicU64,
@@ -41,7 +41,7 @@ struct Upload {
     batch: ReportBatch,
     samples: u64,
 }
-pub(super) struct Uploader {
+pub(crate) struct Uploader {
     tx: SyncSender<Upload>,
     handle: JoinHandle<Result<(), FlushError>>,
     counters: Arc<Counters>,

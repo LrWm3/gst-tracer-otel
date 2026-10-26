@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: Mars GPU traces
+    uid: mars-gpu-tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToProfiles:
+        datasourceUid: mars-correlation-pyroscope
+        tags:
+          - key: service.name
+            value: service_name
+        profileTypeId: gpu_kernel:gpu:nanoseconds:gpu:nanoseconds

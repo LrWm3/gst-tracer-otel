@@ -254,3 +254,9 @@ Replace the old tracer parameters with the shared profiler configuration:
 The old `mars-profiles(...)` parameter syntax is rejected with an error rather
 than silently ignored. The former process-wide pprof backend is replaced by
 the participating-thread sampler described above.
+
+## Experimental CUDA kernel profiles
+
+The optional `gpu-profiles` extension builds element → kernel profiles with
+span/trace correlation, independently of CPU sampling. See
+[the branch experiment and its limits](GPU_PROFILES.md).

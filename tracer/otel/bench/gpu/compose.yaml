@@ -1,0 +1,9 @@
+# Layer over bench/correlation/compose.yaml. Relative mounts resolve from that
+# first compose file's directory.
+services:
+  grafana:
+    environment:
+      # Profiles Drilldown's span exemplars supply the reverse link to Tempo.
+      GF_FEATURE_TOGGLES_ENABLE: profilesHeatmap
+    volumes:
+      - ../gpu/datasources.yaml:/etc/grafana/provisioning/datasources/gpu.yaml:ro

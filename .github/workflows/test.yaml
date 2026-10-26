@@ -34,8 +34,9 @@ jobs:
       - name: Cargo test
         run: just test
 
-      - name: Test OTel and embedded profiles
-        run: cargo test -p gst-otel-tracer --features profiles
+      - name: Test OTel, CPU profiles and GPU adapter protocol
+        # CPU sampling fixtures have deadlines and compete for execution time.
+        run: cargo test -p gst-otel-tracer --features gpu-profiles -- --test-threads=2
 
       - name: Run tests with address sanitizer
         run: just test-address-sanitizer

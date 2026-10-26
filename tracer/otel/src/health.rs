@@ -262,6 +262,71 @@ fn snapshot() -> Vec<proto::MetricFamily> {
         profiles.active_threads,
         &[],
     );
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    {
+        let gpu = crate::gpu_profile_stats();
+        for (outcome, count) in [
+            ("collected", gpu.kernels),
+            ("attributed", gpu.attributed_kernels),
+            ("correlated", gpu.correlated_kernels),
+            ("unmatched", gpu.unmatched_kernels),
+            ("accepted", gpu.accepted_kernels),
+            ("export_failed", gpu.failed_kernels),
+            ("processing_drop", gpu.dropped_processing),
+            ("upload_drop", gpu.dropped_upload),
+        ] {
+            sample(
+                &mut families,
+                "mars_instrument_gpu_kernels_total",
+                "CUDA kernel records by outcome; accepted means HTTP acknowledgement",
+                false,
+                count,
+                &[("outcome", outcome)],
+            );
+        }
+        for (reason, count) in [
+            ("event_queue", gpu.dropped_events),
+            ("cupti_records", gpu.dropped_records),
+            ("context_capacity", gpu.context_capacity_rejections),
+            ("invalid_timestamps", gpu.invalid_timestamps),
+        ] {
+            sample(
+                &mut families,
+                "mars_instrument_gpu_losses_total",
+                "GPU collection losses by fixed reason",
+                false,
+                count,
+                &[("reason", reason)],
+            );
+        }
+        for (name, help, count) in [
+            (
+                "mars_instrument_gpu_pending_contexts",
+                "Retained launch contexts; capacity 8192",
+                gpu.pending_contexts,
+            ),
+            (
+                "mars_instrument_gpu_pending_kernels",
+                "Kernels awaiting HTTP acknowledgement",
+                gpu.pending_kernels,
+            ),
+            (
+                "mars_instrument_gpu_pending_uploads",
+                "GPU profiles awaiting HTTP acknowledgement",
+                gpu.pending_uploads,
+            ),
+        ] {
+            sample(&mut families, name, help, true, count, &[]);
+        }
+        sample(
+            &mut families,
+            "mars_instrument_export_failures_total",
+            "Failed export requests including partial rejection",
+            false,
+            gpu.failed_exports,
+            &[("signal", "gpu_profiles")],
+        );
+    }
     for (i, signal) in ["traces", "metrics", "logs", "profiles"].iter().enumerate() {
         for (j, reason) in ["failure", "timeout"].iter().enumerate() {
             sample(
