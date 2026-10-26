@@ -5,6 +5,13 @@ spans and traces. It is an optional extension, disabled by default. GPU weights
 are measured kernel durations; no CPU stacks or device function sampling are
 collected by this source.
 
+**Known blocker:** separate reports for the same submission bucket currently
+reuse a pprof timestamp. Pyroscope can discard these reports during compaction,
+even after acknowledging every upload, so displayed GPU totals can be incomplete
+and change after ingestion. Distinct report timestamps and a check after
+compaction are required before relying on these totals. See Pyroscope's
+[series/timestamp deduplication](https://github.com/grafana/pyroscope/blob/v2.4.0/pkg/block/section_profiles.go#L361-L374).
+
 ```text
 [element] inference [identity]
   resize_kernel
