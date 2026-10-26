@@ -40,9 +40,13 @@ pub(crate) enum Mode {
     Profiles,
 }
 
-fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result<Runtime, String> {
+fn initialize(
+    mode: Mode,
+    settings: Option<crate::settings::Settings>,
+    sources: crate::ProfileSources,
+) -> Result<Runtime, String> {
     if let Some(settings) = settings {
-        return initialize_explicit(settings);
+        return initialize_explicit(settings, sources);
     }
     let profiles_only = mode == Mode::Profiles;
     let instrument = mode == Mode::Instrument;
@@ -90,7 +94,7 @@ fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result
         .map_err(|e| e.to_string())?;
     runtime.metrics = metrics;
     if profiles {
-        if let Err(error) = crate::profiles::initialize(&resource, profiles_only) {
+        if let Err(error) = crate::profiles::initialize(&resource, profiles_only, sources) {
             if profiles_only {
                 return Err(error);
             }
@@ -100,7 +104,10 @@ fn initialize(mode: Mode, settings: Option<crate::settings::Settings>) -> Result
     Ok(runtime)
 }
 
-fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, String> {
+fn initialize_explicit(
+    settings: crate::settings::Settings,
+    sources: crate::ProfileSources,
+) -> Result<Runtime, String> {
     crate::health::configure(settings.monitoring);
     #[cfg(not(all(
         feature = "profiles",
@@ -150,7 +157,7 @@ fn initialize_explicit(settings: crate::settings::Settings) -> Result<Runtime, S
         .map_err(|e| e.to_string())?;
     runtime.shared_metrics = metrics;
     if settings.profiles {
-        crate::profiles::initialize(&resource, true)?;
+        crate::profiles::initialize(&resource, true, sources)?;
     }
     if settings.metrics && (settings.traces || settings.profiles) {
         gst_mars_metrics_core::set_capture_hooks(gst_mars_metrics_core::CaptureHooks {
@@ -260,22 +267,43 @@ fn invalidate_metrics() {
     }
 }
 
-#[cfg(feature = "profiles")]
-pub(crate) fn activate(mode: Mode) -> bool {
-    activate_with_params(mode, None)
-}
-
-fn activate_with_params(mode: Mode, params: Option<&str>) -> bool {
-    let settings = if mode == Mode::Instrument {
-        match crate::settings::Settings::parse(params, |key| std::env::var(key).ok()) {
-            Ok(settings) => settings,
-            Err(error) => {
-                gst::error!(CAT, "Telemetry tracer disabled: {error}");
-                return false;
+pub(crate) fn activate_with_params(
+    mode: Mode,
+    params: Option<&str>,
+    sources: &std::sync::Mutex<crate::ProfileSources>,
+) -> bool {
+    let configuration = (|| {
+        let mut parameters = crate::settings::parameters(params)?;
+        if let Some(s) = parameters.as_mut() {
+            if s.has_field("profile-sources") {
+                let selected = s
+                    .get::<String>("profile-sources")
+                    .map_err(|_| "profile-sources must be a quoted string")?
+                    .parse()?;
+                *sources.lock().unwrap() = selected;
+                s.remove_field("profile-sources");
             }
         }
-    } else {
-        None
+        let parameters = parameters.as_deref().filter(|s| s.n_fields() != 0);
+        if mode == Mode::Instrument {
+            crate::settings::Settings::from_structure(parameters, |key| std::env::var(key).ok())
+        } else {
+            if let Some(s) = parameters {
+                if let Some((key, _)) = s.iter().next() {
+                    return Err(format!(
+                        "unknown tracer parameter: {key}; use profile-sources"
+                    ));
+                }
+            }
+            Ok(None)
+        }
+    })();
+    let settings = match configuration {
+        Ok(settings) => settings,
+        Err(error) => {
+            gst::error!(CAT, "Telemetry tracer disabled: {error}");
+            return false;
+        }
     };
     // Claim ownership before initialization: another mode must not win hook
     // registration while this mode is still creating its runtime.
@@ -286,8 +314,9 @@ fn activate_with_params(mode: Mode, params: Option<&str>) -> bool {
         );
         return false;
     }
+    let sources = *sources.lock().unwrap();
     if let Err(error) = RUNTIME.get_or_init(|| {
-        let result = initialize(mode, settings);
+        let result = initialize(mode, settings, sources);
         if result.is_err() {
             // Initialization can fail after another selected signal started.
             // Do not leave its global log/profile worker running unattended.
@@ -312,7 +341,9 @@ macro_rules! tracer_impl {
             use super::*;
 
             #[derive(Default)]
-            pub struct OtelTracerImpl;
+            pub struct OtelTracerImpl {
+                profile_sources: std::sync::Mutex<crate::ProfileSources>,
+            }
 
             #[glib::object_subclass]
             impl ObjectSubclass for OtelTracerImpl {
@@ -330,6 +361,7 @@ macro_rules! tracer_impl {
                 fn properties() -> &'static [glib::ParamSpec] {
                     static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
                         vec![
+                            crate::ProfileSources::property(),
                             glib::ParamSpecBoxed::builder::<gst::Structure>("stats")
                                 .read_only()
                                 .build(),
@@ -340,8 +372,17 @@ macro_rules! tracer_impl {
                     });
                     PROPERTIES.as_ref()
                 }
+                fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+                    match pspec.name() {
+                        "profile-sources" => {
+                            *self.profile_sources.lock().unwrap() = value.get().unwrap()
+                        }
+                        _ => unreachable!(),
+                    }
+                }
                 fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
                     match pspec.name() {
+                        "profile-sources" => self.profile_sources.lock().unwrap().to_value(),
                         "stats" => runtime()
                             .ok()
                             .map(|r| r.stats.snapshot().to_structure())
@@ -357,7 +398,7 @@ macro_rules! tracer_impl {
                 fn constructed(&self) {
                     self.parent_constructed();
                     let params = self.obj().property::<Option<String>>("params");
-                    if !activate_with_params($mode, params.as_deref()) {
+                    if !activate_with_params($mode, params.as_deref(), &self.profile_sources) {
                         return;
                     }
                     let runtime = runtime().unwrap();

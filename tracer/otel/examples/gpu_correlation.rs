@@ -29,13 +29,24 @@ fn main() {
         )
     };
     gst::init().unwrap();
-    let _tracer = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+    // The demo takes the same source selector as the tracer's profile-sources property.
+    let sources = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "gpu".into())
+        .parse::<gstoteltracer::ProfileSources>()
+        .expect("usage: gpu_correlation [gpu|cpu,gpu]");
+    assert_ne!(
+        sources,
+        gstoteltracer::ProfileSources::Cpu,
+        "this demo requires GPU profiles"
+    );
+    let _tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+        .property("params", "signals=\"traces,profiles\"")
+        .property("profile-sources", sources)
+        .build();
     gstoteltracer::stats()
         .expect("tracer initialization failed; enable GST_DEBUG=mars-otel:5 for details");
-    let combined = std::env::var("MARS_PROFILE_SOURCES")
-        .unwrap_or_default()
-        .split(',')
-        .any(|source| source.trim() == "cpu");
+    let combined = sources == gstoteltracer::ProfileSources::CpuAndGpu;
     assert_eq!(unsafe { initialize() }, 0, "CUDA workload initialization");
     let buffers = std::env::var("MARS_GPU_DEMO_BUFFERS")
         .unwrap_or_else(|_| "8".into())

@@ -31,6 +31,7 @@ mod otellogbridge;
 #[cfg(feature = "profiles")]
 mod profilecontext;
 mod profiles;
+mod profilesettings;
 #[cfg(feature = "profiles")]
 mod profiletracer;
 mod propagation;
@@ -50,6 +51,7 @@ pub use metrics::MetricStats;
 #[cfg(all(feature = "profiles", target_os = "linux"))]
 pub use nvtxcontext::{nvtx_profile_stats, NvtxProfileStats};
 pub use profiles::{profile_stats, ProfileStats};
+pub use profilesettings::ProfileSources;
 #[cfg(feature = "profiles")]
 pub use profiletracer::ProfilesTracer;
 pub use propagation::propagate_input_contexts;

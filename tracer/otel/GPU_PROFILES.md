@@ -27,8 +27,10 @@ can overlap: their sum is neither GPU utilization nor elapsed pipeline latency.
 
 Build the Rust plugin with `--features gpu-profiles`. This includes CPU profiling
 support but does not require CUDA headers on the build machine. Select sources
-with `MARS_PROFILE_SOURCES=cpu`, `gpu`, or `cpu,gpu`; the default is `cpu`.
-The `profiles` signal must still be enabled.
+with the tracer's `profile-sources` property: `cpu` (default), `gpu`, or
+`cpu,gpu`. GPU values are exposed only in Linux builds with `gpu-profiles`;
+requesting them through tracer parameters in other builds reports an error and
+leaves the tracer disabled. The `profiles` signal must still be enabled.
 
 The separate native adapter currently requires **CUDA 11.4 headers and the
 matching CUPTI runtime**. Other SDK versions require a version-specific record
@@ -42,11 +44,10 @@ CUDA_ROOT=/usr/local/cuda-11.4 CUDA_TARGET=aarch64-linux \
 
 export GST_PLUGIN_PATH="$PWD/target/release${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
 export MARS_GPU_ADAPTER="$PWD/target/libmars-cupti.so"
-export MARS_PROFILE_SOURCES=gpu
 export MARS_PROFILE_URL=http://localhost:4040
 export OTEL_SERVICE_NAME=my-video-pipeline
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export GST_TRACERS='mars-instrument(signals="traces,profiles")'
+export GST_TRACERS='mars-instrument(signals="traces,profiles",profile-sources="gpu")'
 # Run the application's CUDA-backed pipeline here.
 ```
 
@@ -55,6 +56,33 @@ profiling does not install the CPU sampling signal or create CPU timers. The
 adapter is loaded only when the GPU source is explicitly requested. Missing
 libraries, an occupied CUPTI subscription, or initialization errors are reported
 through the tracer's initialization diagnostics (`GST_DEBUG=mars-otel:5`).
+
+The same property works on all three profiling-capable entry points:
+
+| Collection | `GST_TRACERS` |
+| --- | --- |
+| CPU only | `mars-instrument(signals="traces,profiles",profile-sources="cpu")` |
+| GPU only | `mars-instrument(signals="traces,profiles",profile-sources="gpu")` |
+| CPU and GPU | `mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")` |
+| GPU without traces, metrics or logs | `mars-profiles(profile-sources="gpu")` |
+| Compatibility tracing preset with CPU and GPU | `mars-otel(profile-sources="cpu,gpu")` |
+
+Source selection is a construction-time GObject enum property. Applications can
+set it directly, for example:
+
+```rust
+let tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+    .property("params", "signals=\"traces,profiles\"")
+    .property("profile-sources", gstoteltracer::ProfileSources::CpuAndGpu)
+    .build();
+```
+
+When both `params` and the direct property specify sources, `params` takes
+precedence. Selection is fixed for the process lifetime; changing it requires a
+restart. Omit `profiles` from the explicit signal list to disable both sources.
+The earlier experimental `MARS_PROFILE_SOURCES` and `GST_OTEL_PROFILE_SOURCES`
+environment selectors are no longer read. Endpoints, sampling frequency, and
+native adapter paths retain their existing environment configuration.
 
 ## Correlation and time semantics
 
@@ -163,7 +191,7 @@ runs two elements on different host threads. Both launch the same three kernel
 names with different durations. Execution is deliberately delayed beyond the
 submitting calls, and the pipeline is destroyed before application-owned device
 synchronization. The example asserts exact kernel counts, attribution, delivery,
-and zero CPU samples. Running it with `MARS_PROFILE_SOURCES=cpu,gpu` adds CPU work
+and zero CPU samples. Running it with the argument `cpu,gpu` adds CPU work
 inside each element and checks that both sources deliver and release their
 shared descriptions.
 
@@ -179,10 +207,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -shared -fPIC \
   -lcuda -lnvrtc -o target/libmars-gpu-workload.so
 cargo build --release -p gst-otel-tracer --features gpu-profiles \
   --example gpu_correlation
+unset GST_TRACERS
 MARS_GPU_WORKLOAD="$PWD/target/libmars-gpu-workload.so" \
-  MARS_SIGNALS=traces,profiles MARS_PROFILE_SOURCES=gpu \
-  target/release/examples/gpu_correlation
+  target/release/examples/gpu_correlation gpu
 ```
+
+This example constructs its tracer directly and enables the `traces,profiles`
+signals itself.
 
 The runtime library search path must include the CUDA libraries and the real
 driver; do not add the SDK's `lib/stubs` directory to the runtime search path.

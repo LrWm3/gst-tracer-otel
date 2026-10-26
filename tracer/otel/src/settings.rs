@@ -1,6 +1,17 @@
 //! Explicit signal selection. Exporter addresses never enable a signal.
 use std::time::Duration;
 
+pub(crate) fn parameters(params: Option<&str>) -> Result<Option<gstreamer::Structure>, String> {
+    params
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            format!("mars-instrument,{s}")
+                .parse::<gstreamer::Structure>()
+                .map_err(|e| format!("invalid tracer parameters: {e}"))
+        })
+        .transpose()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MetricExporter {
     Otlp,
@@ -20,18 +31,18 @@ pub(crate) struct Settings {
 }
 
 impl Settings {
+    #[cfg(test)]
     pub fn parse(
         params: Option<&str>,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Self>, String> {
-        let structure = params
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| {
-                format!("mars-instrument,{s}")
-                    .parse::<gstreamer::Structure>()
-                    .map_err(|e| format!("invalid tracer parameters: {e}"))
-            })
-            .transpose()?;
+        Self::from_structure(parameters(params)?.as_deref(), env)
+    }
+
+    pub fn from_structure(
+        structure: Option<&gstreamer::StructureRef>,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Self>, String> {
         if let Some(s) = &structure {
             for (key, _) in s.iter() {
                 if !matches!(

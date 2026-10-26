@@ -61,6 +61,12 @@ export GST_OTEL_PROFILE_URL=http://localhost:4040
 gst-launch-1.0 videotestsrc num-buffers=1000 ! videoconvert ! fakesink
 ```
 
+CPU is the default source. All three profiling-capable tracers accept the
+construction-time `profile-sources` property, for example
+`GST_TRACERS='mars-otel(profile-sources="cpu")'`. Linux builds with
+`--features gpu-profiles` also expose `gpu` and `cpu,gpu`; see the
+[GPU experiment](GPU_PROFILES.md) for adapter setup and limitations.
+
 The implementation is isolated in [src/profiles.rs](src/profiles.rs), including
 signal handling, thread registration, context publication, aggregation, the
 Pyroscope 2.1.2 custom backend and shutdown. Capture hooks publish fixed IDs;

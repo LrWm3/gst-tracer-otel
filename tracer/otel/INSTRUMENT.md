@@ -40,7 +40,7 @@ Instead of tracer parameters, set `GST_TRACERS=mars-instrument` and
 `MARS_SIGNALS=metrics,traces,profiles`. Parameters take precedence over their
 environment equivalents. An explicit signal list is exhaustive: a configured
 profile or log endpoint does not enable that signal. Unselected signals do not
-create their collectors or exporters, and their settings are not validated.
+create their collectors or exporters, and their exporter settings are not validated.
 Duplicate or unknown signals and unknown tracer parameters produce an error in
 `GST_DEBUG=mars-otel:3` and leave the tracer disabled.
 
@@ -57,6 +57,7 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 | `MARS_METRIC_IO_COUNTS` | `false` | Per-pad buffer input/output counters |
 | `MARS_METRIC_PTS_AGE` | `false` | Sample buffer age relative to running time |
 | `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
+| `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build. No environment equivalent. |
 | `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
 | `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-profile HTTP timeout, 1–60000 ms |
 | `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
@@ -68,6 +69,15 @@ Duplicate or unknown signals and unknown tracer parameters produce an error in
 `GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE` and
 `GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS`). Profile controls fall back to
 `GST_OTEL_PROFILE_*`. The new namespace takes precedence.
+
+To keep CPU profiles and add experimental GPU profiles, build with
+`--features gpu-profiles` and use
+`mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")`.
+Set `profile-sources="cpu"` to keep GPU collection off, even in that build;
+`profile-sources="gpu"` collects GPU kernels without CPU sampling. The selector
+does not enable the `profiles` signal by itself. It is fixed when the tracer is
+constructed. See the [GPU guide](GPU_PROFILES.md) for the required native adapter,
+the GObject API, and current experimental limitations.
 
 Traces and OTLP metrics retain the standard
 `OTEL_EXPORTER_OTLP_{TRACES,METRICS}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,

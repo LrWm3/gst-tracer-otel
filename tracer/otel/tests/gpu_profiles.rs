@@ -22,7 +22,16 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
         .status()
         .unwrap();
     assert!(status.success());
-    for mode in ["success", "reject", "timeout", "combined"] {
+    for mode in [
+        "success",
+        "reject",
+        "timeout",
+        "combined",
+        "otel",
+        "params",
+        "combined-params",
+        "profiles-only",
+    ] {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "gpu_child", "--ignored", "--nocapture"])
             .env_clear()
@@ -46,15 +55,12 @@ fn gpu_child() {
     let mode = std::env::var("GPU_TEST_MODE").unwrap();
     let reject = mode == "reject";
     let slow = mode == "timeout";
-    let combined = mode == "combined";
+    let combined = mode.starts_with("combined");
+    let traces = mode != "profiles-only";
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", server.server_addr());
     std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &url);
     std::env::set_var("MARS_PROFILE_URL", &url);
-    std::env::set_var(
-        "MARS_PROFILE_SOURCES",
-        if combined { "cpu,gpu" } else { "gpu" },
-    );
     std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "functions");
     std::env::set_var("MARS_PROFILE_TIMEOUT_MS", "2000");
     std::env::set_var("MARS_SIGNALS", "traces,profiles");
@@ -105,7 +111,42 @@ fn gpu_child() {
         (profiles, cpu_samples)
     });
     gst::init().unwrap();
-    let _tracer = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+    let sources = if combined {
+        gstoteltracer::ProfileSources::CpuAndGpu
+    } else {
+        gstoteltracer::ProfileSources::Gpu
+    };
+    let tracer: gst::Tracer = if mode == "otel" {
+        glib::Object::builder::<gstoteltracer::TelemetryTracer>()
+            .property("profile-sources", sources)
+            .build()
+            .upcast()
+    } else if mode.ends_with("params") {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property(
+                "params",
+                format!(
+                    "signals=\"traces,profiles\",profile-sources=\"{}\"",
+                    if combined { "cpu,gpu" } else { "gpu" }
+                ),
+            )
+            .build()
+            .upcast()
+    } else if !traces {
+        glib::Object::builder::<gstoteltracer::ProfilesTracer>()
+            .property("params", "profile-sources=gpu")
+            .build()
+            .upcast()
+    } else {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("profile-sources", sources)
+            .build()
+            .upcast()
+    };
+    assert_eq!(
+        tracer.property::<gstoteltracer::ProfileSources>("profile-sources"),
+        sources
+    );
     gstoteltracer::stats().expect("tracer initialization failed");
     let path = std::ffi::CString::new(std::env::var("MARS_GPU_ADAPTER").unwrap()).unwrap();
     let launch: unsafe extern "C" fn() = unsafe {
@@ -124,11 +165,12 @@ fn gpu_child() {
             .by_name(name)
             .unwrap()
             .connect("handoff", false, move |_| {
-                let span = gstoteltracer::current_span_context().unwrap();
-                expected
-                    .lock()
-                    .unwrap()
-                    .insert((name.to_owned(), span.span_id().to_string()));
+                let span = gstoteltracer::current_span_context();
+                assert_eq!(span.is_some(), traces);
+                expected.lock().unwrap().insert((
+                    name.to_owned(),
+                    span.map(|s| s.span_id().to_string()).unwrap_or_default(),
+                ));
                 unsafe { launch() };
                 if combined {
                     let start = std::time::Instant::now();
@@ -173,7 +215,7 @@ fn gpu_child() {
     let gpu = gstoteltracer::gpu_profile_stats();
     assert_eq!(gpu.kernels, 4);
     assert_eq!(gpu.attributed_kernels, 4);
-    assert_eq!(gpu.correlated_kernels, 4);
+    assert_eq!(gpu.correlated_kernels, if traces { 4 } else { 0 });
     assert_eq!(gpu.accepted_kernels + gpu.failed_kernels, 4);
     assert_eq!(
         gpu.pending_kernels + gpu.pending_uploads + gpu.pending_contexts,
@@ -219,11 +261,12 @@ fn gpu_child() {
             let span = sample
                 .label
                 .iter()
-                .find(|l| profile.string_table[l.key as usize] == "span_id")
-                .unwrap();
+                .find(|l| profile.string_table[l.key as usize] == "span_id");
+            assert_eq!(span.is_some(), traces);
             actual.insert((
                 element.to_owned(),
-                profile.string_table[span.str as usize].clone(),
+                span.map(|s| profile.string_table[s.str as usize].clone())
+                    .unwrap_or_default(),
             ));
             nanos += sample.value[0];
         }

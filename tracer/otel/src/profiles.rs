@@ -134,66 +134,35 @@ mod platform {
 pub(crate) use platform::reports_finished as cpu_reports_finished;
 #[cfg(feature = "profiles")]
 pub(crate) use platform::{publish_element, register_thread};
-#[derive(Debug, PartialEq)]
-struct Sources {
-    cpu: bool,
-    gpu: bool,
-}
-impl Sources {
-    fn parse(value: &str) -> Result<Self, String> {
-        let mut sources = Self {
-            cpu: false,
-            gpu: false,
-        };
-        for source in value.split(',').map(str::trim) {
-            let selected = match source {
-                "cpu" => &mut sources.cpu,
-                "gpu" => &mut sources.gpu,
-                _ => return Err("MARS_PROFILE_SOURCES must contain cpu, gpu, or cpu,gpu".into()),
-            };
-            if *selected {
-                return Err(format!("duplicate profile source: {source}"));
-            }
-            *selected = true;
-        }
-        Ok(sources)
-    }
-}
 pub(crate) fn initialize(
     resource: &opentelemetry_sdk::Resource,
     required: bool,
+    sources: crate::ProfileSources,
 ) -> Result<(), String> {
     if !required && setting("URL").is_none() {
         return Ok(());
     }
-    let sources = Sources::parse(
-        &setting("SOURCES")
-            .unwrap_or_else(|| "cpu".into())
-            .into_string()
-            .map_err(|_| "MARS_PROFILE_SOURCES is not UTF-8")?,
-    )?;
     #[cfg(all(feature = "profiles", target_os = "linux"))]
     {
         crate::profilecontext::configure()?;
         crate::nvtxcontext::initialize()?;
     }
-    if sources.gpu {
+    if sources.gpu() {
         #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
         {
             crate::profilecontext::configure()?;
-            crate::gpuprofiles::initialize(resource, !sources.cpu)?;
+            crate::gpuprofiles::initialize(resource, !sources.cpu())?;
         }
         #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
         return Err("GPU profiles require the gpu-profiles Cargo feature on Linux".into());
     }
-    if sources.cpu {
-        if let Err(error) = platform::initialize(resource, required) {
-            #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
-            if sources.gpu {
-                let _ = crate::gpuprofiles::drain(Duration::from_secs(1), true);
-            }
-            return Err(error);
+    if sources.cpu() {
+        let result = platform::initialize(resource, required);
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        if result.is_err() && sources.gpu() {
+            let _ = crate::gpuprofiles::drain(Duration::from_secs(1), true);
         }
+        result?;
     }
     Ok(())
 }

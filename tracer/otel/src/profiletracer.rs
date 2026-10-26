@@ -3,19 +3,13 @@ use glib::subclass::prelude::*;
 use gstreamer::{self as gst, prelude::*, subclass::prelude::*};
 use std::sync::LazyLock;
 
-static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
-    gst::DebugCategory::new(
-        "mars-profiles",
-        gst::DebugColorFlags::empty(),
-        Some("Embedded CPU profiles without OTLP capture"),
-    )
-});
-
 mod imp {
     use super::*;
 
     #[derive(Default)]
-    pub struct ProfilesTracer;
+    pub struct ProfilesTracer {
+        profile_sources: std::sync::Mutex<crate::ProfileSources>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for ProfilesTracer {
@@ -25,6 +19,23 @@ mod imp {
     }
 
     impl ObjectImpl for ProfilesTracer {
+        fn properties() -> &'static [glib::ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> =
+                LazyLock::new(|| vec![crate::ProfileSources::property()]);
+            &PROPERTIES
+        }
+        fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            match pspec.name() {
+                "profile-sources" => *self.profile_sources.lock().unwrap() = value.get().unwrap(),
+                _ => unreachable!(),
+            }
+        }
+        fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            match pspec.name() {
+                "profile-sources" => self.profile_sources.lock().unwrap().to_value(),
+                _ => unreachable!(),
+            }
+        }
         fn signals() -> &'static [glib::subclass::Signal] {
             static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
                 LazyLock::new(crate::lifecycle::signals);
@@ -32,15 +43,12 @@ mod imp {
         }
         fn constructed(&self) {
             self.parent_constructed();
-            if self
-                .obj()
-                .property::<Option<String>>("params")
-                .is_some_and(|params| !params.trim().is_empty())
-            {
-                gst::error!(CAT, "mars-profiles uses GST_OTEL_PROFILE_* and OTEL_SERVICE_NAME; tracer parameters are not supported");
-                return;
-            }
-            if !crate::tracer::activate(crate::tracer::Mode::Profiles) {
+            let params = self.obj().property::<Option<String>>("params");
+            if !crate::tracer::activate_with_params(
+                crate::tracer::Mode::Profiles,
+                params.as_deref(),
+                &self.profile_sources,
+            ) {
                 return;
             }
             for hook in [
@@ -103,7 +111,7 @@ mod imp {
 }
 
 glib::wrapper! {
-    /// CPU profiles from participating GStreamer threads, without OTLP signals.
+    /// CPU and optional GPU profiles from participating GStreamer threads, without OTLP signals.
     /// Shares the process-wide configuration and shutdown API with the OTel tracers.
     pub struct ProfilesTracer(ObjectSubclass<imp::ProfilesTracer>)
         @extends gst::Tracer, gst::Object;

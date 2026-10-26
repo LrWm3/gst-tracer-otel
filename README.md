@@ -118,6 +118,12 @@ Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
 they share one configuration. Profiling requires Linux x86-64 or arm64, the
 `profiles` build feature, and GStreamer 1.22 or newer.
 
+CPU is the default profile source. The optional
+[GPU experiment](tracer/otel/GPU_PROFILES.md) requires a `gpu-profiles` build and
+native adapter. Select `profile-sources="cpu"`, `"gpu"`, or `"cpu,gpu"` in the
+tracer parameters; for example,
+`mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")`.
+
 For clickable trace-to-profile links, follow the
 [Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source
 configuration and a local demo that checks real traces and profiles through Grafana.

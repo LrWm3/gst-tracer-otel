@@ -147,18 +147,17 @@ fn nvtx_child() {
     let url = format!("http://{}", server.server_addr());
     std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &url);
     std::env::set_var("MARS_PROFILE_URL", &url);
-    std::env::set_var(
-        "MARS_PROFILE_SOURCES",
-        if gpu {
-            if cpu {
-                "cpu,gpu"
-            } else {
-                "gpu"
-            }
+    let sources = if gpu {
+        if cpu {
+            "cpu,gpu"
         } else {
-            "cpu"
-        },
-    );
+            "gpu"
+        }
+    } else {
+        "cpu"
+    }
+    .parse::<gstoteltracer::ProfileSources>()
+    .unwrap();
     std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "functions");
     std::env::set_var("MARS_SIGNALS", "traces,profiles");
     let (stop, stopping) = std::sync::mpsc::channel();
@@ -195,9 +194,15 @@ fn nvtx_child() {
     });
     gst::init().unwrap();
     let _tracer: gst::Tracer = if mode == "profiles-only" {
-        glib::Object::new::<gstoteltracer::ProfilesTracer>().upcast()
+        glib::Object::builder::<gstoteltracer::ProfilesTracer>()
+            .property("profile-sources", sources)
+            .build()
+            .upcast()
     } else {
-        glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("profile-sources", sources)
+            .build()
+            .upcast()
     };
     gstoteltracer::stats().unwrap();
     let path = std::ffi::CString::new(std::env::var("MARS_PROFILE_NVTX_ADAPTER").unwrap()).unwrap();

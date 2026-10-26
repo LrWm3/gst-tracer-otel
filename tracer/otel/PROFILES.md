@@ -1,10 +1,11 @@
-# mars-profiles: CPU profiles without OTLP telemetry
+# mars-profiles: profiles without OTLP telemetry
 
 `mars-profiles` is a tracer entry point in `libgstoteltracer.so`, built with the
 `profiles` Cargo feature. It uses the same embedded sampler, bounded buffers,
 background symbolization, and Pyroscope uploader as correlated profiling in
-`mars-otel` and `mars-instrument`. It emits CPU profiles only: no OTLP requests,
-span capture, buffer trace metadata, metric series, or GStreamer log bridge.
+`mars-otel` and `mars-instrument`. It collects CPU profiles by default, without
+OTLP requests, span capture, buffer trace metadata, metric series, or a
+GStreamer log bridge.
 
 The sampler supports Linux x86-64 and arm64 (AArch64), with GStreamer 1.22 or newer.
 Build and run:
@@ -20,6 +21,7 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build |
 | `GST_OTEL_PROFILE_URL` | `http://localhost:4040` | Pyroscope base URL |
 | `GST_OTEL_PROFILE_HZ` | `100` | CPU samples per second per registered thread; 1–1000 |
 | `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-upload HTTP timeout, 1–60000 ms; fallback `GST_OTEL_PROFILE_TIMEOUT_MS` |
@@ -27,9 +29,17 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 | `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Reserved realtime signal |
 | `OTEL_SERVICE_NAME` | SDK-detected service name | Pyroscope `service_name` |
 
-The `MARS_PROFILE_*` equivalents take precedence over the names above.
+The `MARS_PROFILE_*` equivalents take precedence over the environment names above.
 `mars-instrument(signals="profiles")` selects the same sampler through the
 [unified interface](INSTRUMENT.md), without enabling metrics, traces or logs.
+
+Select sources through tracer properties, for example
+`GST_TRACERS='mars-profiles(profile-sources="cpu")'`. With the optional
+`gpu-profiles` build feature, use `profile-sources="gpu"` for GPU kernels only
+or `profile-sources="cpu,gpu"` for both. GPU values are unavailable in other
+builds. This construction-time property has no environment equivalent; CPU is
+still the default in GPU-enabled builds. See the [GPU experiment](GPU_PROFILES.md)
+for its native adapter, GObject property API, and limitations.
 
 Selecting `mars-profiles` or an explicit `profiles` signal enables profiling
 even when the URL is unset. With `mars-otel` or the original no-parameter
