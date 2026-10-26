@@ -77,7 +77,7 @@ struct Counters {
 }
 
 /// GPU counters count kernel activities, not periodic CPU samples. Pending
-/// contexts are bounded launch associations, including recently completed work.
+/// contexts are bounded launch associations awaiting a kernel activity.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GpuProfileStats {
     pub kernels: u64,
@@ -262,11 +262,15 @@ impl Joiner {
             return;
         }
         counters.kernels.fetch_add(1, Relaxed);
+        // The supported ordinary/cooperative single-device launch APIs produce
+        // one kernel activity per correlation ID. Release its lease immediately:
+        // retaining completed launches until the TTL exhausts the bounded table
+        // on sustained workloads. Graph replay needs a separate join lifetime.
+        let owner = self.owners.remove(&event.correlation);
         if event.start == 0 || event.end <= event.start {
             counters.invalid.fetch_add(1, Relaxed);
             return;
         }
-        let owner = self.owners.get(&event.correlation);
         if owner.is_none() {
             counters.unmatched.fetch_add(1, Relaxed);
         }
@@ -326,6 +330,73 @@ impl Joiner {
             result = result.and(uploader.submit(batch, kernels, drain));
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch(correlation: u32) -> Message {
+        Message {
+            event: Event {
+                kind: 1,
+                correlation,
+                start: 1,
+                end: 2,
+                device: 0,
+                stream: 0,
+                count: 0,
+                name: [0; 256],
+            },
+            owner: Some(Owner {
+                ids: [1, 2, 3],
+                element: None,
+                submitted: 1,
+                seen: Instant::now(),
+            }),
+        }
+    }
+
+    fn kernel(correlation: u32) -> Message {
+        let mut message = launch(correlation);
+        message.event.kind = 2;
+        message.owner = None;
+        message
+    }
+
+    #[test]
+    fn sustained_completed_launches_do_not_exhaust_context_capacity() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        for id in 0..(CAPACITY * 2) as u32 {
+            joiner.process(launch(id), &counters);
+            joiner.process(kernel(id), &counters);
+        }
+        joiner.expire(&counters);
+        assert_eq!(counters.correlated.load(Relaxed), (CAPACITY * 2) as u64);
+        assert_eq!(counters.unmatched.load(Relaxed), 0);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 0);
+        assert_eq!(counters.pending_contexts.load(Relaxed), 0);
+        assert_eq!(joiner.groups.len(), 1);
+    }
+
+    #[test]
+    fn in_flight_launches_remain_bounded_and_invalid_completion_releases_slot() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        for id in 0..=CAPACITY as u32 {
+            joiner.process(launch(id), &counters);
+        }
+        assert_eq!(joiner.owners.len(), CAPACITY);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
+        let mut invalid = kernel(0);
+        invalid.event.end = 0;
+        joiner.process(invalid, &counters);
+        assert_eq!(counters.invalid.load(Relaxed), 1);
+        joiner.process(launch(CAPACITY as u32 + 1), &counters);
+        assert_eq!(joiner.owners.len(), CAPACITY);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
     }
 }
 fn unix_nanos() -> u64 {

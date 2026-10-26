@@ -179,8 +179,9 @@ GPU span exemplar back to its trace:
 - CUDA kernels are covered. Dedicated decode/encode engines, copies, utilization
   counters and device function sampling are outside this experiment.
 - The event queue, pending launch table and per-report aggregation each cap at
-  8,192 entries. Launch associations expire after 30 seconds. Kernels arriving
-  after expiry remain unattributed; they are never assigned the current span.
+  8,192 entries. A completed kernel releases its launch association immediately;
+  launches without a completion expire after 30 seconds. Kernels arriving after
+  expiry remain unattributed; they are never assigned the current span.
 - The adapter has eight 256 KiB host activity buffers. CUPTI timestamp buffers
   are configured to 1 MiB with a pool limit of four per CUDA context; CUPTI may
   round allocations and also has its own internal memory. The adapter and its
