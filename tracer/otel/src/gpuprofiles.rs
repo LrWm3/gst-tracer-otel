@@ -246,6 +246,7 @@ struct Value {
 struct Joiner {
     owners: HashMap<u32, Owner>,
     groups: HashMap<Key, Value>,
+    timestamps: encode::Timestamps,
 }
 impl Joiner {
     fn process(&mut self, message: Message, counters: &Counters) {
@@ -325,7 +326,11 @@ impl Joiner {
         drain: bool,
     ) -> Result<(), FlushError> {
         let mut result = Ok(());
-        for (batch, kernels) in encode::batches(std::mem::take(&mut self.groups), counters) {
+        for (batch, kernels) in encode::batches(
+            std::mem::take(&mut self.groups),
+            counters,
+            &mut self.timestamps,
+        ) {
             // Account every batch even if the upload worker has disconnected.
             result = result.and(uploader.submit(batch, kernels, drain));
         }
@@ -420,7 +425,10 @@ pub(crate) fn initialize(
         .find(|(key, _)| key.as_str() == "service.name")
         .map(|(_, value)| value.to_string())
         .unwrap_or_else(|| "mars-otel".into());
-    let config = PyroscopeConfig::new(url, name, 1, "mars-cupti", env!("CARGO_PKG_VERSION"));
+    use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator};
+    let instance = RandomIdGenerator::default().new_trace_id().to_string();
+    let config = PyroscopeConfig::new(url, name, 1, "mars-cupti", env!("CARGO_PKG_VERSION"))
+        .tags(vec![("service_instance_id", &instance)]);
     let (tx, events) = bounded(CAPACITY);
     let (commands, rx) = bounded(8);
     let counters = Arc::new(Counters::default());

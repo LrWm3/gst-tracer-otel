@@ -8,17 +8,57 @@ use pyroscope::{
 };
 use std::{collections::HashMap, sync::atomic::Ordering::Relaxed};
 
-pub(super) fn batches(groups: HashMap<Key, Value>, counters: &Counters) -> Vec<(ReportBatch, u64)> {
+const SECOND: u64 = 1_000_000_000;
+
+/// Allocate a distinct nanosecond within the submission second for each report.
+/// One counter covers all buckets, including late completions and clock rollback;
+/// no per-bucket history grows with process lifetime. The uploader also supplies
+/// a random instance label so independent processes cannot reuse our series/key.
+#[derive(Default)]
+pub(super) struct Timestamps {
+    next: u64,
+}
+impl Timestamps {
+    fn allocate(&mut self, bucket: u64) -> Option<(i64, i64)> {
+        if self.next >= SECOND {
+            // Never wrap and silently duplicate data. A billion nonempty reports
+            // exhaust this instance; further kernels are counted as dropped.
+            return None;
+        }
+        let start = bucket.checked_mul(SECOND)?;
+        let end = start.checked_add(SECOND)?;
+        if end > i64::MAX as u64 {
+            return None;
+        }
+        let timestamp = start + self.next;
+        self.next += 1;
+        Some((timestamp as i64, (end - timestamp) as i64))
+    }
+}
+
+pub(super) fn batches(
+    groups: HashMap<Key, Value>,
+    counters: &Counters,
+    timestamps: &mut Timestamps,
+) -> Vec<(ReportBatch, u64)> {
     let mut buckets: HashMap<u64, Builder> = HashMap::new();
     for (key, value) in groups {
         buckets
             .entry(key.bucket)
-            .or_insert_with(|| Builder::new(key.bucket))
+            .or_insert_with(Builder::new)
             .sample(key, value);
     }
     buckets
-        .into_values()
-        .filter_map(|builder| {
+        .into_iter()
+        .filter_map(|(bucket, mut builder)| {
+            let Some((time, duration)) = timestamps.allocate(bucket) else {
+                counters
+                    .dropped_processing
+                    .fetch_add(builder.kernels, Relaxed);
+                return None;
+            };
+            builder.profile.time_nanos = time;
+            builder.profile.duration_nanos = duration;
             if builder.profile.encoded_len() > 8 * 1024 * 1024 {
                 counters
                     .dropped_processing
@@ -43,11 +83,9 @@ struct Builder {
     kernels: u64,
 }
 impl Builder {
-    fn new(bucket: u64) -> Self {
+    fn new() -> Self {
         let mut result = Self {
             profile: Profile {
-                time_nanos: bucket.saturating_mul(1_000_000_000).min(i64::MAX as u64) as i64,
-                duration_nanos: 1_000_000_000,
                 // Each weight is already a measured nanosecond, not a sampling tick.
                 period: 1,
                 ..Default::default()
@@ -143,7 +181,7 @@ mod tests {
                 },
             );
         }
-        let batches = batches(groups, &Counters::default());
+        let batches = batches(groups, &Counters::default(), &mut Timestamps::default());
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].1, 4);
         assert_eq!(batches[0].0.profile_type, "gpu_kernel");
@@ -176,5 +214,21 @@ mod tests {
         spans.sort();
         assert_eq!(spans, ["0000000000000003", "0000000000000004"]);
         assert_eq!(p.sample.iter().map(|s| s.value[0]).sum::<i64>(), 7_000_000);
+    }
+
+    #[test]
+    fn reports_for_revisited_buckets_never_reuse_timestamps() {
+        let mut timestamps = Timestamps::default();
+        let mut seen = std::collections::HashSet::new();
+        for bucket in [42, 42, 43, 41, 42, 43] {
+            let (time, duration) = timestamps.allocate(bucket).unwrap();
+            assert!(seen.insert(time));
+            assert_eq!(time as u64 / SECOND, bucket);
+            assert_eq!(time as u64 + duration as u64, (bucket + 1) * SECOND);
+        }
+        timestamps.next = SECOND - 1;
+        assert_eq!(timestamps.allocate(42), Some((42_999_999_999, 1)));
+        assert_eq!(timestamps.allocate(42), None);
+        assert_eq!(Timestamps::default().allocate(u64::MAX), None);
     }
 }

@@ -3,7 +3,12 @@
 use gstreamer::{self as gst, prelude::*};
 use prost::Message;
 use pyroscope::encode::gen::{google::Profile, push::PushRequest};
-use std::{collections::HashSet, io::Read, process::Command, time::Duration};
+use std::{
+    collections::HashSet,
+    io::{Read, Write},
+    process::Command,
+    time::Duration,
+};
 
 #[test]
 fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
@@ -33,6 +38,7 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
         "profiles-only",
         "adapter-property",
         "adapter-params",
+        "split-reports",
     ] {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "gpu_child", "--ignored", "--nocapture"])
@@ -58,6 +64,7 @@ fn gpu_child() {
     let reject = mode == "reject";
     let slow = mode == "timeout";
     let combined = mode.starts_with("combined");
+    let split = mode == "split-reports";
     let traces = mode != "profiles-only";
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", server.server_addr());
@@ -66,10 +73,15 @@ fn gpu_child() {
     std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "functions");
     std::env::set_var("MARS_PROFILE_TIMEOUT_MS", "2000");
     std::env::set_var("MARS_SIGNALS", "traces,profiles");
+    let capture = std::env::var_os("GPU_TEST_CAPTURE_DIR").map(std::path::PathBuf::from);
+    if let Some(dir) = &capture {
+        std::fs::create_dir_all(dir).unwrap();
+    }
     let (stop, stopping) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let mut profiles = Vec::new();
         let mut cpu_samples = 0;
+        let mut instance = None;
         while stopping.try_recv().is_err() {
             let Some(mut request) = server.recv_timeout(Duration::from_millis(10)).unwrap() else {
                 continue;
@@ -78,17 +90,64 @@ fn gpu_child() {
             if gpu {
                 let mut compressed = Vec::new();
                 request.as_reader().read_to_end(&mut compressed).unwrap();
+                if let Some(dir) = &capture {
+                    std::fs::write(dir.join(format!("{}.pb.gz", profiles.len())), &compressed)
+                        .unwrap();
+                }
                 let mut bytes = Vec::new();
                 libflate::gzip::Decoder::new(compressed.as_slice())
                     .unwrap()
                     .read_to_end(&mut bytes)
                     .unwrap();
-                for series in PushRequest::decode(bytes.as_slice()).unwrap().series {
+                let push = PushRequest::decode(bytes.as_slice()).unwrap();
+                if let Some(dir) = &capture {
+                    // Recreate the old wire identity as a negative control for
+                    // real-backend compaction checks (unique upload IDs retained).
+                    let mut control = push.clone();
+                    for series in &mut control.series {
+                        series.labels.retain(|l| l.name != "service_instance_id");
+                        for label in &mut series.labels {
+                            if label.name == "service_name" {
+                                label.value.push_str("-control");
+                            }
+                        }
+                        for sample in &mut series.samples {
+                            let mut profile =
+                                Profile::decode(sample.raw_profile.as_slice()).unwrap();
+                            profile.time_nanos = profile.time_nanos / 1_000_000_000 * 1_000_000_000;
+                            profile.duration_nanos = 1_000_000_000;
+                            sample.raw_profile = profile.encode_to_vec();
+                        }
+                    }
+                    let mut gzip = libflate::gzip::Encoder::new(Vec::new()).unwrap();
+                    gzip.write_all(&control.encode_to_vec()).unwrap();
+                    std::fs::write(
+                        dir.join(format!("{}.control.pb.gz", profiles.len())),
+                        gzip.finish().into_result().unwrap(),
+                    )
+                    .unwrap();
+                }
+                for series in push.series {
                     let is_gpu = series
                         .labels
                         .iter()
                         .any(|label| label.name == "__name__" && label.value == "gpu_kernel");
                     assert!(is_gpu || combined);
+                    if is_gpu {
+                        let id = &series
+                            .labels
+                            .iter()
+                            .find(|l| l.name == "service_instance_id")
+                            .unwrap()
+                            .value;
+                        assert_eq!(id.len(), 32);
+                        assert_eq!(instance.get_or_insert_with(|| id.clone()), id);
+                    } else {
+                        assert!(!series
+                            .labels
+                            .iter()
+                            .any(|l| l.name == "service_instance_id"));
+                    }
                     for sample in series.samples {
                         let profile = Profile::decode(sample.raw_profile.as_slice()).unwrap();
                         if is_gpu {
@@ -175,6 +234,15 @@ fn gpu_child() {
         assert!(!handle.is_null());
         let symbol = libc::dlsym(handle, c"mars_gpu_mock_launch_v1".as_ptr());
         assert!(!symbol.is_null());
+        if split {
+            let symbol = libc::dlsym(handle, c"mars_gpu_mock_split_v1".as_ptr());
+            assert!(!symbol.is_null());
+            let second = std::env::var("GPU_TEST_SUBMISSION_SECOND")
+                .ok()
+                .map(|v| v.parse().unwrap())
+                .unwrap_or(0);
+            std::mem::transmute::<*mut libc::c_void, unsafe extern "C" fn(u64)>(symbol)(second);
+        }
         std::mem::transmute(symbol)
     };
     let pipeline = gst::parse::launch("fakesrc num-buffers=2 ! identity name=first ! queue ! identity name=second ! fakesink sync=false")
@@ -215,6 +283,11 @@ fn gpu_child() {
     drop(message);
     pipeline.set_state(gst::State::Null).unwrap();
     drop(pipeline);
+    if split {
+        for _ in 0..4 {
+            gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+        }
+    }
     if slow {
         let start = std::time::Instant::now();
         assert_eq!(
@@ -256,6 +329,26 @@ fn gpu_child() {
     assert_eq!(cpu_samples > 0, combined);
     let mut actual = HashSet::new();
     let mut nanos = 0;
+    if split {
+        assert_eq!(profiles.len(), 4);
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|p| p.time_nanos)
+                .collect::<HashSet<_>>()
+                .len(),
+            4
+        );
+        let bucket = profiles[0].time_nanos / 1_000_000_000;
+        for profile in &profiles {
+            assert_eq!(profile.time_nanos / 1_000_000_000, bucket);
+            assert_eq!(
+                profile.time_nanos + profile.duration_nanos,
+                (bucket + 1) * 1_000_000_000
+            );
+        }
+        println!("BUCKET {bucket}");
+    }
     for profile in profiles {
         for sample in profile.sample {
             assert_eq!(sample.location_id.len(), 2);
@@ -289,6 +382,19 @@ fn gpu_child() {
                 span.map(|s| profile.string_table[s.str as usize].clone())
                     .unwrap_or_default(),
             ));
+            if split {
+                let trace = sample
+                    .label
+                    .iter()
+                    .find(|l| profile.string_table[l.key as usize] == "trace_id")
+                    .unwrap();
+                println!(
+                    "SAMPLE element={element} span={} trace={} nanos={}",
+                    profile.string_table[span.unwrap().str as usize],
+                    profile.string_table[trace.str as usize],
+                    sample.value[0]
+                );
+            }
             nanos += sample.value[0];
         }
     }

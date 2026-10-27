@@ -139,7 +139,7 @@ fn send(
         raw_profile.len(),
         1,
     );
-    let labels = [
+    let mut labels: Vec<LabelPair> = [
         ("__name__", batch.profile_type.as_str()),
         ("service_name", config.application_name.as_str()),
         ("otel.scope.name", "mars-otel"),
@@ -152,6 +152,15 @@ fn send(
         value: value.into(),
     })
     .collect();
+    // GPU reports need a stable per-profiler series identity as well as distinct
+    // timestamps: several processes can submit the same service/bucket. This
+    // identity survives uploader restarts during flush; CPU series are unchanged.
+    if let Some(instance) = config.tags.get("service_instance_id") {
+        labels.push(LabelPair {
+            name: "service_instance_id".into(),
+            value: instance.clone(),
+        });
+    }
     // A fresh 128-bit profile ID preserves the existing Pyroscope push shape.
     let id = RandomIdGenerator::default().new_trace_id().to_string();
     let id = format!(

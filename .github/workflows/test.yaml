@@ -40,3 +40,35 @@ jobs:
 
       - name: Run tests with address sanitizer
         run: just test-address-sanitizer
+
+  gpu-compaction:
+    # Uses a native mock adapter and a real disposable Pyroscope; no GPU required.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer and Rust
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base
+          rustup toolchain install stable --profile minimal --no-self-update
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target/debug
+          key: gpu-compaction-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Verify GPU totals and correlation survive compaction
+        run: python3 tracer/otel/bench/gpu/compaction.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-compaction
+          path: |
+            target/gpu-compaction/result.json
+            target/gpu-compaction/metrics.txt
+            target/gpu-compaction/pyroscope.log
+            target/gpu-compaction/instance-*/*.log
+          if-no-files-found: warn

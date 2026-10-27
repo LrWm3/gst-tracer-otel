@@ -5,12 +5,13 @@ spans and traces. It is an optional extension, disabled by default. GPU weights
 are measured kernel durations; no CPU stacks or device function sampling are
 collected by this source.
 
-**Known blocker:** separate reports for the same submission bucket currently
-reuse a pprof timestamp. Pyroscope can discard these reports during compaction,
-even after acknowledging every upload, so displayed GPU totals can be incomplete
-and change after ingestion. Distinct report timestamps and a check after
-compaction are required before relying on these totals. See Pyroscope's
-[series/timestamp deduplication](https://github.com/grafana/pyroscope/blob/v2.4.0/pkg/block/section_profiles.go#L361-L374).
+Distinct reports use distinct nanosecond timestamps inside their original
+submission second, including late completions and explicit flushes. A generated
+`service_instance_id` series label separates GPU profiler instances using the
+same service name. This prevents Pyroscope's
+[series/timestamp deduplication](https://github.com/grafana/pyroscope/blob/v2.4.0/pkg/block/section_profiles.go)
+from discarding different reports during compaction. Trace and span IDs remain
+sample labels. The compaction regression check below exercises the real backend.
 
 ```text
 [element] inference [identity]
@@ -105,6 +106,12 @@ without extending CPU spans or forcing GPU synchronization. A profile can appear
 after the corresponding trace has already arrived. Allow at least a second of
 padding when querying a short span's submission bucket.
 
+The timestamp offset is an ordering discriminator, not a measured kernel start
+time. The profile interval ends at the original bucket boundary. One counter
+allocates offsets without retaining bucket history; after one billion nonempty
+reports in a profiler lifetime, further reports count as `dropped_processing`
+instead of reusing timestamps. Restart the process to create a new instance.
+
 Configure Grafana's trace-to-profiles setting with the GPU profile type. The
 optional demo overlay adds a separate **Mars GPU traces** data source:
 
@@ -194,6 +201,20 @@ uses a fake native adapter on machines without CUDA. It verifies delayed record
 ownership, real pprof uploads, server rejection, a bounded caller deadline, and
 CPU/GPU coexistence and final description retirement.
 It is not evidence that CUPTI works on a device.
+
+For storage correctness, run the real Pyroscope compaction regression (Docker
+required, no GPU needed):
+
+```sh
+python3 tracer/otel/bench/gpu/compaction.py
+```
+
+It starts a disposable loopback-only Pyroscope 2.4.0 backend, submits eight
+reports from two profiler instances for the same service/second, and checks
+aggregate, element, span, and trace totals after compaction. A comparison series
+recreates the old timestamp collision; the check requires that series to lose
+data, proving compaction was exercised. Results and backend logs are saved under
+`target/gpu-compaction`; the container is removed even when the check fails.
 
 ## Review captures
 
