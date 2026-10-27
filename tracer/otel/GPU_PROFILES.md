@@ -94,6 +94,11 @@ worker joins subsequent CUPTI kernel activities using that launch's correlation
 ID. Element descriptions remain alive while the join is pending, including
 after the original element or pipeline has been destroyed.
 
+The adapter enables selected driver API launch callbacks and concurrent kernel
+activity. It does not collect driver activity records, which repeat correlation
+information without supplying the kernel durations used here. The worker flushes
+completed activity buffers every second, including partially filled buffers.
+
 The resulting GPU profile type is
 `gpu_kernel:gpu:nanoseconds:gpu:nanoseconds`. Correlated samples carry `span_id` and
 `trace_id`, and eligible spans carry `pyroscope.profile.id`. These IDs remain
@@ -202,7 +207,9 @@ driver; do not add the SDK's `lib/stubs` directory to the runtime search path.
 `bench/gpu/check.py` checks every demo span through Grafana's actual backend
 proxies. It checks isolated element attribution, the two-frame shape, agreement
 between aggregate/span/trace totals, and empty results for an unknown span and
-the CPU profile type. It takes the example's stdout plus a JSON file containing
+the CPU profile type in GPU-only mode. For a combined demo run, pass
+`--profile-sources cpu,gpu` to require CPU samples as well. It takes the example's
+stdout plus a JSON file containing
 `service_name`, `started_ms`, and `ended_ms`:
 
 ```sh
@@ -231,6 +238,36 @@ aggregate, element, span, and trace totals after compaction. A comparison series
 recreates the old timestamp collision; the check requires that series to lose
 data, proving compaction was exercised. Results and backend logs are saved under
 `target/gpu-compaction`; the container is removed even when the check fails.
+
+### Native memory diagnostic
+
+`native/gpu_memory.c` isolates CUDA/CUPTI memory from GStreamer, Rust encoding,
+symbolization and HTTP delivery. Build it on the CUDA host:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+  -I"$CUDA_ROOT/targets/$CUDA_TARGET/include" \
+  tracer/otel/native/gpu_memory.c \
+  -L"$CUDA_ROOT/targets/$CUDA_TARGET/lib/stubs" \
+  -L"$CUDA_ROOT/targets/$CUDA_TARGET/lib" \
+  -lcuda -lnvrtc -ldl -o target/gpu_memory
+target/gpu_memory none
+target/gpu_memory "$PWD/target/libmars-cupti.so" load-only
+target/gpu_memory "$PWD/target/libmars-cupti.so"
+```
+
+Run each variant in a fresh process with the real CUDA libraries on the runtime
+search path. The probe prints JSON lines for library loading, adapter startup,
+CUDA context creation, NVRTC compilation, kernel execution, flush, teardown and
+settled idle. Profiling runs require all 2,001 kernel completions to match their
+launches, with no losses. `MARS_GPU_MEMORY_OUTPUT=/existing/directory` optionally
+saves process memory maps at each phase; review these for private paths before
+sharing. Its CPU totals include diagnostic reads and are not overhead timings.
+
+The final `allocator_trimmed` phase calls glibc's `malloc_trim` after context
+destruction and profiler shutdown to distinguish allocator retention from other
+resident memory. The production tracer never calls it. A decrease at that point
+does not establish that memory can be reclaimed while the pipeline is running.
 
 ## Review captures
 
@@ -279,7 +316,10 @@ GPU span exemplar back to its trace:
   capacities are reused between reports.
 - The adapter has eight 256 KiB host activity buffers. CUPTI timestamp buffers
   are configured to 1 MiB with a pool limit of four per CUDA context; CUPTI may
-  round allocations and also has its own internal memory. The adapter and its
+  round allocations and also has its own internal memory. CUDA 11.4 defaults to
+  pinned host storage for these timestamp buffers, despite the SDK's
+  `DEVICE_BUFFER` attribute names. These limits do not bound total CUPTI RSS.
+  The adapter and its
   host buffers remain resident until process exit because CUPTI retains callback
   addresses. Kernel names currently have a 255-byte display limit.
 - The existing uploader limits apply independently to GPU profiles: ten queued
@@ -296,5 +336,5 @@ acknowledged/failed kernel delivery. With instrumentation monitoring enabled,
 on metric series. The existing `none`, `core`, and `all` monitoring policy applies.
 
 Implementation review starts with [gpuprofiles.rs](src/gpuprofiles.rs),
-[gpuprofileencode.rs](src/gpuprofileencode.rs), and
+[encode.rs](src/gpuprofiles/encode.rs), and
 [gpu_cupti.c](native/gpu_cupti.c).

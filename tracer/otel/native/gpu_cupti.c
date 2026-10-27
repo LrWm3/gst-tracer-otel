@@ -86,8 +86,9 @@ int mars_gpu_start_v1(MarsGpuReceive receive) {
     if (result != CUPTI_SUCCESS) return (int)result;
     if (version != CUPTI_API_VERSION) return -2;
     /* Bound CUPTI's per-context timestamp storage before CUDA initialization.
-     * CUPTI may round these allocations up; its own internal memory is separate
-     * from our fixed 2 MiB activity-buffer pool. */
+     * CUDA 11.4 defaults to pinned host storage despite the DEVICE_BUFFER names.
+     * CUPTI may round these allocations up; other internal memory is separate
+     * from these limits and our fixed 2 MiB activity-buffer pool. */
     size_t bytes = 1024 * 1024, pools = 4, preallocate = 2, value_size = sizeof(size_t);
     result = cuptiActivitySetAttribute(CUPTI_ACTIVITY_ATTR_DEVICE_BUFFER_SIZE, &value_size, &bytes);
     if (result != CUPTI_SUCCESS) return (int)result;
@@ -103,8 +104,9 @@ int mars_gpu_start_v1(MarsGpuReceive receive) {
     if (result != CUPTI_SUCCESS) return (int)result;
     result = cuptiActivityRegisterCallbacks(request_buffer, complete_buffer);
     if (result != CUPTI_SUCCESS) goto fail;
-    result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER);
-    if (result != CUPTI_SUCCESS) goto fail;
+    /* Launch ownership comes from the selected API callbacks below. Driver
+     * activity records repeat that correlation ID but are never consumed;
+     * collect only the kernel records that supply execution durations. */
     result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     if (result != CUPTI_SUCCESS) goto fail;
     const CUpti_CallbackId callbacks[] = {
@@ -122,7 +124,6 @@ int mars_gpu_start_v1(MarsGpuReceive receive) {
 fail:
     cuptiUnsubscribe(subscriber);
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
-    cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DRIVER);
     return (int)result;
 }
 
@@ -135,8 +136,6 @@ int mars_gpu_flush_v1(uint32_t stop) {
         CUptiResult status = cuptiUnsubscribe(subscriber);
         if (result == CUPTI_SUCCESS) result = status;
         status = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
-        if (result == CUPTI_SUCCESS) result = status;
-        status = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DRIVER);
         if (result == CUPTI_SUCCESS) result = status;
         started = 0;
     }

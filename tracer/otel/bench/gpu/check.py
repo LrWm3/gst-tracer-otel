@@ -1,4 +1,4 @@
-"""Check GPU-only demo data through Grafana's Tempo and Pyroscope proxies.
+"""Check GPU demo data through Grafana's Tempo and Pyroscope proxies.
 
 Input: gpu_correlation stdout and JSON containing service_name, started_ms,
 ended_ms. These can be collected on a separate CUDA host; no host identity is
@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--meta', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--grafana', default='http://127.0.0.1:43002')
+    parser.add_argument('--profile-sources', choices=('gpu', 'cpu,gpu'), default='gpu')
     args = parser.parse_args()
     meta = json.loads(args.meta.read_text())
     service = meta['service_name']
@@ -70,7 +71,11 @@ def main():
     missing = query(spanSelector=['ffffffffffffffff'])
     assert int(missing.get('flamegraph', {}).get('total', 0)) == 0
     cpu = query(profileTypeID='process_cpu:cpu:nanoseconds:cpu:nanoseconds')
-    assert int(cpu.get('flamegraph', {}).get('total', 0)) == 0
+    cpu_total = int(cpu.get('flamegraph', {}).get('total', 0))
+    if args.profile_sources == 'cpu,gpu':
+        assert cpu_total > 0, cpu
+    else:
+        assert cpu_total == 0, cpu
     trace_profiles = {}
     for trace_id in traces:
         profile = query(traceIdSelector=[trace_id])
@@ -89,14 +94,15 @@ def main():
     panes = {'A': {'datasource': 'mars-gpu-tempo', 'queries': [dict(refId='A', queryType='traceql', query=selected['trace_id'])],
                    'range': {'from': str(base['start']), 'to': str(base['end'])}}}
     url = args.grafana + '/explore?' + urllib.parse.urlencode(dict(schemaVersion='1', panes=json.dumps(panes), orgId='1'))
-    output = {**meta, 'passed': True, 'selected': selected, 'spans': results,
+    output = {**meta, 'profile_sources': args.profile_sources,
+              'passed': True, 'selected': selected, 'spans': results,
               'aggregate': aggregate, 'traces': traces, 'trace_profiles': trace_profiles,
               'negative_span': missing, 'cpu_profile': cpu, 'heatmap': heatmap,
               'trace_url': url, 'query': base}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2) + '\n')
     print(f"PASS: {len(spans)} spans retain exclusive element/kernel attribution; aggregate and trace totals agree")
-    print(f"PASS: unknown span and CPU profiles are empty; selected GPU work {selected['gpu_ns']/1e6:.3f} ms, host span {selected['span_ns']/1e6:.3f} ms")
+    print(f"PASS: unknown span is empty; CPU profile total {cpu_total} ns matches {args.profile_sources}; selected GPU work {selected['gpu_ns']/1e6:.3f} ms, host span {selected['span_ns']/1e6:.3f} ms")
     print(url)
 
 
