@@ -253,8 +253,23 @@ and remaining limitations.
   exact internal residence. Keep existing queue diagnostics; an optional bounded
   boundary-delay collector remains a separate follow-up with explicit semantics.
 
-GPU execution timing is out of scope. Revisit it only as a separate extension
-after delivery, lifecycle, instrumentation health, and CPU profiling are solid.
+### Optional GPU extension
+
+GPU kernel timing is available as a separate, opt-in
+[`gpu-profiles` extension](tracer/otel/GPU_PROFILES.md). The NVTX bridge adds
+element attribution for supported inference workers and also works with CPU
+profiling alone. It does not supply asynchronous per-job span context.
+
+- [ ] Rerun device overhead measurements after the configuration and compaction
+  fixes. The [earlier measurements](reports/otel/GPU_PROFILE_RESULTS.md) include
+  GPU collection and incremental NVTX costs.
+- [ ] Measure a longer GPU lifecycle soak, including repeated pipeline teardown
+  and backend outages; investigate CUPTI memory and final-drain costs.
+- [ ] Investigate an explicit context handoff for asynchronous inference jobs
+  before offering exact worker span/trace correlation.
+
+CUDA Graph replay, device function sampling, dedicated decode/encode engines,
+and other CUDA SDK versions remain outside the validated extension.
 
 Whole-bin elapsed latency across queues and parallel branches is out of scope:
 input/output matching and completion are ambiguous. Existing metrics report

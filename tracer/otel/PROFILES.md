@@ -282,4 +282,6 @@ the participating-thread sampler described above.
 
 The optional `gpu-profiles` extension builds element → kernel profiles with
 span/trace correlation, independently of CPU sampling. See
-[the branch experiment and its limits](GPU_PROFILES.md).
+[the GPU setup and its limits](GPU_PROFILES.md), including
+[measured overhead](../../reports/otel/GPU_PROFILE_RESULTS.md). GPU collection
+is opt-in and has separate CPU and memory costs from the CPU sampler.

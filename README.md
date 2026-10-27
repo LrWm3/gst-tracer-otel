@@ -131,6 +131,14 @@ The optional [NVTX worker bridge](tracer/otel/NVTX.md) adds attribution for
 supported inference workers through `profile-nvtx-adapter`; it also works in
 CPU-only `profiles` builds.
 
+GPU collection has a separate cost from the CPU-only figures above. In a
+[1080p inference workload](reports/otel/GPU_PROFILE_RESULTS.md), CPU + GPU
+profiling added about **5.4% pipeline time**, **15% process CPU time**, and
+**377 MiB peak RSS** over metrics + traces. Peak process memory rose from
+**1,318 to 1,694 MiB**, about **29%**. A separate NVTX comparison found small
+additional costs within run variation. These device measurements predate the
+latest configuration and compaction fixes; GPU profiling remains opt-in.
+
 For clickable trace-to-profile links, follow the
 [Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source
 configuration and a local demo that checks real traces and profiles through Grafana.

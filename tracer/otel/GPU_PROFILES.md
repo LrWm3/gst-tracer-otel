@@ -1,6 +1,6 @@
 # Experimental GPU element profiles
 
-This branch explores **element → CUDA kernel** profiles correlated with Mars
+This extension collects **element → CUDA kernel** profiles correlated with Mars
 spans and traces. It is an optional extension, disabled by default. GPU weights
 are measured kernel durations; no CPU stacks or device function sampling are
 collected by this source.
@@ -147,6 +147,22 @@ opt in. For example, add `profile-nvtx-adapter="/absolute/path/libmars-nvtx.so"`
 alongside `profile-sources="cpu,gpu"`. NVIDIA's `NVTX_INJECTION64_PATH` must
 point to the same library before process startup. The [NVTX guide](NVTX.md)
 has a CPU-only setup, GObject examples, and attribution boundaries.
+
+## Measured overhead
+
+In an offline 1080p inference workload on an integrated memory nvidia device,
+GPU-only profiling added **5.36% pipeline time**, **11.15% process CPU time**,
+and **373 MiB peak RSS** over metrics + traces. CPU + GPU profiling at 100 Hz
+added **5.39% pipeline time**, **15.36% CPU time**, and **377 MiB peak RSS**.
+The latter increased process memory from **1,318 to 1,694 MiB**: **28.6% more**,
+with the added memory accounting for **22.2% of the final process peak**.
+These percentages do not describe total device RAM.
+
+A separate comparison found small incremental NVTX attribution costs within
+run variation. The device measurements predate the latest property and
+compaction fixes; they are not current-build overhead guarantees. See the
+[performance report](../../reports/otel/GPU_PROFILE_RESULTS.md) for controls,
+sample counts, shutdown costs, and validation boundaries.
 
 ## Demo and checks
 

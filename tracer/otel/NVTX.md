@@ -69,6 +69,16 @@ through `GST_DEBUG=mars-otel:3`. It does not change the process environment.
 The NVIDIA setting alone does not opt Mars into attribution. The injection slot
 cannot be shared with another NVTX profiler such as Nsight.
 
+## Measured cost
+
+With CPU + GPU profiling already enabled, turning on the bridge measured
+**+0.12% pipeline time**, **+0.63% process CPU time**, and **+2.3 MiB peak RSS**
+in the tested inference workload. These are incremental costs, not total
+profiling overhead. Two runs per setting showed differences within run
+variation; the measurements predate the latest configuration and compaction
+fixes. See the [performance report](../../reports/otel/GPU_PROFILE_RESULTS.md#incremental-nvtx-attribution-cost)
+for CPU-only and GPU-only comparisons and attribution coverage.
+
 ## Attribution and limits
 
 The bridge binds an NVTX domain created during `nvinfer`'s READY → PAUSED
