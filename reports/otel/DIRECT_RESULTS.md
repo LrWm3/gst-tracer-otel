@@ -379,3 +379,33 @@ include warm-ups, shutdown timing, peak RSS, and delivery counters. Further larg
 capture gains likely need dispatch changes upstream or a less detailed signal
 selection; preserving asynchronous sampling decisions rules out simply skipping
 all unsampled hook work.
+
+## Fan-in link accumulation — 2026-10-27
+
+Explicit fan-in now clones inherited links once, accumulates inputs locally,
+and publishes one immutable result. A single known input keeps its existing
+shared links. The first input still selects the parent and sampling decision;
+deduplication, the eight-link limit and dropped-link accounting are unchanged.
+
+Five alternating rounds in one release test executable, pinned to CPU 4,
+compare the former repeated merge/clone loop with the new accumulation loop.
+These are median **nanoseconds per merge** for distinct input contexts with
+trace state:
+
+| Inputs | Previous | Accumulated | Reduction |
+| --- | ---: | ---: | ---: |
+| 8 | 1,193 | 386 | 68% |
+| 32 | 5,390 | 1,026 | 81% |
+| 128 | 21,833 | 3,567 | 84% |
+
+The timing includes reading existing input metadata, merging, and dropping the
+result. It excludes output metadata installation, exporter work and pipeline
+execution; these are not whole-pipeline speedups. The
+[raw rounds](processing/2026-10-27/fan-in.csv) also include duplicate inputs,
+contexts without trace state and the single-input path.
+
+Reproduce with the ignored `propagation::tests::fan_in_merge_benchmark` test
+in a release `gst-otel-tracer` build, using `--ignored --nocapture --test-threads=1`
+and a fixed CPU affinity. The test retains the previous loop for comparison.
+Regression coverage checks inherited links, remote unsampled parents, saturating
+drop counts, unknown inputs and output ownership after input buffers are freed.

@@ -243,24 +243,38 @@ pub(crate) fn read_fan_in(buffer: &gst::BufferRef) -> Option<Input> {
     }
 }
 
+fn merge_inputs(mut inputs: impl Iterator<Item = Input>) -> (Input, usize) {
+    let Some(mut first) = inputs.next() else {
+        return (
+            Input {
+                token: Token::rejected(),
+                links: None,
+            },
+            0,
+        );
+    };
+    let mut count = 1;
+    let mut links = None;
+    for input in inputs {
+        count += 1;
+        // Keep a single input's shared links. For fan-in, clone inherited links
+        // once and accumulate before publishing one immutable result.
+        links
+            .get_or_insert_with(|| first.links.as_deref().cloned().unwrap_or_default())
+            .extend(&input, &first.token);
+    }
+    if let Some(links) = links {
+        first.links = links.finish();
+    }
+    (first, count)
+}
+
 /// Explicit propagation for aggregators whose outputs do not copy input metadata.
 /// The first known input supplies the parent/sampling decision; other inputs
 /// become links (up to eight). Missing inputs never cause a fresh sampled root.
 /// Returns the number of inputs with known context, including rejected contexts.
 pub fn propagate_input_contexts(output: &mut gst::BufferRef, inputs: &[&gst::BufferRef]) -> usize {
-    let mut merged: Option<Input> = None;
-    let mut count = 0;
-    for input in inputs.iter().filter_map(|buffer| read_input(buffer)) {
-        count += 1;
-        match &mut merged {
-            Some(first) => first.merge(&input),
-            first @ None => *first = Some(input),
-        }
-    }
-    let input = merged.unwrap_or(Input {
-        token: Token::rejected(),
-        links: None,
-    });
+    let (input, count) = merge_inputs(inputs.iter().filter_map(|buffer| read_input(buffer)));
     unsafe {
         let ptr = output.as_mut_ptr();
         let mut meta = gst::ffi::gst_buffer_get_meta(ptr, api()) as *mut ContextMeta;
@@ -429,6 +443,210 @@ mod tests {
             )
             .unwrap();
         assert!(read(&stripped).is_none());
+    }
+
+    #[test]
+    fn explicit_fan_in_preserves_inherited_links_and_remote_unsampled_parent() {
+        gst::init().unwrap();
+        let stats = Counters::default();
+        let mut parent = token(1);
+        parent.flags = TraceFlags::default();
+        parent.is_remote = true;
+        let buffers: Vec<_> = (1..=14)
+            .map(|id| {
+                let buffer = gst::Buffer::new();
+                write(
+                    &buffer,
+                    &if id == 1 { parent.clone() } else { token(id) },
+                    true,
+                    &stats,
+                );
+                buffer
+            })
+            .collect();
+        let mut first = gst::Buffer::new();
+        propagate_input_contexts(
+            first.get_mut().unwrap(),
+            &[&buffers[0], &buffers[1], &buffers[2]],
+        );
+        let inherited = read_input(&first).unwrap().links.unwrap();
+        let mut second = gst::Buffer::new();
+        let refs: Vec<_> = buffers[2..13].iter().map(|b| b.as_ref()).collect();
+        propagate_input_contexts(second.get_mut().unwrap(), &refs);
+        assert_eq!(read_input(&second).unwrap().links.unwrap().dropped, 2);
+
+        // Deduplication uses span identity, retaining the first token's flags
+        // and trace state even if another input describes that span differently.
+        let mut duplicate_token = token(2);
+        duplicate_token.flags = TraceFlags::default();
+        duplicate_token.is_remote = true;
+        duplicate_token.trace_state = None;
+        let duplicate = gst::Buffer::new();
+        write(&duplicate, &duplicate_token, true, &stats);
+        let unknown = gst::Buffer::new();
+        let mut output = gst::Buffer::new();
+        assert_eq!(
+            propagate_input_contexts(
+                output.get_mut().unwrap(),
+                &[
+                    &unknown,
+                    &first,
+                    &second,
+                    &duplicate,
+                    &buffers[13],
+                    &unknown
+                ],
+            ),
+            4
+        );
+        drop(buffers);
+        drop(first);
+        drop(second);
+        drop(duplicate);
+        let merged = read_input(&output).unwrap();
+        assert_eq!(merged.token, parent);
+        let links = merged.links.unwrap();
+        assert_eq!(links.tokens, (2..=9).map(token).collect::<Vec<_>>());
+        // Two links overflow this merge, two were dropped by the second input,
+        // and the final distinct input also exceeds capacity.
+        assert_eq!(links.dropped, 5);
+        assert_eq!(inherited.tokens, vec![token(2), token(3)]);
+        assert_eq!(inherited.dropped, 0);
+    }
+
+    #[test]
+    fn explicit_fan_in_reuses_single_known_input_and_clears_unknown_only_output() {
+        gst::init().unwrap();
+        let stats = Counters::default();
+        let first = gst::Buffer::new();
+        let second = gst::Buffer::new();
+        write(&first, &token(1), true, &stats);
+        write(&second, &token(2), true, &stats);
+        let mut input = gst::Buffer::new();
+        propagate_input_contexts(input.get_mut().unwrap(), &[&first, &second]);
+        let inherited = read_input(&input).unwrap().links.unwrap();
+        let unknown = gst::Buffer::new();
+        let mut output = gst::Buffer::new();
+        assert_eq!(
+            propagate_input_contexts(output.get_mut().unwrap(), &[&unknown, &input, &unknown]),
+            1
+        );
+        let merged = read_input(&output).unwrap();
+        assert_eq!(merged.token, token(1));
+        assert!(Arc::ptr_eq(&merged.links.unwrap(), &inherited));
+        assert_eq!(
+            propagate_input_contexts(output.get_mut().unwrap(), &[&unknown, &unknown]),
+            0
+        );
+        let merged = read_input(&output).unwrap();
+        assert_eq!(merged.token, Token::rejected());
+        assert!(merged.links.is_none());
+    }
+
+    #[test]
+    fn fan_in_inherited_drop_counts_saturate_without_retained_links() {
+        let inputs = [u32::MAX - 1, 7].map(|dropped| Input {
+            token: token(1),
+            links: Some(Arc::new(Links {
+                tokens: Vec::new(),
+                dropped,
+            })),
+        });
+        let (merged, count) = merge_inputs(inputs.into_iter());
+        assert_eq!(count, 2);
+        assert_eq!(merged.token, token(1));
+        let links = merged.links.unwrap();
+        assert!(links.tokens.is_empty());
+        assert_eq!(links.dropped, u32::MAX);
+    }
+
+    #[test]
+    #[ignore = "manual release benchmark; reports timings without timing assertions"]
+    fn fan_in_merge_benchmark() {
+        use std::{hint::black_box, time::Instant};
+
+        fn previous(buffers: &[gst::Buffer]) -> (Input, usize) {
+            let mut merged: Option<Input> = None;
+            let mut count = 0;
+            for input in buffers.iter().filter_map(|buffer| read_input(buffer)) {
+                count += 1;
+                match &mut merged {
+                    Some(first) => first.merge(&input),
+                    first @ None => *first = Some(input),
+                }
+            }
+            (
+                merged.unwrap_or(Input {
+                    token: Token::rejected(),
+                    links: None,
+                }),
+                count,
+            )
+        }
+        fn accumulated(buffers: &[gst::Buffer]) -> (Input, usize) {
+            merge_inputs(buffers.iter().filter_map(|buffer| read_input(buffer)))
+        }
+        fn measure(
+            merge: fn(&[gst::Buffer]) -> (Input, usize),
+            buffers: &[gst::Buffer],
+            iterations: usize,
+        ) -> f64 {
+            let start = Instant::now();
+            for _ in 0..iterations {
+                black_box(merge(black_box(buffers)));
+            }
+            start.elapsed().as_nanos() as f64 / iterations as f64
+        }
+
+        gst::init().unwrap();
+        let stats = Counters::default();
+        println!("inputs,distinct,trace_state,round,previous_ns,accumulated_ns");
+        for size in [1, 8, 32, 128] {
+            for distinct in [false, true] {
+                for trace_state in [false, true] {
+                    let buffers: Vec<_> = (0..size)
+                        .map(|i| {
+                            let mut token = token(if distinct { i + 1 } else { 1 });
+                            if !trace_state {
+                                token.trace_state = None;
+                            }
+                            let buffer = gst::Buffer::new();
+                            write(&buffer, &token, true, &stats);
+                            buffer
+                        })
+                        .collect();
+                    let (old, old_count) = previous(&buffers);
+                    let (new, new_count) = accumulated(&buffers);
+                    assert_eq!(old_count, new_count);
+                    assert_eq!(old.token, new.token);
+                    assert_eq!(
+                        old.links.as_ref().map(|l| (&l.tokens, l.dropped)),
+                        new.links.as_ref().map(|l| (&l.tokens, l.dropped)),
+                    );
+                    // About one million input reads per round for each variant.
+                    let iterations = 1_000_000 / size as usize;
+                    for merge in [previous, accumulated] {
+                        measure(merge, &buffers, iterations / 10);
+                    }
+                    for round in 0..5 {
+                        let variants = if round % 2 == 0 {
+                            [previous, accumulated]
+                        } else {
+                            [accumulated, previous]
+                        };
+                        let mut timings =
+                            variants.map(|merge| measure(merge, &buffers, iterations));
+                        if round % 2 != 0 {
+                            timings.reverse();
+                        }
+                        println!(
+                            "{size},{distinct},{trace_state},{round},{:.2},{:.2}",
+                            timings[0], timings[1],
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
