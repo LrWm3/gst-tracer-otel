@@ -106,7 +106,7 @@ def main():
                            profiles=decoded['profiles'])
                 rows.append(row)
                 with (args.output / 'results.csv').open('w', newline='') as stream:
-                    writer = csv.DictWriter(stream, fieldnames=list(row))
+                    writer = csv.DictWriter(stream, fieldnames=list(row), lineterminator='\n')
                     writer.writeheader()
                     writer.writerows(rows)
                 print(json.dumps(row), flush=True)
