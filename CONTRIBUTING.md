@@ -197,6 +197,19 @@ and remaining limitations.
 
 ### Performance and profiler lifetime
 
+- [x] Drain CPU sample rings independently of symbolization and delivery. Keep
+  the aggregate bounded, avoid copying stacks when rings are already full, and
+  verify high-rate sampling and description retirement.
+- [x] Keep profile upload workers and HTTP connection pools across explicit
+  flushes, with FIFO delivery barriers, per-drain errors and cumulative counters.
+  Reduce repeated CPU sample-vector allocations and share GPU kernel/element
+  names within bounded report-local caches.
+- [x] Accumulate fan-in links once per output, preserving inherited links,
+  sampling decisions and overflow accounting. Compare the merge cost with the
+  previous repeated-clone loop at increasing input counts.
+- [x] Target metric cache invalidation at affected object dependencies, preserving
+  warmed caches in unrelated pipelines. Cover weak-owner retirement, retained
+  snapshots, proxy paths, relinks, renames and concurrent cache construction.
 - [x] Increase sustained trace export throughput. Benchmark larger batches,
   compression, and a small bounded number of concurrent requests against the
   serialized exporter. Compare local and delayed receivers, measuring loss,
@@ -265,6 +278,12 @@ profiling alone. It does not supply asynchronous per-job span context.
   GPU collection and incremental NVTX costs.
 - [ ] Measure a longer GPU lifecycle soak, including repeated pipeline teardown
   and backend outages; investigate CUPTI memory and final-drain costs.
+- [ ] Partition GPU memory costs into library loading, CUDA/CUPTI initialization,
+  first kernel execution, reporting and settled idle memory. Test removing the
+  unused driver activity stream while preserving selected launch callbacks and
+  verifying real kernel correlation on the supported SDK. The test device was
+  unreachable during the current performance pass; no new GPU RSS reduction
+  or production overhead result is claimed.
 - [ ] Investigate an explicit context handoff for asynchronous inference jobs
   before offering exact worker span/trace correlation.
 
