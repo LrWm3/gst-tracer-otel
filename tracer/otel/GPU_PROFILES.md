@@ -273,6 +273,10 @@ GPU span exemplar back to its trace:
   8,192 entries. A completed kernel releases its launch association immediately;
   launches without a completion expire after 30 seconds. Kernels arriving after
   expiry remain unattributed; they are never assigned the current span.
+  Report-local element and kernel-name caches each cap at 8,192 entries, share
+  repeated strings and clear after encoding. Element names are resolved while
+  the launch's attribution lease remains alive. Aggregation and cache allocation
+  capacities are reused between reports.
 - The adapter has eight 256 KiB host activity buffers. CUPTI timestamp buffers
   are configured to 1 MiB with a pool limit of four per CUDA context; CUPTI may
   round allocations and also has its own internal memory. The adapter and its
@@ -281,6 +285,7 @@ GPU span exemplar back to its trace:
 - The existing uploader limits apply independently to GPU profiles: ten queued
   profiles plus one request in flight, bounded payloads and an HTTP timeout.
   Capture uses nonblocking enqueue; report encoding and HTTP run in background.
+  Explicit flushes retain the upload worker and its HTTP connection pool.
 - Stop streaming and complete application GPU work before an exact final drain.
   The profiler never calls device synchronization. A caller timeout does not
   cancel a CUPTI operation already running in the worker.

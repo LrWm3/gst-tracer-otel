@@ -8,8 +8,8 @@
 //! sample ring. The signal handler copies registers and a bounded stack window
 //! using process_vm_readv, walks frame pointers in that COPY, and snapshots IDs.
 //! It never borrows Rust TLS, allocates, locks, symbolizes or calls Pyroscope.
-//! A report worker drains rings, symbolizes files with a bounded cache, and
-//! supplies compact pprof to the bounded uploader in profileupload.rs.
+//! A collector drains rings independently of the report worker, which symbolizes
+//! files with a bounded cache and supplies compact pprof to profileupload.rs.
 //!
 //! Slots are retained for process lifetime because deleted timers can leave
 //! pending signals. GStreamer makes loaded plugin modules resident. The reserved
@@ -369,6 +369,12 @@ mod linux {
             }
         }
         // Called only by the sole signal producer (or sequential test harness).
+        fn full(&self) -> bool {
+            self.head
+                .load(Relaxed)
+                .wrapping_sub(self.tail.load(Acquire))
+                == CAPACITY
+        }
         fn push(&self, sample: Sample) -> bool {
             let Some(buffers) = self.buffers.get() else {
                 return false;
@@ -466,12 +472,113 @@ mod linux {
         }
         fn drain(&self) -> HashMap<Sample, usize> {
             let mut samples = HashMap::new();
+            self.collect(&mut samples);
+            samples
+        }
+        fn collect(&self, samples: &mut HashMap<Sample, usize>) {
             for slot in &self.slots {
                 slot.drain(&mut |sample| {
-                    *samples.entry(sample).or_insert(0usize) += 1;
+                    // Keep the same distinct-stack bound as a full set of rings.
+                    // Repeated samples continue to aggregate at capacity.
+                    if let Some(count) = samples.get_mut(&sample) {
+                        *count += 1;
+                    } else if samples.len() < MAX_THREADS * CAPACITY {
+                        samples.insert(sample, 1);
+                    } else {
+                        self.counters.dropped_processing.fetch_add(1, Relaxed);
+                    }
                 });
             }
-            samples
+        }
+    }
+
+    struct Collected {
+        samples: HashMap<Sample, usize>,
+        retired: Vec<u64>,
+    }
+    enum CollectCommand {
+        Snapshot(crossbeam_channel::Sender<Collected>),
+        Stop,
+    }
+    /// Sole ring consumer. It never symbolizes, encodes or waits for HTTP.
+    /// One bounded aggregate is retained while the report worker is busy.
+    struct Collector {
+        commands: crossbeam_channel::Sender<CollectCommand>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Collector {
+        fn start(sampler: Arc<Sampler>) -> Result<Self, String> {
+            let (commands, receive) = crossbeam_channel::bounded(1);
+            let handle = std::thread::Builder::new()
+                .name("mars-profile-rx".into())
+                .spawn(move || {
+                    let _suppression = opentelemetry::Context::enter_telemetry_suppressed_scope();
+                    // Wake before a quarter of a continuously busy thread's
+                    // ring can fill. Lower rates need fewer collector wakeups;
+                    // cap latency at one second for very infrequent samples.
+                    // Report requests always trigger an immediate final drain.
+                    let interval = Duration::from_nanos(
+                        (1_000_000_000 / sampler.rate as u64) * (CAPACITY as u64 / 4),
+                    )
+                    .min(Duration::from_secs(1));
+                    let mut samples = HashMap::new();
+                    loop {
+                        match receive.recv_timeout(interval) {
+                            Ok(CollectCommand::Snapshot(reply)) => {
+                                // A description retired before this final drain
+                                // cannot acquire new samples afterwards. Earlier
+                                // collected samples are included in this batch;
+                                // the sole report worker retires it after encoding.
+                                let retired = crate::profilecontext::before_drain();
+                                sampler.collect(&mut samples);
+                                let batch = Collected {
+                                    samples: std::mem::take(&mut samples),
+                                    retired,
+                                };
+                                if let Err(error) = reply.send(batch) {
+                                    sampler.counters.dropped_processing.fetch_add(
+                                        error.0.samples.values().sum::<usize>() as u64,
+                                        Relaxed,
+                                    );
+                                }
+                            }
+                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                                sampler.collect(&mut samples);
+                            }
+                            Ok(CollectCommand::Stop)
+                            | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                                sampler.collect(&mut samples);
+                                sampler
+                                    .counters
+                                    .dropped_processing
+                                    .fetch_add(samples.values().sum::<usize>() as u64, Relaxed);
+                                break;
+                            }
+                        }
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(Self {
+                commands,
+                handle: Some(handle),
+            })
+        }
+        fn snapshot(&self) -> pyroscope::Result<Collected> {
+            let (reply, result) = crossbeam_channel::bounded(1);
+            self.commands
+                .send(CollectCommand::Snapshot(reply))
+                .map_err(|_| PyroscopeError::new("profile collector stopped"))?;
+            result
+                .recv()
+                .map_err(|_| PyroscopeError::new("profile collector stopped"))
+        }
+    }
+    impl Drop for Collector {
+        fn drop(&mut self) {
+            let _ = self.commands.send(CollectCommand::Stop);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
         }
     }
 
@@ -550,7 +657,8 @@ mod linux {
             self.locations.insert(pc, id);
         }
         fn sample(&mut self, sample: Sample, count: usize) {
-            let mut labels = vec![self.label("thread_id", &sample.tid.to_string())];
+            let mut labels = Vec::with_capacity(if sample.ids == [0; 3] { 1 } else { 3 });
+            labels.push(self.label("thread_id", &sample.tid.to_string()));
             if sample.ids != [0; 3] {
                 labels.push(self.label(
                     "trace_id",
@@ -558,10 +666,8 @@ mod linux {
                 ));
                 labels.push(self.label("span_id", &format!("{:016x}", sample.ids[2])));
             }
-            let mut location_id: Vec<_> = sample.pcs[..sample.len]
-                .iter()
-                .map(|pc| self.locations[pc])
-                .collect();
+            let mut location_id = Vec::with_capacity(sample.len + 1);
+            location_id.extend(sample.pcs[..sample.len].iter().map(|pc| self.locations[pc]));
             if crate::profilecontext::enabled() {
                 let location = if let Some(id) = self.elements.get(&sample.element) {
                     *id
@@ -606,6 +712,7 @@ mod linux {
 
     struct ProfileBackend {
         sampler: Arc<Sampler>,
+        collector: Option<Collector>,
         symbols: Symbols,
         previous: std::time::Instant,
         pending: u64,
@@ -615,6 +722,7 @@ mod linux {
             let symbols = Symbols::new(sampler.symbolization);
             Self {
                 sampler,
+                collector: None,
                 symbols,
                 previous: std::time::Instant::now(),
                 pending: 0,
@@ -635,18 +743,16 @@ mod linux {
                 0,
                 0,
             );
-            let retired = crate::profilecontext::before_drain();
-            let samples = self.sampler.drain();
+            let Collected { samples, retired } = if let Some(collector) = &self.collector {
+                collector.snapshot()?
+            } else {
+                let retired = crate::profilecontext::before_drain();
+                Collected {
+                    samples: self.sampler.drain(),
+                    retired,
+                }
+            };
             self.pending = samples.values().sum::<usize>() as u64;
-            let mut pcs: Vec<_> = samples
-                .keys()
-                .flat_map(|s| s.pcs[..s.len].iter().copied())
-                .collect();
-            pcs.sort_unstable();
-            pcs.dedup();
-            if !pcs.is_empty() {
-                self.symbols.refresh(&pcs);
-            }
             let now = std::time::Instant::now();
             let duration = now
                 .duration_since(self.previous)
@@ -658,20 +764,28 @@ mod linux {
                 .unwrap_or_default()
                 .as_nanos()
                 .min(i64::MAX as u128) as i64;
+            let mut pcs: Vec<_> = samples
+                .keys()
+                .flat_map(|s| s.pcs[..s.len].iter().copied())
+                .collect();
+            pcs.sort_unstable();
+            pcs.dedup();
+            if !pcs.is_empty() {
+                self.symbols.refresh(&pcs);
+            }
             let mut builder = Pprof::new(self.sampler.rate, end.saturating_sub(duration), duration);
             for pc in pcs {
-                let fallback = [StackFrame {
-                    name: Some(format!("0x{pc:x}")),
-                    ..Default::default()
-                }];
-                builder.location(
-                    pc,
-                    self.symbols
-                        .frames
-                        .get(&pc)
-                        .map(Vec::as_slice)
-                        .unwrap_or(&fallback),
-                );
+                if let Some(frames) = self.symbols.frames.get(&pc) {
+                    builder.location(pc, frames);
+                } else {
+                    builder.location(
+                        pc,
+                        &[StackFrame {
+                            name: Some(format!("0x{pc:x}")),
+                            ..Default::default()
+                        }],
+                    );
+                }
             }
             for (sample, count) in samples {
                 builder.sample(sample, count);
@@ -732,6 +846,7 @@ mod linux {
             let (command, wake) = crossbeam_channel::bounded(1);
             let (finished, done) = crossbeam_channel::bounded::<()>(0);
             let (ready, started) = crossbeam_channel::bounded(1);
+            let collector = Collector::start(sampler.clone())?;
             let handle = std::thread::Builder::new()
                 .name("mars-profile".into())
                 .spawn(move || {
@@ -745,8 +860,9 @@ mod linux {
                     };
                     let initial = create();
                     let _ = ready.send(initial.as_ref().map(|_| ()).map_err(Clone::clone));
-                    let mut uploader = Some(initial?);
+                    let uploader = initial?;
                     let mut backend = ProfileBackend::new(sampler.clone());
+                    backend.collector = Some(collector);
                     let mut next = std::time::Instant::now() + config.upload_interval;
                     let result = loop {
                         let command = match wake
@@ -763,27 +879,13 @@ mod linux {
                             .map_err(|_| FlushError::ExportFailed)
                             .and_then(|batch| {
                                 if backend.pending != 0 {
-                                    uploader.as_ref().unwrap().submit(
-                                        batch,
-                                        backend.pending,
-                                        command.is_some(),
-                                    )?;
+                                    uploader.submit(batch, backend.pending, command.is_some())?;
                                 }
                                 Ok(())
                             });
                         match command {
                             Some(ProfileCommand::Flush(reply)) => {
-                                let delivered = uploader.take().unwrap().finish();
-                                // Failed deliveries end this drain epoch, not sampling.
-                                // Reopen even after rejection so a recovered server can
-                                // accept later profiles; cumulative counters retain loss.
-                                match create() {
-                                    Ok(new) => uploader = Some(new),
-                                    Err(error) => {
-                                        let _ = reply.send(Err(error.clone()));
-                                        break Err(error);
-                                    }
-                                }
+                                let delivered = uploader.flush();
                                 let _ = reply.send(report.and(delivered));
                             }
                             Some(ProfileCommand::Stop) => break report,
@@ -793,6 +895,8 @@ mod linux {
                         next = std::time::Instant::now() + config.upload_interval;
                     };
                     sampler.stop();
+                    // Join the ring consumer before publishing final retirement.
+                    drop(backend.collector.take());
                     #[cfg(feature = "gpu-profiles")]
                     {
                         // GPU leases may outlive the last CPU report. Publish
@@ -801,7 +905,7 @@ mod linux {
                         REPORTS_FINISHED.store(true, Release);
                         crate::profilecontext::after_report(crate::profilecontext::before_drain());
                     }
-                    let delivered = uploader.map_or(Ok(()), |uploader| uploader.finish());
+                    let delivered = uploader.finish();
                     result.and(delivered)
                 })
                 .map_err(|e| e.to_string())?;
@@ -1072,6 +1176,12 @@ mod linux {
                 .counters
                 .timer_overruns
                 .fetch_add(overruns as u64, Relaxed);
+        }
+        // The sole producer cannot lose free capacity to another writer. Avoid
+        // the stack-copy syscall and unwinding when the consumer is behind.
+        if slot.full() {
+            sampler.counters.dropped_full.fetch_add(1, Relaxed);
+            return;
         }
         let registers = unsafe { arch::registers(context.cast()) };
         let sp = registers.sp;
@@ -1625,6 +1735,116 @@ mod linux {
                 assert_eq!(&sample.pcs[..sample.len], &[0x1234]);
             }
         }
+        #[test]
+        fn collector_drains_while_report_processing_is_busy() {
+            let sampler = Arc::new(Sampler::new(1000, libc::SIGRTMIN() + 6));
+            let slot = &sampler.slots[0];
+            slot.prepare();
+            let collector = Collector::start(sampler.clone()).unwrap();
+            for _ in 0..4 {
+                for _ in 0..CAPACITY {
+                    assert!(slot.push(Sample {
+                        len: 1,
+                        ..Default::default()
+                    }));
+                }
+                // No report requested: only the independent collector can free
+                // the ring while its report consumer is occupied elsewhere.
+                let until = std::time::Instant::now() + Duration::from_secs(2);
+                while slot.head.load(Acquire) != slot.tail.load(Acquire) {
+                    assert!(std::time::Instant::now() < until);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            let batch = collector.snapshot().unwrap();
+            assert_eq!(batch.samples.values().sum::<usize>(), 4 * CAPACITY);
+            assert_eq!(batch.samples.len(), 1);
+            assert!(collector.snapshot().unwrap().samples.is_empty());
+            assert_eq!(sampler.counters.dropped_processing.load(Relaxed), 0);
+        }
+
+        #[test]
+        fn collector_bounds_distinct_stacks_but_keeps_aggregating_existing_samples() {
+            let sampler = Sampler::new(1000, libc::SIGRTMIN() + 6);
+            let slot = &sampler.slots[0];
+            slot.prepare();
+            let mut samples = HashMap::new();
+            let limit = MAX_THREADS * CAPACITY;
+            for span in 0..limit + 7 {
+                assert!(slot.push(Sample {
+                    ids: [1, 2, span as u64],
+                    ..Default::default()
+                }));
+                sampler.collect(&mut samples);
+            }
+            assert_eq!(samples.len(), limit);
+            assert_eq!(sampler.counters.dropped_processing.load(Relaxed), 7);
+            let existing = Sample {
+                ids: [1, 2, 0],
+                ..Default::default()
+            };
+            assert!(slot.push(existing));
+            sampler.collect(&mut samples);
+            assert_eq!(samples[&existing], 2);
+            assert_eq!(sampler.counters.dropped_processing.load(Relaxed), 7);
+        }
+
+        #[test]
+        fn collector_retains_description_until_the_snapshot_is_encoded() {
+            // Other report tests reclaim the process-global description table.
+            // Isolate this test's deliberately retired but unencoded snapshot.
+            if std::env::var_os("MARS_COLLECTOR_RETIREMENT_CHILD").is_none() {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "profiles::linux::tests::collector_retains_description_until_the_snapshot_is_encoded",
+                        "--nocapture",
+                    ])
+                    .env("MARS_COLLECTOR_RETIREMENT_CHILD", "1")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                return;
+            }
+            let owner =
+                crate::profilecontext::intern("collector-retirement-test", "identity").unwrap();
+            let element = owner.id << 1;
+            // The sample is aggregated before its owner retires. A later
+            // snapshot must still resolve it before reclaiming the description.
+            let sampler = Arc::new(Sampler::new(1000, libc::SIGRTMIN() + 6));
+            sampler.slots[0].prepare();
+            let collector = Collector::start(sampler.clone()).unwrap();
+            assert!(sampler.slots[0].push(Sample {
+                element,
+                ..Default::default()
+            }));
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            while sampler.slots[0].tail.load(Acquire) == 0 {
+                assert!(std::time::Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            drop(owner);
+            let batch = collector.snapshot().unwrap();
+            assert_eq!(batch.samples.values().sum::<usize>(), 1);
+            assert!(batch.retired.contains(&(element >> 1)));
+            assert!(crate::profilecontext::frame(element).contains("collector-retirement-test"));
+            crate::profilecontext::after_report(batch.retired);
+            assert!(!crate::profilecontext::frame(element).contains("collector-retirement-test"));
+        }
+
+        #[test]
+        fn stopping_collector_accounts_unreported_samples_once() {
+            let sampler = Arc::new(Sampler::new(1000, libc::SIGRTMIN() + 6));
+            sampler.slots[0].prepare();
+            let collector = Collector::start(sampler.clone()).unwrap();
+            for _ in 0..17 {
+                assert!(sampler.slots[0].push(Sample::default()));
+            }
+            drop(collector);
+            assert_eq!(sampler.counters.dropped_processing.load(Relaxed), 17);
+            assert!(sampler.drain().is_empty());
+        }
+
         #[test]
         fn aggregation_and_pprof_keep_identical_stacks_with_different_span_ids_separate() {
             let sampler = Arc::new(Sampler::new(100, libc::SIGRTMIN() + 6));

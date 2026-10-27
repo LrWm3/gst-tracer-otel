@@ -1,0 +1,25 @@
+{
+  "started_ns": 1793072767364381843,
+  "cpus": "0,2",
+  "frames": 600,
+  "repeats": 5,
+  "hz": 100,
+  "symbolization": "functions",
+  "monitoring": "none",
+  "element_attribution": true,
+  "binaries": {
+    "baseline": {
+      "sha256": "9162f1c95110053f879a42b3d4e3f72704fad489fcb9f06c7aa0b8b3b3583118"
+    },
+    "candidate": {
+      "sha256": "40598d39ef5a75f1485cd66cb602e535c6bdcdacd2b593f9953876a530cb2ebf"
+    }
+  },
+  "source_commit": "d49ee02e946f592fae5551ed1dc0858280d608d3",
+  "source_diff_sha256": "0793303deb1ac3bae63c322bab2b8a056f71133013d5b2cb974f15a5d6f9447e",
+  "build_command": "cargo +1.99.1 build --release -p gst-otel-tracer --features profiles --example profile_video",
+  "rustflags": [],
+  "baseline_revision": "d49ee02e946f592fae5551ed1dc0858280d608d3",
+  "candidate": "independent collector with quarter-ring collection period capped at one second",
+  "backend": "loopback HTTP200; decode and validation after process exit"
+}

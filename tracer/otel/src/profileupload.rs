@@ -41,8 +41,12 @@ struct Upload {
     batch: ReportBatch,
     samples: u64,
 }
+enum Command {
+    Upload(Upload),
+    Flush(SyncSender<Result<(), FlushError>>),
+}
 pub(crate) struct Uploader {
-    tx: SyncSender<Upload>,
+    tx: SyncSender<Command>,
     handle: JoinHandle<Result<(), FlushError>>,
     counters: Arc<Counters>,
 }
@@ -64,14 +68,29 @@ impl Uploader {
             .pop_if_empty()
             .push("push.v1.PusherService")
             .push("Push");
-        let (tx, rx) = sync_channel::<Upload>(CAPACITY);
+        let (tx, rx) = sync_channel::<Command>(CAPACITY);
         let state = counters.clone();
         let handle = std::thread::Builder::new()
             .name("mars-profile-tx".into())
             .spawn(move || {
                 let _suppression = opentelemetry::Context::enter_telemetry_suppressed_scope();
                 let mut failed = false;
-                while let Ok(upload) = rx.recv() {
+                while let Ok(command) = rx.recv() {
+                    let upload = match command {
+                        Command::Upload(upload) => upload,
+                        Command::Flush(reply) => {
+                            // FIFO barrier: all earlier uploads are acknowledged
+                            // or failed. Start a new error epoch without losing
+                            // the HTTP connection pool or cumulative counters.
+                            let result = if std::mem::take(&mut failed) {
+                                Err(FlushError::ExportFailed)
+                            } else {
+                                Ok(())
+                            };
+                            let _ = reply.send(result);
+                            continue;
+                        }
+                    };
                     let result = send(&client, &url, &config, upload.batch);
                     if result.is_ok() {
                         state.accepted_samples.fetch_add(upload.samples, Relaxed);
@@ -96,7 +115,7 @@ impl Uploader {
         })
     }
     pub fn submit(&self, batch: ReportBatch, samples: u64, drain: bool) -> Result<(), FlushError> {
-        let upload = Upload { batch, samples };
+        let upload = Command::Upload(Upload { batch, samples });
         let result = if drain {
             self.tx
                 .send(upload)
@@ -118,6 +137,14 @@ impl Uploader {
                 }
             }
         }
+    }
+    // Only report workers wait here. Public callers retain their own deadlines.
+    pub fn flush(&self) -> Result<(), FlushError> {
+        let (reply, result) = sync_channel(1);
+        self.tx
+            .send(Command::Flush(reply))
+            .map_err(|_| FlushError::ExportFailed)?;
+        result.recv().map_err(|_| FlushError::ExportFailed)?
     }
     pub fn finish(self) -> Result<(), FlushError> {
         drop(self.tx);
@@ -154,7 +181,7 @@ fn send(
     .collect();
     // GPU reports need a stable per-profiler series identity as well as distinct
     // timestamps: several processes can submit the same service/bucket. This
-    // identity survives uploader restarts during flush; CPU series are unchanged.
+    // identity survives explicit flushes; CPU series are unchanged.
     if let Some(instance) = config.tags.get("service_instance_id") {
         labels.push(LabelPair {
             name: "service_instance_id".into(),
@@ -279,6 +306,74 @@ mod tests {
             .any(|l| l.name == "__name__" && l.value == "process_cpu"));
         assert_eq!(series.samples[0].raw_profile, [1, 2, 3]);
         assert_eq!(series.samples[0].id.len(), 36);
+    }
+
+    #[test]
+    fn flush_is_a_fifo_barrier_and_delivery_recovers_without_restarting_the_worker() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/prefix", server.server_addr());
+        let counters = Arc::new(Counters::default());
+        let uploader =
+            Uploader::start(config(url), Duration::from_secs(3), counters.clone()).unwrap();
+        let worker_id = uploader.handle.thread().id();
+        let receiver = std::thread::spawn(move || {
+            for status in [503, 200] {
+                let mut request = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                decode(&mut request);
+                request.respond(tiny_http::Response::empty(status)).unwrap();
+            }
+            assert!(server
+                .recv_timeout(Duration::from_millis(100))
+                .unwrap()
+                .is_none());
+        });
+        uploader.submit(batch(), 7, true).unwrap();
+        assert_eq!(uploader.flush(), Err(FlushError::ExportFailed));
+        assert_eq!(counters.failed_samples.load(Relaxed), 7);
+        assert_eq!(uploader.flush(), Ok(()));
+        uploader.submit(batch(), 11, true).unwrap();
+        assert_eq!(uploader.flush(), Ok(()));
+        assert_eq!(counters.accepted_samples.load(Relaxed), 11);
+        assert_eq!(counters.reported_profiles.load(Relaxed), 2);
+        assert_eq!(uploader.handle.thread().id(), worker_id);
+        assert_eq!(uploader.finish(), Ok(()));
+        receiver.join().unwrap();
+    }
+
+    #[test]
+    fn flush_waits_for_prior_delivery_without_sending_an_extra_request() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/prefix", server.server_addr());
+        let counters = Arc::new(Counters::default());
+        let uploader =
+            Uploader::start(config(url), Duration::from_secs(3), counters.clone()).unwrap();
+        uploader.submit(batch(), 5, true).unwrap();
+        let mut request = server
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        decode(&mut request);
+        let (done, completed) = sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            let result = uploader.flush();
+            done.send(result).unwrap();
+            uploader.finish()
+        });
+        assert!(completed.recv_timeout(Duration::from_millis(50)).is_err());
+        request.respond(tiny_http::Response::empty(200)).unwrap();
+        assert_eq!(
+            completed.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Ok(())
+        );
+        assert_eq!(counters.accepted_samples.load(Relaxed), 5);
+        assert!(server
+            .recv_timeout(Duration::from_millis(50))
+            .unwrap()
+            .is_none());
+        assert_eq!(worker.join().unwrap(), Ok(()));
     }
 
     #[test]

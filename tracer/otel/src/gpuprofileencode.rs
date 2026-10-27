@@ -37,7 +37,7 @@ impl Timestamps {
 }
 
 pub(super) fn batches(
-    groups: HashMap<Key, Value>,
+    groups: impl IntoIterator<Item = (Key, Value)>,
     counters: &Counters,
     timestamps: &mut Timestamps,
 ) -> Vec<(ReportBatch, u64)> {
@@ -143,7 +143,8 @@ impl Builder {
     }
     fn sample(&mut self, key: Key, value: Value) {
         let location_id = vec![self.frame(&key.kernel), self.frame(&key.element)];
-        let mut label = vec![self.label("gpu_device", &key.device.to_string())];
+        let mut label = Vec::with_capacity(if key.ids == [0; 3] { 1 } else { 3 });
+        label.push(self.label("gpu_device", &key.device.to_string()));
         if key.ids != [0; 3] {
             label.push(self.label(
                 "trace_id",

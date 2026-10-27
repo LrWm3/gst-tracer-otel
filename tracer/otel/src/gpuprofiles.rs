@@ -6,7 +6,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use pyroscope::pyroscope::PyroscopeConfig;
 use std::{
     cell::Cell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::{CStr, CString},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
@@ -234,7 +234,7 @@ struct Key {
     bucket: u64,
     ids: [u64; 3],
     element: Arc<str>,
-    kernel: String,
+    kernel: Arc<str>,
     device: u32,
 }
 #[derive(Default)]
@@ -246,6 +246,10 @@ struct Value {
 struct Joiner {
     owners: HashMap<u32, Owner>,
     groups: HashMap<Key, Value>,
+    // Report-local caches: repeated activities share names and resolve each
+    // attribution key only once, while a launch still holds its element lease.
+    elements: HashMap<u64, Arc<str>>,
+    kernels: HashSet<Arc<str>>,
     timestamps: encode::Timestamps,
 }
 impl Joiner {
@@ -275,28 +279,36 @@ impl Joiner {
         if owner.is_none() {
             counters.unmatched.fetch_add(1, Relaxed);
         }
-        let (ids, submitted, element) = owner.map_or_else(
-            || ([0; 3], unix_nanos(), Arc::from("[unattributed GPU]")),
-            |owner| {
+        let (ids, submitted, element_key) = match owner.as_ref() {
+            None => ([0; 3], unix_nanos(), 0),
+            Some(owner) => {
                 if owner.ids != [0; 3] {
                     counters.correlated.fetch_add(1, Relaxed);
                 }
-                let frame = owner.element.as_ref().map_or_else(
-                    || Arc::from("[unattributed GPU]"),
-                    |(key, _lease)| {
-                        counters.attributed.fetch_add(1, Relaxed);
-                        crate::profilecontext::frame(*key)
-                    },
-                );
-                (owner.ids, owner.submitted, frame)
-            },
-        );
+                let key = owner.element.as_ref().map_or(0, |(key, _lease)| {
+                    counters.attributed.fetch_add(1, Relaxed);
+                    *key
+                });
+                (owner.ids, owner.submitted, key)
+            }
+        };
+        let element = self.element_frame(element_key);
+        drop(owner);
         let len = event
             .name
             .iter()
             .position(|v| *v == 0)
             .unwrap_or(event.name.len());
-        let kernel = String::from_utf8_lossy(&event.name[..len]).into_owned();
+        let name = String::from_utf8_lossy(&event.name[..len]);
+        let kernel = if let Some(kernel) = self.kernels.get(name.as_ref()) {
+            kernel.clone()
+        } else {
+            let kernel: Arc<str> = Arc::from(name.as_ref());
+            if self.kernels.len() < MAX_GROUPS {
+                self.kernels.insert(kernel.clone());
+            }
+            kernel
+        };
         let key = Key {
             bucket: submitted / 1_000_000_000,
             ids,
@@ -312,6 +324,20 @@ impl Joiner {
         value.nanos = value.nanos.saturating_add(event.end - event.start);
         value.kernels += 1;
     }
+    fn element_frame(&mut self, key: u64) -> Arc<str> {
+        if let Some(frame) = self.elements.get(&key) {
+            return frame.clone();
+        }
+        let frame = if key == 0 {
+            Arc::from("[unattributed GPU]")
+        } else {
+            crate::profilecontext::frame(key)
+        };
+        if self.elements.len() < MAX_GROUPS {
+            self.elements.insert(key, frame.clone());
+        }
+        frame
+    }
     fn expire(&mut self, counters: &Counters) {
         self.owners
             .retain(|_, owner| owner.seen.elapsed() < CONTEXT_TTL);
@@ -326,11 +352,10 @@ impl Joiner {
         drain: bool,
     ) -> Result<(), FlushError> {
         let mut result = Ok(());
-        for (batch, kernels) in encode::batches(
-            std::mem::take(&mut self.groups),
-            counters,
-            &mut self.timestamps,
-        ) {
+        let batches = encode::batches(self.groups.drain(), counters, &mut self.timestamps);
+        self.elements.clear();
+        self.kernels.clear();
+        for (batch, kernels) in batches {
             // Account every batch even if the upload worker has disconnected.
             result = result.and(uploader.submit(batch, kernels, drain));
         }
@@ -338,72 +363,6 @@ impl Joiner {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn launch(correlation: u32) -> Message {
-        Message {
-            event: Event {
-                kind: 1,
-                correlation,
-                start: 1,
-                end: 2,
-                device: 0,
-                stream: 0,
-                count: 0,
-                name: [0; 256],
-            },
-            owner: Some(Owner {
-                ids: [1, 2, 3],
-                element: None,
-                submitted: 1,
-                seen: Instant::now(),
-            }),
-        }
-    }
-
-    fn kernel(correlation: u32) -> Message {
-        let mut message = launch(correlation);
-        message.event.kind = 2;
-        message.owner = None;
-        message
-    }
-
-    #[test]
-    fn sustained_completed_launches_do_not_exhaust_context_capacity() {
-        let mut joiner = Joiner::default();
-        let counters = Counters::default();
-        for id in 0..(CAPACITY * 2) as u32 {
-            joiner.process(launch(id), &counters);
-            joiner.process(kernel(id), &counters);
-        }
-        joiner.expire(&counters);
-        assert_eq!(counters.correlated.load(Relaxed), (CAPACITY * 2) as u64);
-        assert_eq!(counters.unmatched.load(Relaxed), 0);
-        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 0);
-        assert_eq!(counters.pending_contexts.load(Relaxed), 0);
-        assert_eq!(joiner.groups.len(), 1);
-    }
-
-    #[test]
-    fn in_flight_launches_remain_bounded_and_invalid_completion_releases_slot() {
-        let mut joiner = Joiner::default();
-        let counters = Counters::default();
-        for id in 0..=CAPACITY as u32 {
-            joiner.process(launch(id), &counters);
-        }
-        assert_eq!(joiner.owners.len(), CAPACITY);
-        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
-        let mut invalid = kernel(0);
-        invalid.event.end = 0;
-        joiner.process(invalid, &counters);
-        assert_eq!(counters.invalid.load(Relaxed), 1);
-        joiner.process(launch(CAPACITY as u32 + 1), &counters);
-        assert_eq!(joiner.owners.len(), CAPACITY);
-        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
-    }
-}
 fn unix_nanos() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -485,7 +444,7 @@ fn worker(
         let _ = ready.send(Err("GPU uploader initialization failed".into()));
         return Err(FlushError::ExportFailed);
     }
-    let mut uploader = Some(initial?);
+    let uploader = initial?;
     let adapter = match Adapter::open(&path) {
         Ok(value) => value,
         Err(error) => {
@@ -513,7 +472,7 @@ fn worker(
         for message in events.try_iter().take(CAPACITY) {
             joiner.process(message, &counters);
         }
-        let reported = joiner.report(uploader.as_ref().unwrap(), &counters, command.is_some());
+        let reported = joiner.report(&uploader, &counters, command.is_some());
         joiner.expire(&counters);
         if owns_retirement || crate::profiles::cpu_reports_finished() {
             // The CPU worker otherwise owns retirement. GPU leases keep its
@@ -523,14 +482,7 @@ fn worker(
         match command {
             Some(Command::Stop) => break flushed.and(reported),
             Some(Command::Flush(reply)) => {
-                let delivered = uploader.take().unwrap().finish();
-                match create() {
-                    Ok(new) => uploader = Some(new),
-                    Err(error) => {
-                        let _ = reply.send(Err(error.clone()));
-                        break Err(error);
-                    }
-                }
+                let delivered = uploader.flush();
                 let _ = reply.send(flushed.and(reported).and(delivered));
             }
             None => {
@@ -548,9 +500,7 @@ fn worker(
     if owns_retirement || crate::profiles::cpu_reports_finished() {
         crate::profilecontext::after_report(crate::profilecontext::before_drain());
     }
-    result
-        .and(stopped)
-        .and(uploader.map_or(Ok(()), |u| u.finish()))
+    result.and(stopped).and(uploader.finish())
 }
 
 pub(crate) fn drain(timeout: Duration, stop: bool) -> Result<(), FlushError> {
@@ -598,5 +548,120 @@ pub(crate) fn drain(timeout: Duration, stop: bool) -> Result<(), FlushError> {
                     FlushError::Closed
                 }
             })?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launch(correlation: u32) -> Message {
+        Message {
+            event: Event {
+                kind: 1,
+                correlation,
+                start: 1,
+                end: 2,
+                device: 0,
+                stream: 0,
+                count: 0,
+                name: [0; 256],
+            },
+            owner: Some(Owner {
+                ids: [1, 2, 3],
+                element: None,
+                submitted: 1,
+                seen: Instant::now(),
+            }),
+        }
+    }
+
+    fn kernel(correlation: u32) -> Message {
+        let mut message = launch(correlation);
+        message.event.kind = 2;
+        message.owner = None;
+        message
+    }
+
+    #[test]
+    fn sustained_completed_launches_do_not_exhaust_context_capacity() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        for id in 0..(CAPACITY * 2) as u32 {
+            joiner.process(launch(id), &counters);
+            joiner.process(kernel(id), &counters);
+        }
+        joiner.expire(&counters);
+        assert_eq!(counters.correlated.load(Relaxed), (CAPACITY * 2) as u64);
+        assert_eq!(counters.unmatched.load(Relaxed), 0);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 0);
+        assert_eq!(counters.pending_contexts.load(Relaxed), 0);
+        assert_eq!(joiner.groups.len(), 1);
+    }
+
+    #[test]
+    fn in_flight_launches_remain_bounded_and_invalid_completion_releases_slot() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        for id in 0..=CAPACITY as u32 {
+            joiner.process(launch(id), &counters);
+        }
+        assert_eq!(joiner.owners.len(), CAPACITY);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
+        let mut invalid = kernel(0);
+        invalid.event.end = 0;
+        joiner.process(invalid, &counters);
+        assert_eq!(counters.invalid.load(Relaxed), 1);
+        joiner.process(launch(CAPACITY as u32 + 1), &counters);
+        assert_eq!(joiner.owners.len(), CAPACITY);
+        assert_eq!(counters.context_capacity_rejections.load(Relaxed), 1);
+    }
+
+    #[test]
+    fn repeated_kernels_share_names_across_distinct_spans() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        let lease = crate::profilecontext::intern("gpu-cache-test", "identity").unwrap();
+        for id in 1..=20 {
+            let mut launch = launch(id);
+            let owner = launch.owner.as_mut().unwrap();
+            owner.ids[2] = id as u64;
+            owner.element = Some((lease.id << 1, lease.clone()));
+            joiner.process(launch, &counters);
+            let mut kernel = kernel(id);
+            kernel.event.name[..6].copy_from_slice(b"resize");
+            joiner.process(kernel, &counters);
+        }
+        assert_eq!(joiner.groups.len(), 20);
+        assert_eq!(joiner.elements.len(), 1);
+        assert_eq!(joiner.kernels.len(), 1);
+        let first = joiner.groups.keys().next().unwrap();
+        for key in joiner.groups.keys() {
+            assert!(Arc::ptr_eq(&key.kernel, &first.kernel));
+            assert!(Arc::ptr_eq(&key.element, &first.element));
+        }
+        assert!(first.element.contains("gpu-cache-test"));
+        assert_eq!(counters.attributed.load(Relaxed), 20);
+        assert_eq!(counters.correlated.load(Relaxed), 20);
+    }
+
+    #[test]
+    fn name_caches_and_groups_stay_bounded_on_unique_activity_streams() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        for id in 0..MAX_GROUPS as u32 + 7 {
+            joiner.process(launch(id), &counters);
+            let mut kernel = kernel(id);
+            let name = format!("kernel{id}");
+            kernel.event.name[..name.len()].copy_from_slice(name.as_bytes());
+            joiner.process(kernel, &counters);
+            // Deliberately unknown, unique IDs exercise the cache bound without
+            // needing more live element leases than the registry permits.
+            joiner.element_frame(id as u64 + 1);
+        }
+        assert_eq!(joiner.groups.len(), MAX_GROUPS);
+        assert_eq!(joiner.kernels.len(), MAX_GROUPS);
+        assert_eq!(joiner.elements.len(), MAX_GROUPS);
+        assert_eq!(counters.dropped_processing.load(Relaxed), 7);
     }
 }

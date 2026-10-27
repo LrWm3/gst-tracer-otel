@@ -1,0 +1,231 @@
+{
+  "passed": true,
+  "service": "mars-compaction-c0e81fb1f60742c782b980b992a3b888",
+  "submission_second": 1793072533,
+  "expected_ns": 80000000,
+  "samples": [
+    {
+      "element": "first",
+      "span": "3fc79915711e02f0",
+      "trace": "a618df0c059a4795d0dd8ec67d2969ee",
+      "nanos": 10000000
+    },
+    {
+      "element": "first",
+      "span": "74cfd8e31c0d58f8",
+      "trace": "015f82ecac95fd4cc6f592f2fa6289a1",
+      "nanos": 10000000
+    },
+    {
+      "element": "second",
+      "span": "e8c6d45c9c7b76db",
+      "trace": "a618df0c059a4795d0dd8ec67d2969ee",
+      "nanos": 10000000
+    },
+    {
+      "element": "second",
+      "span": "c43949be77fe702b",
+      "trace": "015f82ecac95fd4cc6f592f2fa6289a1",
+      "nanos": 10000000
+    },
+    {
+      "element": "first",
+      "span": "c12f48bac0f63bbd",
+      "trace": "7b3c4278d5f699fb5bb32c6da776cd41",
+      "nanos": 10000000
+    },
+    {
+      "element": "first",
+      "span": "d70b01d8688ca00e",
+      "trace": "9cc2675e93bc9223ae99b18598da066b",
+      "nanos": 10000000
+    },
+    {
+      "element": "second",
+      "span": "c7e0a1631d6381c1",
+      "trace": "7b3c4278d5f699fb5bb32c6da776cd41",
+      "nanos": 10000000
+    },
+    {
+      "element": "second",
+      "span": "2b7e4fdfe9ea0ad0",
+      "trace": "9cc2675e93bc9223ae99b18598da066b",
+      "nanos": 10000000
+    }
+  ],
+  "before": {
+    "flamegraph": {
+      "names": [
+        "total",
+        "[element] second [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:second",
+        "same_kernel",
+        "[element] first [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:first"
+      ],
+      "levels": [
+        {
+          "values": [
+            "0",
+            "80000000",
+            "0",
+            "0"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "0",
+            "3",
+            "0",
+            "40000000",
+            "0",
+            "1"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "40000000",
+            "2",
+            "0",
+            "40000000",
+            "40000000",
+            "2"
+          ]
+        }
+      ],
+      "total": "80000000",
+      "maxSelf": "40000000"
+    }
+  },
+  "after": {
+    "flamegraph": {
+      "names": [
+        "total",
+        "[element] second [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:second",
+        "same_kernel",
+        "[element] first [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:first"
+      ],
+      "levels": [
+        {
+          "values": [
+            "0",
+            "80000000",
+            "0",
+            "0"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "0",
+            "3",
+            "0",
+            "40000000",
+            "0",
+            "1"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "40000000",
+            "2",
+            "0",
+            "40000000",
+            "40000000",
+            "2"
+          ]
+        }
+      ],
+      "total": "80000000",
+      "maxSelf": "40000000"
+    }
+  },
+  "before_control": {
+    "flamegraph": {
+      "names": [
+        "total",
+        "[element] second [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:second",
+        "same_kernel",
+        "[element] first [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:first"
+      ],
+      "levels": [
+        {
+          "values": [
+            "0",
+            "80000000",
+            "0",
+            "0"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "0",
+            "3",
+            "0",
+            "40000000",
+            "0",
+            "1"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "40000000",
+            "40000000",
+            "2",
+            "0",
+            "40000000",
+            "40000000",
+            "2"
+          ]
+        }
+      ],
+      "total": "80000000",
+      "maxSelf": "40000000"
+    }
+  },
+  "after_control": {
+    "flamegraph": {
+      "names": [
+        "total",
+        "[element] second [identity] \u2014 /GstPipeline:pipeline0/GstIdentity:second",
+        "same_kernel"
+      ],
+      "levels": [
+        {
+          "values": [
+            "0",
+            "10000000",
+            "0",
+            "0"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "10000000",
+            "0",
+            "1"
+          ]
+        },
+        {
+          "values": [
+            "0",
+            "10000000",
+            "10000000",
+            "2"
+          ]
+        }
+      ],
+      "total": "10000000",
+      "maxSelf": "10000000"
+    }
+  }
+}

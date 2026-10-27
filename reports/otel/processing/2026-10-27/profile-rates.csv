@@ -1,0 +1,9 @@
+build,hz,uploaded_profiles,delivered_samples,counted_drops,timer_overruns
+baseline,100,6,569,0,0
+baseline,250,6,1416,0,0
+baseline,500,6,1536,1329,
+baseline,1000,6,1536,4151,
+candidate,100,6,577,0,0
+candidate,250,6,1434,0,0
+candidate,500,6,2902,0,0
+candidate,1000,6,5964,0,5

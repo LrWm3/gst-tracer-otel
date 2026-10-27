@@ -145,8 +145,13 @@ The `mars-profiles` entry point uses the same bounded element context stack,
 without trace capture or span correlation. See its
 [configuration and migration guide](PROFILES.md).
 
-A dedicated report worker drains rings every second, aggregates raw stacks,
-reuses a bounded symbol cache, and interns frames directly into pprof. The
+A collector drains rings every 64–1,000 ms, depending on sample rate,
+independently of symbolization and upload processing. Report requests trigger
+an immediate drain. It aggregates up to 16,384 distinct sample keys; repeated keys still
+accumulate at capacity and additional new keys count as `dropped_processing`.
+A report worker takes a snapshot approximately every second, reuses a bounded
+symbol cache, and interns frames directly into pprof. At most two aggregates
+coexist, one collecting and one being encoded. The
 [HTTP uploader](src/profileupload.rs) queue holds at most ten encoded profiles, each capped at 8 MiB. A full
 queue drops the new profile without blocking sampling or report processing.
 Oversized reports are dropped before enqueueing. These bounds exclude the

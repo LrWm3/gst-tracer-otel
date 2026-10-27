@@ -479,3 +479,94 @@ Evidence: [soak build/source metadata](delivery/2026-10-25/soak-metadata.json),
 [snapshots](delivery/2026-10-25/soak-snapshots.json),
 [soak output](delivery/2026-10-25/soak.log), and
 [backend workload output](delivery/2026-10-25/backend.log).
+
+## Independent sample collection — 2026-10-27
+
+CPU rings now drain independently of symbolization, encoding and explicit
+upload flushes. The collector wakes after a quarter-ring's worth of CPU sampling
+time, capped at one second: **640 ms at 100 Hz**, **64 ms at 1,000 Hz**. A report
+request triggers an immediate drain. Full rings are rejected before stack
+copying and unwinding. Each aggregate is bounded at 16,384 distinct sample keys;
+at most one collecting aggregate and one encoding aggregate coexist.
+
+A rate check used the release `profile_video profiles 600` workload: 1080p RGBA
+test video converted to I420, function symbolization, element attribution,
+monitoring disabled and a loopback receiver. Actual uploaded pprof weights were
+decoded after exit. Baseline was `d49ee02`; these are single capacity checks,
+not repeated overhead measurements.
+
+| Hz | Delivered samples before → after | Counted sample drops before → after |
+| --- | ---: | ---: |
+| 100 | 569 → 577 | 0 → 0 |
+| 250 | 1,416 → 1,434 | 0 → 0 |
+| 500 | 1,536 → 2,902 | 1,329 → 0 |
+| 1,000 | 1,536 → 5,964 | 4,151 → 0 |
+
+The earlier report-worker drain exhausted the 256-sample ring between one-second
+reports at the higher rates: approximately **46% / 73%** of captured-or-dropped
+ticks were lost at 500 / 1,000 Hz. The new runs had zero ring, processing and
+upload drops, and every captured sample was acknowledged. The 1,000 Hz run still
+had **five timer overruns**, a separate sampling limit; this is not a guarantee
+of loss-free profiling. Runtime variation also changes the expected number of
+CPU samples. See [rate observations](processing/2026-10-27/profile-rates.csv).
+
+### Default-rate cost
+
+The matched comparison alternated old/new binaries and no-profiler/profiles
+modes, pinned to CPUs 0 and 2, with five measured runs plus one warm-up per cell.
+Both used Rust 1.99.1 release builds with the `profiles` feature and no additional
+Rust frame-pointer flags; native GStreamer 1.24.2 libraries and workload were identical. Profiles
+used 100 Hz and **function** symbolization, not the default full source/inline
+resolution. Hardware events covered at least 99% of execution; the receiver
+decoded and checked uploads only after the timed process exited.
+
+| Mode | Process cycles, billions before → after | Pipeline seconds before → after | Peak RSS MiB before → after |
+| --- | ---: | ---: | ---: |
+| No profiler | 25.651 → 25.597 | 5.664 → 5.591 | 26.77 → 26.80 |
+| Profiles | 25.811 → 25.726 | 5.757 → 5.667 | 32.04 → 32.13 |
+
+The changes do **not establish a default-rate speedup or regression**: cycles
+shifted by −0.33% for profiles and −0.21% for the control. Profile instruction
+counts were essentially unchanged, 114.66663 → 114.66672 billion. Median whole-job
+CPU was 5.780 → 5.694 seconds, while the control also fell from 5.671 → 5.599.
+Profile cycle ranges overlapped (25.750–25.832 versus 25.617–25.940 billion).
+Median shutdown was 3.07 → 2.93 ms, also with overlapping ranges.
+
+The additional aggregate and thread add bounded working storage; these small
+100 Hz processes do not exercise its maximum size. Both builds delivered all
+captured samples, with zero ring, processing and upload drops in measured
+runs. Earlier exploratory runs on a busy host were too variable for a small
+overhead estimate; the table describes the final rate-scaled collector only.
+It does not replace the full-symbolization signal matrix or production GPU
+measurements. [Raw runs](processing/2026-10-27/profiles-100hz.csv) include warm-ups;
+[settings and binary hashes](processing/2026-10-27/profiles-100hz-settings.json)
+identify the build comparison.
+
+Reproduce with two identically built revisions:
+
+```sh
+python3 tracer/otel/bench/profile_compare.py \
+  --baseline /path/to/before/profile_video --candidate /path/to/after/profile_video \
+  --output /path/to/new/results --frames 600 --repeats 5 --cpus 0,2
+```
+
+Profile flushes now reuse the uploader thread and HTTP connection pool, using a
+FIFO acknowledgement barrier. Tests check delayed replies, failures, subsequent
+recovery and cumulative counters without restarting the worker. CPU encoding
+reserves sample-vector capacity and avoids unused fallback strings. GPU reports
+share repeated kernel/element names in bounded report-local caches and reuse
+aggregation capacity. No native GPU overhead reduction is inferred from these
+local allocation changes.
+
+The [real Pyroscope v2 compaction regression](processing/2026-10-27/gpu-compaction.json) retained **80,000,000 ns across
+eight GPU reports from two instances**, including exact element/span/trace
+queries. The deliberately duplicated-timestamp control retained only
+10,000,000 ns, confirming that compaction ran. Hardware profiling remains a
+separate pending validation: the test device was unreachable, so CUPTI driver
+activity collection and the earlier large GPU RSS cost are unchanged.
+
+Validation passed formatting, workspace Clippy with all features and targets,
+default and all-feature tests, dependency audit and nightly `udeps`. Collector
+tests cover busy report processing, bounded distinct stacks, description
+retirement and shutdown accounting. CPU/GPU/NVTX integration tests retain their
+attribution, delivery and caller-deadline checks.

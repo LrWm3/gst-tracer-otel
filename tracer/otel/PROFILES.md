@@ -154,7 +154,7 @@ The context stack is bounded at 256 calls per thread; immutable descriptions are
 bounded at 4096 live or awaiting retirement, with names derived from paths capped
 at 512 characters and factories at 128 characters. Metadata and active execution
 scopes retain a description lease. Once its final lease is released, the report
-worker drains all sample rings and encodes their original names before reclaiming
+collector drains all sample rings and the report worker encodes their original names before reclaiming
 the description. IDs are never reused, including when the same path is recreated.
 Pipeline recreation can therefore exceed 4096 descriptions over process lifetime.
 Overflow becomes unattributed until a report releases capacity; cached misses
@@ -187,6 +187,18 @@ for useful stacks. The Rust flag above only changes Rust code. The
 Meson build with `--native-file`; the shared sampler's
 [unwinding limits and memory bounds](README.md#experimental-correlated-cpu-profiles)
 also apply here.
+
+An independent collector drains the 256-sample per-thread rings every 64–1,000 ms,
+including while the report worker is resolving symbols or waiting on a flush.
+The interval scales with sample rate: 640 ms at 100 Hz, 64 ms at 1,000 Hz;
+report requests always trigger an immediate drain.
+Each aggregate holds at most 16,384 distinct sample keys (stack, thread, element
+and trace context); repeated keys continue to accumulate at that limit. New keys
+beyond it increment `dropped_processing`. At most two such aggregates coexist:
+one being encoded and one collecting. This adds a background thread and bounded
+working memory; it does not guarantee loss-free sampling if the collector is
+starved or the aggregate fills. A full ring increments `dropped_full` before
+attempting the stack copy/unwind.
 
 Profiles upload approximately once per second. Stop streaming, then call
 `gstoteltracer::shutdown(timeout)` to stop timers and drain the final profile.
@@ -228,6 +240,8 @@ existing Pyroscope push endpoint. Responses must be HTTP 200 with a valid bounde
 protobuf body. Failed uploads are not retried automatically, avoiding an extra
 retry queue and duplicate requests after ambiguous timeouts. Subsequent profiles
 continue normally after an error, including after a failed explicit flush.
+An explicit flush is a FIFO barrier in the existing upload queue, so the worker
+and its HTTP connection pool remain available for subsequent profiles.
 A forwarding proxy can provide authentication or its own retry policy.
 
 Flush/shutdown return `export-failed` for unsuccessful uploads since the previous
@@ -238,6 +252,11 @@ it stays false after earlier losses, for disabled profiling, and after a timeout
 Capture losses such as full sample rings remain separate counters.
 
 ## Measured overhead
+
+The [independent collection check](../../reports/otel/PROFILE_VIDEO_RESULTS.md#independent-sample-collection--2026-10-27)
+documents the high-rate ring-loss fix and a matched 100 Hz function-symbolization
+comparison. Default-rate costs were comparable; the extra aggregate remains
+bounded even while reporting is busy.
 
 The current [1080p signal matrix](../../reports/otel/INSTRUMENT_VIDEO_RESULTS.md#current-full-metrics-signal-matrix--2026-10-25)
 uses 100 Hz profiles with element attribution enabled. It measures profiles-only,
