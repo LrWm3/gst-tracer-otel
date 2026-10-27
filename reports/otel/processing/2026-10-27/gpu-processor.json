@@ -1,0 +1,427 @@
+{
+  "date": "2026-10-27",
+  "device": "an integrated memory nvidia device",
+  "rust_revision": "f0a6e6c",
+  "before_adapter_revision": "f0a6e6c",
+  "after_adapter_revision": "a65dcf2",
+  "repetitions": 4,
+  "frames": 3660,
+  "profile_hz": 100,
+  "nvtx_enabled_in_profile_modes": true,
+  "monitoring": "core",
+  "metrics_interval_ms": 1000,
+  "metrics_sample_rate": 16,
+  "metrics_io_counts": false,
+  "metrics_pts_age": false,
+  "trace_sampling": "parentbased_always_on",
+  "logs": false,
+  "notes": [
+    "One excluded warm-up per mode, balanced four-round order.",
+    "Pipeline seconds are PLAYING to EOS; CPU seconds cover the whole job.",
+    "RSS is largest-child high-water RSS, not unique memory or total device RAM.",
+    "Raw processor evidence is private; these rows contain only aggregate measurements.",
+    "Diagnostics and invalid-initialization runs are excluded."
+  ],
+  "runs": [
+    {
+      "label": "r0-control",
+      "case": "control",
+      "pipeline_s": 27.125465861,
+      "fps": 134.928558232145,
+      "cpu_s": 25.570205,
+      "peak_child_rss_mib": 1316.18359375,
+      "whole_job_s": 41.118728928000564,
+      "null_to_exit_s": 1.5147828879998997,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 0,
+        "accepted": 0,
+        "attributed": 0,
+        "correlated": 0,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r0-cpu-gpu",
+      "case": "cpu-gpu-nvtx",
+      "pipeline_s": 28.585231392,
+      "fps": 128.0381449360702,
+      "cpu_s": 29.862901,
+      "peak_child_rss_mib": 1694.16015625,
+      "whole_job_s": 43.95159048200003,
+      "null_to_exit_s": 2.031505652001215,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 1692,
+        "reported": 1692,
+        "accepted": 1692
+      },
+      "timer_overruns": 14
+    },
+    {
+      "label": "r0-gpu-after",
+      "case": "gpu-after-nvtx",
+      "pipeline_s": 28.551203536,
+      "fps": 128.19074318128597,
+      "cpu_s": 28.352359,
+      "peak_child_rss_mib": 1693.6796875,
+      "whole_job_s": 45.004544887999145,
+      "null_to_exit_s": 3.4571827830004622,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r0-gpu-before",
+      "case": "gpu-before-nvtx",
+      "pipeline_s": 28.564659016,
+      "fps": 128.13035849473695,
+      "cpu_s": 28.630701000000002,
+      "peak_child_rss_mib": 1689.39453125,
+      "whole_job_s": 45.57744799399916,
+      "null_to_exit_s": 3.919581445001313,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r1-control",
+      "case": "control",
+      "pipeline_s": 27.054790196,
+      "fps": 135.28103428209636,
+      "cpu_s": 25.464564000000003,
+      "peak_child_rss_mib": 1322.8359375,
+      "whole_job_s": 41.12633290099984,
+      "null_to_exit_s": 1.5961133830005565,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 0,
+        "accepted": 0,
+        "attributed": 0,
+        "correlated": 0,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r1-cpu-gpu",
+      "case": "cpu-gpu-nvtx",
+      "pipeline_s": 28.607113576,
+      "fps": 127.94020586091443,
+      "cpu_s": 29.454444,
+      "peak_child_rss_mib": 1691.05859375,
+      "whole_job_s": 46.80424477199995,
+      "null_to_exit_s": 5.200569214001007,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 1665,
+        "reported": 1665,
+        "accepted": 1665
+      },
+      "timer_overruns": 14
+    },
+    {
+      "label": "r1-gpu-after",
+      "case": "gpu-after-nvtx",
+      "pipeline_s": 28.596244132,
+      "fps": 127.9888359850851,
+      "cpu_s": 28.697464000000004,
+      "peak_child_rss_mib": 1692.51171875,
+      "whole_job_s": 44.77850769899851,
+      "null_to_exit_s": 3.0099156169999333,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r1-gpu-before",
+      "case": "gpu-before-nvtx",
+      "pipeline_s": 28.552998295,
+      "fps": 128.1826854814373,
+      "cpu_s": 28.641796,
+      "peak_child_rss_mib": 1689.796875,
+      "whole_job_s": 45.78588846099956,
+      "null_to_exit_s": 4.137428247000571,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r2-control",
+      "case": "control",
+      "pipeline_s": 27.162699476,
+      "fps": 134.74360319871175,
+      "cpu_s": 25.730755,
+      "peak_child_rss_mib": 1316.703125,
+      "whole_job_s": 41.32996989899948,
+      "null_to_exit_s": 1.5976093619992753,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 0,
+        "accepted": 0,
+        "attributed": 0,
+        "correlated": 0,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r2-cpu-gpu",
+      "case": "cpu-gpu-nvtx",
+      "pipeline_s": 28.637833308,
+      "fps": 127.8029647228087,
+      "cpu_s": 29.51571,
+      "peak_child_rss_mib": 1687.25,
+      "whole_job_s": 44.57628746699993,
+      "null_to_exit_s": 2.964819198999976,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 1673,
+        "reported": 1673,
+        "accepted": 1673
+      },
+      "timer_overruns": 12
+    },
+    {
+      "label": "r2-gpu-after",
+      "case": "gpu-after-nvtx",
+      "pipeline_s": 28.63390403,
+      "fps": 127.82050244232798,
+      "cpu_s": 28.681819,
+      "peak_child_rss_mib": 1686.59375,
+      "whole_job_s": 44.57113443399976,
+      "null_to_exit_s": 3.0676296840010764,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r2-gpu-before",
+      "case": "gpu-before-nvtx",
+      "pipeline_s": 28.603124564,
+      "fps": 127.95804849259335,
+      "cpu_s": 28.66365,
+      "peak_child_rss_mib": 1688.8828125,
+      "whole_job_s": 44.3710646290001,
+      "null_to_exit_s": 2.5606072129994573,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r3-control",
+      "case": "control",
+      "pipeline_s": 27.133863124,
+      "fps": 134.88680116332998,
+      "cpu_s": 25.597487,
+      "peak_child_rss_mib": 1315.06640625,
+      "whole_job_s": 41.12241808200088,
+      "null_to_exit_s": 1.5997788710010354,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 0,
+        "accepted": 0,
+        "attributed": 0,
+        "correlated": 0,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r3-cpu-gpu",
+      "case": "cpu-gpu-nvtx",
+      "pipeline_s": 28.685981124,
+      "fps": 127.58845458968378,
+      "cpu_s": 29.63736,
+      "peak_child_rss_mib": 1688.67578125,
+      "whole_job_s": 44.77353666199997,
+      "null_to_exit_s": 3.293942058000539,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 1678,
+        "reported": 1678,
+        "accepted": 1678
+      },
+      "timer_overruns": 5
+    },
+    {
+      "label": "r3-gpu-after",
+      "case": "gpu-after-nvtx",
+      "pipeline_s": 28.635384164,
+      "fps": 127.81389553003798,
+      "cpu_s": 28.320352,
+      "peak_child_rss_mib": 1692.59765625,
+      "whole_job_s": 43.74384169999939,
+      "null_to_exit_s": 2.1628373359999387,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    },
+    {
+      "label": "r3-gpu-before",
+      "case": "gpu-before-nvtx",
+      "pipeline_s": 28.676449127,
+      "fps": 127.63086474866117,
+      "cpu_s": 28.648336,
+      "peak_child_rss_mib": 1697.53125,
+      "whole_job_s": 45.3920394630004,
+      "null_to_exit_s": 3.503696673999002,
+      "frames": 3660,
+      "trace_exported": 34097,
+      "gpu": {
+        "collected": 45517,
+        "accepted": 45517,
+        "attributed": 45500,
+        "correlated": 3660,
+        "unmatched": 0
+      },
+      "cpu": {
+        "collected": 0,
+        "reported": 0,
+        "accepted": 0
+      },
+      "timer_overruns": 0
+    }
+  ]
+}

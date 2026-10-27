@@ -561,9 +561,12 @@ local allocation changes.
 The [real Pyroscope v2 compaction regression](processing/2026-10-27/gpu-compaction.json) retained **80,000,000 ns across
 eight GPU reports from two instances**, including exact element/span/trace
 queries. The deliberately duplicated-timestamp control retained only
-10,000,000 ns, confirming that compaction ran. Hardware profiling remains a
-separate pending validation: the test device was unreachable, so CUPTI driver
-activity collection and the earlier large GPU RSS cost are unchanged.
+10,000,000 ns, confirming that compaction ran. A subsequent
+[device recheck](GPU_PROFILE_RESULTS.md#native-memory-and-correlation-recheck--2026-10-27)
+removed unused CUPTI driver activity records and verified real GPU-only and
+CPU+GPU correlation. The native memory probe found that most additional RSS
+appeared during CUDA/CUPTI context initialization; removing the unused records
+did not materially reduce it.
 
 Validation passed formatting, workspace Clippy with all features and targets,
 default and all-feature tests, dependency audit and nightly `udeps`. Collector

@@ -133,11 +133,11 @@ CPU-only `profiles` builds.
 
 GPU collection has a separate cost from the CPU-only figures above. In a
 [1080p inference workload](reports/otel/GPU_PROFILE_RESULTS.md), CPU + GPU
-profiling added about **5.4% pipeline time**, **15% process CPU time**, and
-**377 MiB peak RSS** over metrics + traces. Peak process memory rose from
-**1,318 to 1,694 MiB**, about **29%**. A separate NVTX comparison found small
-additional costs within run variation. These device measurements predate the
-latest configuration and compaction fixes; GPU profiling remains opt-in.
+profiling with NVTX element attribution added about **5.5% pipeline time**,
+**16% process CPU time**, and **373 MiB peak RSS** over metrics + traces.
+Peak process memory rose from **1,316 to 1,690 MiB**, about **28%**. These
+2026-10-27 measurements include the configuration, compaction and background
+processing fixes; GPU profiling remains opt-in.
 
 For clickable trace-to-profile links, follow the
 [Grafana correlation setup](tracer/otel/CORRELATION.md). It includes the data-source

@@ -34,7 +34,7 @@ and original source/binary checksums are retained.
 - [Grafana trace/profile correlation: provisioning and backend validation](otel/CORRELATION_REVIEW.md)
 - [Metric → trace → log → trace → profile walkthrough and validation](otel/SIGNALS_REVIEW.md#four-signal-walkthrough--2026-10-25)
 - [Linux arm64 profiling: validation on an integrated memory nvidia device, CPU costs, and lifecycle checks](otel/ARM64_PROFILES.md)
-- [Optional GPU profiles: inference workload overhead, memory percentages, and NVTX attribution cost](otel/GPU_PROFILE_RESULTS.md)
+- [Optional GPU profiles: inference overhead, native memory phases, correlation checks, and NVTX attribution cost](otel/GPU_PROFILE_RESULTS.md)
 
 Historical correlated-profile measurements are described in the
 [tracer guide](../tracer/otel/README.md#performance-and-sampling-cost), with

@@ -156,16 +156,19 @@ has a CPU-only setup, GObject examples, and attribution boundaries.
 ## Measured overhead
 
 In an offline 1080p inference workload on an integrated memory nvidia device,
-GPU-only profiling added **5.36% pipeline time**, **11.15% process CPU time**,
-and **373 MiB peak RSS** over metrics + traces. CPU + GPU profiling at 100 Hz
-added **5.39% pipeline time**, **15.36% CPU time**, and **377 MiB peak RSS**.
-The latter increased process memory from **1,318 to 1,694 MiB**: **28.6% more**,
-with the added memory accounting for **22.2% of the final process peak**.
+GPU profiling with NVTX attribution added **5.48% pipeline time**,
+**11.47% process CPU time**, and **376 MiB peak RSS** over metrics + traces.
+CPU + GPU profiling at 100 Hz, also with NVTX, added **5.50% pipeline time**,
+**15.61% CPU time**, and **373 MiB peak RSS**. The latter increased process
+memory from **1,316 to 1,690 MiB**: **28.4% more**, with the added memory
+accounting for **22.1% of the final process peak**.
 These percentages do not describe total device RAM.
 
-A separate comparison found small incremental NVTX attribution costs within
-run variation. The device measurements predate the latest property and
-compaction fixes; they are not current-build overhead guarantees. See the
+A separate earlier comparison found small incremental NVTX costs within run
+variation. The current four-run comparison includes the configuration,
+compaction and background processing fixes. Removing unused driver activity
+records preserved correlation but did not materially reduce throughput cost
+or memory. These workload-specific measurements are not overhead limits. See the
 [performance report](../../reports/otel/GPU_PROFILE_RESULTS.md) for controls,
 sample counts, shutdown costs, and validation boundaries.
 
@@ -336,5 +339,5 @@ acknowledged/failed kernel delivery. With instrumentation monitoring enabled,
 on metric series. The existing `none`, `core`, and `all` monitoring policy applies.
 
 Implementation review starts with [gpuprofiles.rs](src/gpuprofiles.rs),
-[encode.rs](src/gpuprofiles/encode.rs), and
+[gpuprofileencode.rs](src/gpuprofileencode.rs), and
 [gpu_cupti.c](native/gpu_cupti.c).

@@ -273,17 +273,22 @@ GPU kernel timing is available as a separate, opt-in
 element attribution for supported inference workers and also works with CPU
 profiling alone. It does not supply asynchronous per-job span context.
 
-- [ ] Rerun device overhead measurements after the configuration and compaction
-  fixes. The [earlier measurements](reports/otel/GPU_PROFILE_RESULTS.md) include
-  GPU collection and incremental NVTX costs.
+- [x] Rerun device overhead measurements after the configuration, compaction and
+  background processing fixes. The [current comparison](reports/otel/GPU_PROFILE_RESULTS.md#current-processor-recheck--2026-10-27)
+  covers four balanced repetitions per mode with NVTX attribution, output
+  equivalence, stored profile totals and instrumentation health checks.
 - [ ] Measure a longer GPU lifecycle soak, including repeated pipeline teardown
   and backend outages; investigate CUPTI memory and final-drain costs.
-- [ ] Partition GPU memory costs into library loading, CUDA/CUPTI initialization,
-  first kernel execution, reporting and settled idle memory. Test removing the
+- [x] Isolate native GPU memory costs across library loading, CUDA/CUPTI
+  initialization, kernel execution, flushing and settled idle memory. Remove the
   unused driver activity stream while preserving selected launch callbacks and
-  verifying real kernel correlation on the supported SDK. The test device was
-  unreachable during the current performance pass; no new GPU RSS reduction
-  or production overhead result is claimed.
+  verifying real kernel correlation on the supported SDK. The
+  [native probe and real backend checks](reports/otel/GPU_PROFILE_RESULTS.md#native-memory-and-correlation-recheck--2026-10-27)
+  show that removing these records preserves correlation but does not materially
+  reduce RSS. Most additional native memory appears at context initialization;
+  post-teardown allocator retention is separate from the active footprint.
+- [ ] Identify the larger internal CUDA/CUPTI allocation costs in representative
+  workloads before changing buffer limits or application allocator policy.
 - [ ] Investigate an explicit context handoff for asynchronous inference jobs
   before offering exact worker span/trace correlation.
 
