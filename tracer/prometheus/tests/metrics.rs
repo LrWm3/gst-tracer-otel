@@ -71,6 +71,16 @@ fn setup() -> u16 {
             }
             env::set_var("GST_TRACERS", format!("mars-metrics(metrics-port={port},monitoring=none,metrics-sample-rate=1,metrics-include=\"selected*\",metrics-queue-interval-ms=10,metrics-io-counts=true,metrics-pts-age=false)"));
         }
+        if case == "port-zero" {
+            env::set_var("GST_TRACERS", "mars-metrics(port=0)");
+            env::set_var("MARS_METRICS_PORT", port.to_string());
+        } else if case == "port-precedence" {
+            env::set_var("GST_TRACERS", format!("mars-metrics(port=0,metrics-port={port})"));
+        } else if case == "legacy-values" {
+            env::set_var("GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS", "120000");
+            env::set_var("GST_PROM_LATENCY_IO_COUNTS", "invalid-means-false");
+            env::set_var("GST_PROM_LATENCY_PTS_AGE", "invalid-means-false");
+        }
         drop(listener);
         gst::init().unwrap();
         let factory = gst::TracerFactory::factories()
@@ -535,6 +545,9 @@ fn configuration_variants() {
         "monitoring-core",
         "monitoring-all",
         "properties",
+        "port-zero",
+        "port-precedence",
+        "legacy-values",
     ] {
         let mut child = std::process::Command::new(env::current_exe().unwrap())
             .args(["--exact", "configuration_child", "--nocapture"])
@@ -562,6 +575,43 @@ fn configuration_child() {
     let Ok(case) = env::var("GST_PROM_TEST_CASE") else {
         return;
     };
+    if matches!(
+        case.as_str(),
+        "port-zero" | "port-precedence" | "legacy-values"
+    ) {
+        let graph = pipeline(
+            "compatibility",
+            "fakesrc num-buffers=10 ! identity name=work ! fakesink",
+        );
+        run(&graph);
+        let text = if case == "port-zero" {
+            let tracer = gst::active_tracers()
+                .into_iter()
+                .find(|t| t.type_().name() == "MarsMetricsTracer")
+                .unwrap();
+            let text = tracer
+                .emit_by_name::<Option<String>>("metrics", &[])
+                .unwrap();
+            // Allow the HTTP worker time to start if port=0 regresses to inherit.
+            let deadline = Instant::now() + Duration::from_millis(250);
+            while Instant::now() < deadline {
+                assert!(
+                    std::net::TcpStream::connect(("127.0.0.1", setup())).is_err(),
+                    "port=0 opened HTTP"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let listener = TcpListener::bind(("0.0.0.0", setup())).expect("port=0 opened HTTP");
+            drop(listener);
+            text
+        } else {
+            metrics()
+        };
+        count(&text, &graph.by_name("work").unwrap(), 10);
+        assert!(!text.contains("gst_element_buffers_in_total"));
+        assert!(!text.contains("gst_buffer_pts_age_seconds"));
+        return;
+    }
     if let Some(level) = case.strip_prefix("monitoring-") {
         let graph = pipeline("health", "fakesrc num-buffers=10 ! identity ! fakesink");
         run(&graph);

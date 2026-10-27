@@ -17,6 +17,8 @@ The same properties are exposed through GObject for applications. Existing
 `MARS_METRIC_*` and `GST_PROM_LATENCY_*` settings remain environment fallbacks;
 `port` remains a parameter alias for `metrics-port`. See the
 [property reference](../otel/CONFIGURATION.md) for defaults, inheritance and the API.
+The legacy `port=0` parameter disables HTTP while keeping the `metrics` action
+available; `metrics-port=0` inherits the configured/default port instead.
 
 The synchronous metrics time `gst_pad_push()` from an upstream source pad until
 the downstream call returns. Direct child pushes are subtracted, including

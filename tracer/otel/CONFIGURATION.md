@@ -62,12 +62,20 @@ Omitting signals preserves the older compatibility preset.
 | `metrics-pts-age` | `false` | Buffer age relative to pipeline running time | `MARS_METRIC_PTS_AGE` |
 
 The original `mars-metrics(port=8080)` parameter remains an alias for
-`metrics-port`. When both are supplied, `metrics-port` wins. Original
+`metrics-port`, with one exception: **`port=0` disables HTTP** so applications
+can read the `metrics` action directly. `metrics-port=0` instead inherits the
+environment/default port. When both parameters are supplied, `metrics-port` wins. Original
 `GST_PROM_LATENCY_*` environment aliases remain lower-priority fallbacks:
 `HISTOGRAM_SAMPLE_RATE`, `INCLUDE`, `QUEUE_SAMPLE_INTERVAL_MS`, `IO_COUNTS`, and
 `PTS_AGE`, respectively. `GST_INSTRUMENT_METRIC_INTERVAL_MS` is the fallback for
 the export interval. Both metric exporters use the same resolved collector
 configuration, installed before hooks run.
+
+Legacy `GST_PROM_LATENCY_*` aliases retain their original permissive parsing:
+numeric values accept any positive `u64`, with malformed/zero values falling back
+to defaults; boolean values other than `true`, `1`, or `yes` (case-insensitive)
+mean false. The new properties and `MARS_*` variables use the strict ranges and
+values above. Explicit properties still override either environment namespace.
 
 ## Profiles
 

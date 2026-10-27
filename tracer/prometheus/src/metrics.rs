@@ -65,6 +65,7 @@ mod imp {
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
             let configuration = (|| {
                 let mut settings = self.settings.write().unwrap();
+                let mut http_disabled = false;
                 if let Some(params) = self
                     .obj()
                     .property::<Option<String>>("params")
@@ -73,11 +74,15 @@ mod imp {
                     let mut params = format!("mars-metrics,{params}")
                         .parse::<gst::Structure>()
                         .map_err(|e| format!("invalid tracer parameters: {e}"))?;
-                    // Keep the original port parameter as an alias.
+                    // Legacy port=0 disables HTTP; metrics-port=0 means inherit.
                     if params.has_field("port") {
                         if !params.has_field("metrics-port") {
-                            let port = params.value("port").unwrap().clone();
-                            params.set_value("metrics-port", port);
+                            http_disabled = params.get::<i32>("port") == Ok(0)
+                                || params.get::<u32>("port") == Ok(0);
+                            if !http_disabled {
+                                let port = params.value("port").unwrap().clone();
+                                params.set_value("metrics-port", port);
+                            }
                         }
                         params.remove_field("port");
                     }
@@ -87,12 +92,16 @@ mod imp {
                     }
                 }
                 let env = |key: &str| std::env::var(key).ok();
-                settings.server_port = settings
-                    .overrides
-                    .read_named(&SPECS, "metrics-port", &env)?
-                    .unwrap()
-                    .parse()
-                    .unwrap();
+                settings.server_port = if http_disabled {
+                    0
+                } else {
+                    settings
+                        .overrides
+                        .read_named(&SPECS, "metrics-port", &env)?
+                        .unwrap()
+                        .parse()
+                        .unwrap()
+                };
                 let monitoring = settings
                     .overrides
                     .read_named(&SPECS, "monitoring", &env)?
