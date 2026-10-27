@@ -50,6 +50,10 @@ fn specs() -> Vec<Spec> {
             "true",
             "Element attribution; auto inherits (default true). Required for NVTX attribution",
         ),
+        Spec::enumeration::<Toggle>(
+            "profile-memory-trim", &[], "true",
+            "One background allocator trim after the first pipeline reaches PLAYING (Linux/glibc profiles only). Default true: returns retained startup heap pages; our processor benchmark saved about 450 MiB running RSS for a 60-70 ms one-time allocator operation. Affects the whole process; does not reduce startup peak. Set false to disable",
+        ),
         Spec::number(
             "profile-signal",
             128,
@@ -64,6 +68,16 @@ fn specs() -> Vec<Spec> {
             Some("libmars-cupti.so"),
             "CUPTI adapter library; unset inherits (default libmars-cupti.so)",
         ),
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        Spec::number(
+            "profile-gpu-window-ms", 3_600_000, &[], "0",
+            "GPU capture duration: 0 continuous (default), otherwise 10..=period milliseconds",
+        ),
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        Spec::number(
+            "profile-gpu-period-ms", 3_600_000, &[], "10000",
+            "GPU capture repetition interval in milliseconds; 0 inherits (default 10000). Only used with a nonzero window",
+        ),
     ]
 }
 
@@ -75,8 +89,13 @@ pub(crate) struct Config {
     pub elements: bool,
     pub symbolization: String,
     pub signal: u32,
+    pub memory_trim: bool,
     #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
     pub gpu_adapter: String,
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    pub gpu_window_ms: u32,
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    pub gpu_period_ms: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -124,11 +143,17 @@ impl Settings {
 
     /// Consume shared profile parameters before the entry point parses its other settings.
     pub fn take_parameters(&mut self, params: &mut gstreamer::StructureRef) -> Result<(), String> {
-        if params.has_field("profile-gpu-adapter")
+        if [
+            "profile-gpu-adapter",
+            "profile-gpu-window-ms",
+            "profile-gpu-period-ms",
+        ]
+        .iter()
+        .any(|name| params.has_field(*name))
             && !cfg!(all(feature = "gpu-profiles", target_os = "linux"))
         {
             return Err(
-                "profile-gpu-adapter requires the gpu-profiles Cargo feature on Linux".into(),
+                "GPU profile properties require the gpu-profiles Cargo feature on Linux".into(),
             );
         }
         self.overrides.take_parameters(params, &SPECS)?;
@@ -181,6 +206,18 @@ impl Settings {
             return Err("profile-url must be an HTTP(S) URL".into());
         }
         let cpu = self.sources.cpu();
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        let (gpu_window_ms, gpu_period_ms) = {
+            let window: u32 = read("profile-gpu-window-ms")?.unwrap().parse().unwrap();
+            let period: u32 = read("profile-gpu-period-ms")?.unwrap().parse().unwrap();
+            if self.sources.gpu() && window != 0 && (window < 10 || window > period) {
+                return Err(
+                    "profile-gpu-window-ms must be 0 (continuous) or 10..=profile-gpu-period-ms"
+                        .into(),
+                );
+            }
+            (window, period)
+        };
         Ok(Some(Config {
             url,
             hz: if cpu {
@@ -190,6 +227,7 @@ impl Settings {
             },
             timeout_ms: read("profile-timeout-ms")?.unwrap().parse().unwrap(),
             elements: read("profile-elements")?.unwrap() == "true",
+            memory_trim: read("profile-memory-trim")?.unwrap() == "true",
             symbolization: if cpu {
                 read("profile-symbolization")?.unwrap()
             } else {
@@ -206,6 +244,10 @@ impl Settings {
             } else {
                 String::new()
             },
+            #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+            gpu_window_ms,
+            #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+            gpu_period_ms,
         }))
     }
 }
@@ -282,6 +324,68 @@ impl ProfileSources {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_properties_are_feature_gated() {
+        gstreamer::init().unwrap();
+        for name in ["profile-gpu-window-ms", "profile-gpu-period-ms"] {
+            let supported = cfg!(all(feature = "gpu-profiles", target_os = "linux"));
+            assert_eq!(
+                Settings::properties().iter().any(|p| p.name() == name),
+                supported
+            );
+            let mut params = crate::settings::parameters(Some(&format!("{name}=1000")))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                Settings::default().take_parameters(&mut params).is_ok(),
+                supported
+            );
+        }
+    }
+
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    #[test]
+    fn capture_windows_validate_duration_and_override_direct_properties() {
+        gstreamer::init().unwrap();
+        let mut settings = Settings {
+            sources: ProfileSources::Gpu,
+            ..Default::default()
+        };
+        let default = settings.resolve_with(true, |_| None).unwrap().unwrap();
+        assert_eq!((default.gpu_window_ms, default.gpu_period_ms), (0, 10000));
+        let property = Settings::properties()
+            .into_iter()
+            .find(|p| p.name() == "profile-gpu-window-ms")
+            .unwrap();
+        settings.set_property(&200u32.to_value(), &property);
+        let mut params = crate::settings::parameters(Some(
+            "profile-gpu-window-ms=1000,profile-gpu-period-ms=10000",
+        ))
+        .unwrap()
+        .unwrap();
+        settings.take_parameters(&mut params).unwrap();
+        let resolved = settings.resolve_with(true, |_| None).unwrap().unwrap();
+        assert_eq!(
+            (resolved.gpu_window_ms, resolved.gpu_period_ms),
+            (1000, 10000)
+        );
+        for window in [1u32, 9, 10001] {
+            settings.set_property(&window.to_value(), &property);
+            assert!(settings.resolve_with(true, |_| None).is_err());
+        }
+        settings.set_property(&10000u32.to_value(), &property);
+        assert!(settings.resolve_with(true, |_| None).is_ok());
+        settings.set_property(&0u32.to_value(), &property);
+        assert_eq!(
+            settings
+                .resolve_with(true, |_| None)
+                .unwrap()
+                .unwrap()
+                .gpu_window_ms,
+            0
+        );
+    }
 
     #[test]
     fn nvtx_property_needs_profiles_but_not_gpu_profiles() {

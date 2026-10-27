@@ -30,6 +30,8 @@ mod nvtxcontext;
 mod otellogbridge;
 #[cfg(feature = "profiles")]
 mod profilecontext;
+#[cfg(feature = "profiles")]
+mod profilememory;
 mod profiles;
 mod profilesettings;
 #[cfg(feature = "profiles")]
@@ -131,16 +133,28 @@ mod registration_tests {
                 "profile-url",
                 "profile-hz",
                 "profile-elements",
+                "profile-memory-trim",
                 "profile-symbolization",
             ] {
                 let property = class.find_property(name).expect(name);
                 assert_eq!(property.owner_type(), ty, "{name}");
                 assert!(property.flags().contains(glib::ParamFlags::CONSTRUCT_ONLY));
             }
-            assert_eq!(
-                class.find_property("profile-gpu-adapter").is_some(),
-                cfg!(all(feature = "gpu-profiles", target_os = "linux"))
-            );
+            for name in [
+                "profile-gpu-adapter",
+                "profile-gpu-window-ms",
+                "profile-gpu-period-ms",
+            ] {
+                assert_eq!(
+                    class.find_property(name).is_some(),
+                    cfg!(all(feature = "gpu-profiles", target_os = "linux")),
+                    "{name}"
+                );
+                if let Some(property) = class.find_property(name) {
+                    assert_eq!(property.owner_type(), ty);
+                    assert!(property.flags().contains(glib::ParamFlags::CONSTRUCT_ONLY));
+                }
+            }
             if ty != InstrumentTracer::static_type() {
                 assert!(class.find_property("signals").is_none());
             }

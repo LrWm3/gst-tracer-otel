@@ -47,6 +47,14 @@ pub struct ProfileStats {
     pub failed_exports: u64,
     pub pending_samples: u64,
     pub pending_profiles: u64,
+    /// Process-wide post-init heap trim attempts (at most one).
+    pub memory_trim_attempts: u64,
+    /// Calls reporting that some pages were released; not a byte count.
+    pub memory_trim_released: u64,
+    pub memory_trim_elapsed_ns: u64,
+    pub memory_trim_pending: bool,
+    /// Failure to start the optional worker; does not disable profiling.
+    pub memory_trim_failures: u64,
 }
 
 #[cfg(all(
@@ -102,6 +110,7 @@ mod platform {
             config.elements,
             &config.symbolization,
             config.signal,
+            config.memory_trim,
         );
         Err("requires the profiles Cargo feature on Linux x86-64 or AArch64".into())
     }
@@ -166,6 +175,8 @@ pub(crate) fn initialize(
         }
         result?;
     }
+    #[cfg(feature = "profiles")]
+    crate::profilememory::configure(config.memory_trim);
     Ok(())
 }
 #[cfg(feature = "profiles")]
@@ -197,22 +208,29 @@ pub(crate) fn shutdown(timeout: Duration) -> Result<(), FlushError> {
     drain(timeout, true)
 }
 fn drain(timeout: Duration, shutdown: bool) -> Result<(), FlushError> {
-    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    #[cfg(feature = "profiles")]
     let start = std::time::Instant::now();
-    let cpu = if shutdown {
+    #[cfg(feature = "profiles")]
+    if shutdown {
+        crate::profilememory::cancel();
+    }
+    let result = if shutdown {
         platform::shutdown(timeout)
     } else {
         platform::flush(timeout)
     };
     #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
-    {
-        cpu.and(crate::gpuprofiles::drain(
+    let result = result.and(crate::gpuprofiles::drain(
+        timeout.saturating_sub(start.elapsed()),
+        shutdown,
+    ));
+    #[cfg(feature = "profiles")]
+    if shutdown {
+        return result.and(crate::profilememory::wait(
             timeout.saturating_sub(start.elapsed()),
-            shutdown,
-        ))
+        ));
     }
-    #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
-    cpu
+    result
 }
 
 pub fn profile_stats() -> ProfileStats {
@@ -224,6 +242,8 @@ pub fn profile_stats() -> ProfileStats {
         context_capacity_rejections: crate::profilecontext::rejected(),
         ..stats
     };
+    #[cfg(feature = "profiles")]
+    let stats = crate::profilememory::snapshot(stats);
     stats
 }
 
@@ -1415,6 +1435,7 @@ mod linux {
                 .iter()
                 .filter(|s| s.timer.load(Relaxed) != NO_TIMER)
                 .count() as u64,
+            ..ProfileStats::default()
         }
     }
 

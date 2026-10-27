@@ -25,13 +25,15 @@ gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink s
 | `profile-url` | `http://localhost:4040` | Pyroscope base URL |
 | `profile-hz` | `100` | CPU samples per second per registered thread; 1–1000 |
 | `profile-timeout-ms` | `10000` | Upload HTTP timeout, 1–60000 ms |
+| `profile-memory-trim` | `true` | Return retained startup heap pages once after the first pipeline reaches `PLAYING`; on by default for the measured running-RSS benefit ([details and tradeoffs](CONFIGURATION.md#profiles)) |
 | `profile-elements` | `true` | Group native stacks by element or task owner |
 | `profile-symbolization` | `full` | `full` source/inline resolution or `functions` using ELF symbols |
 | `profile-signal` | `SIGRTMIN()+6` | Reserved realtime sampling signal |
 
 These are construction-time GObject properties. Numeric 0 and enum `auto`
 inherit existing `MARS_PROFILE_*` variables, then `GST_OTEL_PROFILE_*` aliases,
-then defaults. Unset `profile-url` inherits its environment fallback.
+then defaults. `profile-memory-trim` has no environment fallback. Unset
+`profile-url` inherits its environment fallback.
 `OTEL_SERVICE_NAME` still sets profile service identity. See the
 [property reference](CONFIGURATION.md) for precedence and the application API.
 

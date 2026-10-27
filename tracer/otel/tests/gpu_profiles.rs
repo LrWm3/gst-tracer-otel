@@ -20,6 +20,7 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
             "-fPIC",
             "-pthread",
             "native/gpu_mock.c",
+            "native/gpu_capture.c",
             "-o",
         ])
         .arg(&path)
@@ -39,12 +40,16 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
         "adapter-property",
         "adapter-params",
         "split-reports",
+        "window-property",
+        "window-params",
+        "combined-window",
     ] {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "gpu_child", "--ignored", "--nocapture"])
             .env_clear()
             .env("MARS_GPU_ADAPTER", &path)
             .env("GPU_TEST_MODE", mode)
+            .env("GST_DEBUG", "mars-otel:2")
             .output()
             .unwrap();
         assert!(
@@ -53,6 +58,42 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+    assert!(Command::new("cc")
+        .args([
+            "-std=c11",
+            "-shared",
+            "-fPIC",
+            "-pthread",
+            "-DMARS_GPU_LEGACY_MOCK",
+            "native/gpu_mock.c",
+            "-o"
+        ])
+        .arg(&path)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .unwrap()
+        .success());
+    for mode in ["success", "legacy-window"] {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "gpu_child", "--ignored", "--nocapture"])
+            .env_clear()
+            .env("MARS_GPU_ADAPTER", &path)
+            .env("GPU_TEST_MODE", mode)
+            .env("GST_DEBUG", "mars-otel:2")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if mode == "legacy-window" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("lacks capture-window support")
+            );
+        }
     }
     std::fs::remove_file(path).unwrap();
 }
@@ -65,6 +106,7 @@ fn gpu_child() {
     let slow = mode == "timeout";
     let combined = mode.starts_with("combined");
     let split = mode == "split-reports";
+    let window = mode.contains("window");
     let traces = mode != "profiles-only";
     let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", server.server_addr());
@@ -185,7 +227,18 @@ fn gpu_child() {
         std::env::set_var("MARS_PROFILE_SIGNAL", "invalid-unused-cpu-signal");
         std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "invalid-unused-cpu-mode");
     }
-    let tracer: gst::Tracer = if mode == "adapter-property" {
+    let tracer: gst::Tracer = if window && mode != "window-params" {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("profile-sources", sources)
+            .property("profile-gpu-window-ms", 300u32)
+            .property("profile-gpu-period-ms", 1000u32)
+            .build()
+            .upcast()
+    } else if mode == "window-params" {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("params", "signals=\"traces,profiles\",profile-sources=gpu,profile-gpu-window-ms=300,profile-gpu-period-ms=1000")
+            .build().upcast()
+    } else if mode == "adapter-property" {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
             .property("profile-sources", sources)
             .property("profile-gpu-adapter", &adapter_path)
@@ -227,6 +280,12 @@ fn gpu_child() {
         tracer.property::<gstoteltracer::ProfileSources>("profile-sources"),
         sources
     );
+    if mode == "legacy-window" {
+        assert!(gstoteltracer::stats().is_err());
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        return;
+    }
     gstoteltracer::stats().expect("tracer initialization failed");
     let path = std::ffi::CString::new(adapter_path).unwrap();
     let launch: unsafe extern "C" fn() = unsafe {
@@ -283,6 +342,39 @@ fn gpu_child() {
     drop(message);
     pipeline.set_state(gst::State::Null).unwrap();
     drop(pipeline);
+    if window {
+        // The mock deliberately holds all kernel records until flush: preserve
+        // owners after leaving their host scopes and closing the capture window.
+        let capture_stats: unsafe extern "C" fn(*mut [u64; 7]) -> i32 = unsafe {
+            let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
+            let symbol = libc::dlsym(handle, c"mars_gpu_capture_stats_v1".as_ptr());
+            assert!(!symbol.is_null());
+            std::mem::transmute(symbol)
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut stats = [0; 7];
+            assert_eq!(unsafe { capture_stats(&mut stats) }, 0);
+            if stats[5] == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < until, "window did not close");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for _ in 0..3 {
+            unsafe { launch() };
+        }
+        gstoteltracer::flush(Duration::from_secs(5)).unwrap();
+        let gpu = gstoteltracer::gpu_profile_stats();
+        assert_eq!(
+            gpu.kernels, 4,
+            "late completions must survive a closed window"
+        );
+        assert_eq!(gpu.capture_launches, 4);
+        assert_eq!(gpu.capture_skipped_launches, 3);
+        assert!(gpu.capture_active_ns < gpu.capture_elapsed_ns);
+        assert_eq!(gpu.capture_failures, 0);
+    }
     if split {
         for _ in 0..4 {
             gstoteltracer::flush(Duration::from_secs(5)).unwrap();

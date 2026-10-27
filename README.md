@@ -127,9 +127,15 @@ CPU is the default profile source. The optional
 native adapter. Select `profile-sources="cpu"`, `"gpu"`, or `"cpu,gpu"` in the
 tracer parameters; for example,
 `mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")`.
+For lower GPU collection overhead, optional [capture windows](tracer/otel/GPU_PROFILES.md#periodic-gpu-capture)
+use `profile-gpu-window-ms=1000,profile-gpu-period-ms=10000` to capture about
+one second in ten; CPU profiling continues throughout.
 The optional [NVTX worker bridge](tracer/otel/NVTX.md) adds attribution for
 supported inference workers through `profile-nvtx-adapter`; it also works in
 CPU-only `profiles` builds.
+On Linux/glibc, profiling defaults to one [post-startup heap trim](tracer/otel/CONFIGURATION.md#profiles)
+to return unused initialization allocations; set `profile-memory-trim=false`
+if the brief process-wide allocator pause is unsuitable.
 
 GPU collection has a separate cost from the CPU-only figures above. In a
 [1080p inference workload](reports/otel/GPU_PROFILE_RESULTS.md), CPU + GPU

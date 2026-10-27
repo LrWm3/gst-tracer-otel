@@ -4,7 +4,9 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #include "gpu_adapter.h"
+#include "gpu_capture.h"
 #include <cupti.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +24,19 @@ static struct { unsigned char *data; atomic_bool busy; } buffers[BUFFER_COUNT];
 static MarsGpuReceive receiver;
 static CUpti_SubscriberHandle subscriber;
 static int started;
+static pthread_mutex_t api_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int mars_gpu_configure_capture_v1(uint32_t window_ms, uint32_t period_ms) {
+    return mars_capture_configure(window_ms, period_ms);
+}
+int mars_gpu_capture_stats_v1(MarsGpuCaptureStats *stats) { return mars_capture_stats(stats); }
+static int set_capture(int active) {
+    pthread_mutex_lock(&api_lock);
+    CUptiResult result = active ? cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)
+        : cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+    pthread_mutex_unlock(&api_lock);
+    return (int)result;
+}
 
 static void CUPTIAPI request_buffer(uint8_t **buffer, size_t *size, size_t *max_records) {
     *buffer = NULL; *size = 0; *max_records = 0;
@@ -70,6 +85,7 @@ static void CUPTIAPI on_api(void *userdata, CUpti_CallbackDomain domain,
     if (domain != CUPTI_CB_DOMAIN_DRIVER_API) return;
     const CUpti_CallbackData *callback = data;
     if (callback->callbackSite != CUPTI_API_ENTER) return;
+    if (!mars_capture_launch()) return;
     /* Driver launch callbacks cover runtime API launches as well. Enable only
      * the tested ordinary kernel APIs; graph attribution is a later extension. */
     struct timespec now;
@@ -109,6 +125,11 @@ int mars_gpu_start_v1(MarsGpuReceive receive) {
      * collect only the kernel records that supply execution durations. */
     result = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     if (result != CUPTI_SUCCESS) goto fail;
+    int capture_status = mars_capture_start(set_capture);
+    if (capture_status) {
+        result = CUPTI_ERROR_UNKNOWN;
+        goto fail;
+    }
     const CUpti_CallbackId callbacks[] = {
         CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel,
         CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel_ptsz,
@@ -122,6 +143,7 @@ int mars_gpu_start_v1(MarsGpuReceive receive) {
     started = 1;
     return 0;
 fail:
+    mars_capture_stop();
     cuptiUnsubscribe(subscriber);
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     return (int)result;
@@ -129,6 +151,10 @@ fail:
 
 int mars_gpu_flush_v1(uint32_t stop) {
     if (!started) return 0;
+    /* Join before locking CUPTI controls: the controller may need api_lock.
+     * HTTP/export waits never hold either native controller lock. */
+    int capture_status = stop ? mars_capture_stop() : 0;
+    pthread_mutex_lock(&api_lock);
     /* Never synchronize the device or flush from a CUPTI callback. The caller
      * must finish application GPU work before requesting an exact final drain. */
     CUptiResult result = cuptiActivityFlushAll(0);
@@ -139,5 +165,9 @@ int mars_gpu_flush_v1(uint32_t stop) {
         if (result == CUPTI_SUCCESS) result = status;
         started = 0;
     }
+    pthread_mutex_unlock(&api_lock);
+    MarsGpuCaptureStats stats;
+    mars_capture_stats(&stats);
+    if (capture_status || stats.control_failures) return -4;
     return (int)result;
 }

@@ -56,7 +56,8 @@ def main():
                    if row.get('executable') and row.get('target', {}).get('name') == 'gpu_profiles']
     adapter = args.output / 'mock.so'
     subprocess.run(['cc', '-std=c11', '-shared', '-fPIC', '-pthread',
-                    str(ROOT / 'tracer/otel/native/gpu_mock.c'), '-o', str(adapter)], check=True)
+                    str(ROOT / 'tracer/otel/native/gpu_mock.c'),
+                    str(ROOT / 'tracer/otel/native/gpu_capture.c'), '-o', str(adapter)], check=True)
     service = 'mars-compaction-' + uuid.uuid4().hex
     second = int(time.time())
     samples = []

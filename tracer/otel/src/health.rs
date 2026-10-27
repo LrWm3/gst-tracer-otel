@@ -238,7 +238,35 @@ fn snapshot() -> Vec<proto::MetricFamily> {
         profiles.accepted_profiles,
         &[],
     );
+    for (name, help, count) in [
+        (
+            "mars_instrument_profile_memory_trim_attempts_total",
+            "Post-init allocator trim attempts; at most one per process",
+            profiles.memory_trim_attempts,
+        ),
+        (
+            "mars_instrument_profile_memory_trim_released_total",
+            "Trim calls reporting released pages; not a byte count",
+            profiles.memory_trim_released,
+        ),
+        (
+            "mars_instrument_profile_memory_trim_nanoseconds_total",
+            "Time spent in the one-shot allocator trim",
+            profiles.memory_trim_elapsed_ns,
+        ),
+    ] {
+        sample(&mut families, name, help, false, count, &[]);
+    }
+    sample(
+        &mut families,
+        "mars_instrument_profile_memory_trim_pending",
+        "One-shot allocator trim queued or running",
+        true,
+        u64::from(profiles.memory_trim_pending),
+        &[],
+    );
     for (reason, count) in [
+        ("memory_trim_worker", profiles.memory_trim_failures),
         ("registration", profiles.registration_failures),
         ("export", profiles.failed_exports),
         ("attribution_capacity", profiles.context_capacity_rejections),
@@ -265,6 +293,56 @@ fn snapshot() -> Vec<proto::MetricFamily> {
     #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
     {
         let gpu = crate::gpu_profile_stats();
+        sample(&mut families, "mars_instrument_gpu_contexts_expired_total",
+            "Unpaired launch owners retired after the bounded lifetime; capture boundaries can leave owners without activities",
+            false, gpu.expired_contexts, &[]);
+        if gpu.capture_supported {
+            for (state, count) in [
+                ("active", gpu.capture_active_ns),
+                ("elapsed", gpu.capture_elapsed_ns),
+            ] {
+                sample(
+                    &mut families,
+                    "mars_instrument_gpu_capture_nanoseconds_total",
+                    "Host capture gate time since the first launch; not GPU utilization",
+                    false,
+                    count,
+                    &[("state", state)],
+                );
+            }
+            for (outcome, count) in [
+                ("captured", gpu.capture_launches),
+                ("skipped", gpu.capture_skipped_launches),
+            ] {
+                sample(&mut families, "mars_instrument_gpu_capture_launches_total",
+                    "Selected launch callbacks admitted or intentionally skipped by the capture gate",
+                    false, count, &[("outcome", outcome)]);
+            }
+            sample(
+                &mut families,
+                "mars_instrument_gpu_capture_windows_total",
+                "Capture windows opened since the first launch",
+                false,
+                gpu.capture_windows,
+                &[],
+            );
+            sample(
+                &mut families,
+                "mars_instrument_gpu_capture_active",
+                "Last observed host capture gate state",
+                true,
+                u64::from(gpu.capture_active),
+                &[],
+            );
+            sample(
+                &mut families,
+                "mars_instrument_gpu_capture_failures_total",
+                "Capture controller failures",
+                false,
+                gpu.capture_failures,
+                &[],
+            );
+        }
         for (outcome, count) in [
             ("collected", gpu.kernels),
             ("attributed", gpu.attributed_kernels),

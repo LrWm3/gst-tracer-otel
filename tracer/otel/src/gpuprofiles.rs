@@ -72,6 +72,15 @@ struct Counters {
     dropped_records: AtomicU64,
     context_capacity_rejections: AtomicU64,
     pending_contexts: AtomicU64,
+    expired_contexts: AtomicU64,
+    capture_supported: AtomicBool,
+    capture_elapsed_ns: AtomicU64,
+    capture_active_ns: AtomicU64,
+    capture_windows: AtomicU64,
+    capture_launches: AtomicU64,
+    capture_skipped_launches: AtomicU64,
+    capture_active: AtomicU64,
+    capture_failures: AtomicU64,
     dropped_processing: AtomicU64,
     delivery: Arc<upload::Counters>,
 }
@@ -89,6 +98,17 @@ pub struct GpuProfileStats {
     pub dropped_records: u64,
     pub context_capacity_rejections: u64,
     pub pending_contexts: u64,
+    /// Unpaired launch owners retired after the bounded lifetime. A window
+    /// boundary can create an owner without a corresponding activity record.
+    pub expired_contexts: u64,
+    pub capture_supported: bool,
+    pub capture_elapsed_ns: u64,
+    pub capture_active_ns: u64,
+    pub capture_windows: u64,
+    pub capture_launches: u64,
+    pub capture_skipped_launches: u64,
+    pub capture_active: bool,
+    pub capture_failures: u64,
     pub dropped_processing: u64,
     pub reported_kernels: u64,
     pub accepted_kernels: u64,
@@ -118,6 +138,15 @@ pub fn gpu_profile_stats() -> GpuProfileStats {
         dropped_records: c.dropped_records.load(Relaxed),
         context_capacity_rejections: c.context_capacity_rejections.load(Relaxed),
         pending_contexts: c.pending_contexts.load(Relaxed),
+        expired_contexts: c.expired_contexts.load(Relaxed),
+        capture_supported: c.capture_supported.load(Relaxed),
+        capture_elapsed_ns: c.capture_elapsed_ns.load(Relaxed),
+        capture_active_ns: c.capture_active_ns.load(Relaxed),
+        capture_windows: c.capture_windows.load(Relaxed),
+        capture_launches: c.capture_launches.load(Relaxed),
+        capture_skipped_launches: c.capture_skipped_launches.load(Relaxed),
+        capture_active: c.capture_active.load(Relaxed) != 0,
+        capture_failures: c.capture_failures.load(Relaxed),
         dropped_processing: c.dropped_processing.load(Relaxed),
         reported_kernels: reported,
         accepted_kernels: accepted,
@@ -186,11 +215,23 @@ unsafe extern "C" fn receive(event: *const Event) {
     }
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct CaptureStats {
+    elapsed_ns: u64,
+    active_ns: u64,
+    windows: u64,
+    captured_launches: u64,
+    skipped_launches: u64,
+    active: u64,
+    control_failures: u64,
+}
 struct Adapter {
     flush: unsafe extern "C" fn(u32) -> i32,
+    capture_stats: Option<unsafe extern "C" fn(*mut CaptureStats) -> i32>,
 }
 impl Adapter {
-    fn open(path: &str) -> Result<Self, String> {
+    fn open(path: &str, window_ms: u32, period_ms: u32) -> Result<Self, String> {
         let path = CString::new(path).map_err(|_| "GPU adapter path contains NUL")?;
         // SAFETY: loading the user-selected adapter; symbols use the documented
         // v1 C ABI. Keep the DSO resident: CUPTI can retain callback addresses.
@@ -212,11 +253,58 @@ impl Adapter {
             let start: unsafe extern "C" fn(unsafe extern "C" fn(*const Event)) -> i32 =
                 std::mem::transmute(start);
             let flush: unsafe extern "C" fn(u32) -> i32 = std::mem::transmute(flush);
+            let configure = libc::dlsym(handle, c"mars_gpu_configure_capture_v1".as_ptr());
+            let stats = libc::dlsym(handle, c"mars_gpu_capture_stats_v1".as_ptr());
+            if window_ms != 0 && window_ms < period_ms && (configure.is_null() || stats.is_null()) {
+                return Err(
+                    "GPU adapter lacks capture-window support; rebuild the native adapter".into(),
+                );
+            }
+            if !configure.is_null() {
+                let configure: unsafe extern "C" fn(u32, u32) -> i32 =
+                    std::mem::transmute(configure);
+                if configure(window_ms, period_ms) != 0 {
+                    return Err("GPU adapter rejected capture-window configuration".into());
+                }
+            }
+            let capture_stats = if stats.is_null() {
+                None
+            } else {
+                Some(std::mem::transmute::<
+                    *mut libc::c_void,
+                    unsafe extern "C" fn(*mut CaptureStats) -> i32,
+                >(stats))
+            };
             let status = start(receive);
             if status != 0 {
                 return Err(format!("CUPTI adapter initialization failed ({status}); check SDK/driver compatibility and profiling access"));
             }
-            Ok(Self { flush })
+            Ok(Self {
+                flush,
+                capture_stats,
+            })
+        }
+    }
+    fn update_capture(&self, counters: &Counters) {
+        if let Some(read) = self.capture_stats {
+            let mut stats = CaptureStats::default();
+            // SAFETY: the optional extension writes the documented v1 struct.
+            if unsafe { read(&mut stats) } == 0 {
+                counters.capture_supported.store(true, Relaxed);
+                counters.capture_elapsed_ns.store(stats.elapsed_ns, Relaxed);
+                counters.capture_active_ns.store(stats.active_ns, Relaxed);
+                counters.capture_windows.store(stats.windows, Relaxed);
+                counters
+                    .capture_launches
+                    .store(stats.captured_launches, Relaxed);
+                counters
+                    .capture_skipped_launches
+                    .store(stats.skipped_launches, Relaxed);
+                counters.capture_active.store(stats.active, Relaxed);
+                counters
+                    .capture_failures
+                    .store(stats.control_failures, Relaxed);
+            }
         }
     }
     fn flush(&self, stop: bool) -> Result<(), FlushError> {
@@ -339,8 +427,12 @@ impl Joiner {
         frame
     }
     fn expire(&mut self, counters: &Counters) {
+        let before = self.owners.len();
         self.owners
             .retain(|_, owner| owner.seen.elapsed() < CONTEXT_TTL);
+        counters
+            .expired_contexts
+            .fetch_add((before - self.owners.len()) as u64, Relaxed);
         counters
             .pending_contexts
             .store(self.owners.len() as u64, Relaxed);
@@ -379,6 +471,7 @@ pub(crate) fn initialize(
     let url = settings.url.clone();
     let timeout = settings.timeout_ms;
     let path = settings.gpu_adapter.clone();
+    let capture = (settings.gpu_window_ms, settings.gpu_period_ms);
     let name = resource
         .iter()
         .find(|(key, _)| key.as_str() == "service.name")
@@ -406,6 +499,7 @@ pub(crate) fn initialize(
             let result = std::panic::catch_unwind(|| {
                 worker(
                     path,
+                    capture,
                     config,
                     Duration::from_millis(timeout),
                     counters,
@@ -430,6 +524,7 @@ pub(crate) fn initialize(
 #[allow(clippy::too_many_arguments)]
 fn worker(
     path: String,
+    capture: (u32, u32),
     config: PyroscopeConfig,
     timeout: Duration,
     counters: Arc<Counters>,
@@ -445,7 +540,7 @@ fn worker(
         return Err(FlushError::ExportFailed);
     }
     let uploader = initial?;
-    let adapter = match Adapter::open(&path) {
+    let adapter = match Adapter::open(&path, capture.0, capture.1) {
         Ok(value) => value,
         Err(error) => {
             let _ = ready.send(Err(error));
@@ -453,6 +548,7 @@ fn worker(
         }
     };
     ACTIVE.store(true, Relaxed);
+    adapter.update_capture(&counters);
     let _ = ready.send(Ok(()));
     let mut joiner = Joiner::default();
     let mut next = Instant::now() + Duration::from_secs(1);
@@ -468,6 +564,7 @@ fn worker(
         };
         let stop = matches!(command, Some(Command::Stop));
         let flushed = adapter.flush(stop);
+        adapter.update_capture(&counters);
         // A bounded pass prevents continuously arriving events starving cleanup.
         for message in events.try_iter().take(CAPACITY) {
             joiner.process(message, &counters);
@@ -495,6 +592,7 @@ fn worker(
     };
     // Also quiesce the adapter on exporter/control errors, never from callbacks.
     let stopped = adapter.flush(true);
+    adapter.update_capture(&counters);
     joiner.owners.clear();
     counters.pending_contexts.store(0, Relaxed);
     if owns_retirement || crate::profiles::cpu_reports_finished() {
@@ -643,6 +741,26 @@ mod tests {
         assert!(first.element.contains("gpu-cache-test"));
         assert_eq!(counters.attributed.load(Relaxed), 20);
         assert_eq!(counters.correlated.load(Relaxed), 20);
+    }
+
+    #[test]
+    fn boundary_owners_expire_without_removing_in_flight_ownership() {
+        let mut joiner = Joiner::default();
+        let counters = Counters::default();
+        let mut old = launch(1);
+        old.owner.as_mut().unwrap().seen = Instant::now() - CONTEXT_TTL;
+        joiner.process(old, &counters);
+        joiner.process(launch(2), &counters);
+        joiner.expire(&counters);
+        assert_eq!(counters.expired_contexts.load(Relaxed), 1);
+        assert_eq!(counters.pending_contexts.load(Relaxed), 1);
+        // An activity arriving after its collection window closes still joins.
+        joiner.process(kernel(2), &counters);
+        joiner.expire(&counters);
+        assert_eq!(counters.correlated.load(Relaxed), 1);
+        assert_eq!(counters.unmatched.load(Relaxed), 0);
+        assert_eq!(counters.pending_contexts.load(Relaxed), 0);
+        assert_eq!(std::mem::size_of::<CaptureStats>(), 56);
     }
 
     #[test]

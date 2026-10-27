@@ -87,6 +87,7 @@ fn nvtx_workers_share_attribution_without_inventing_trace_context() {
             "native/nvtx_adapter.c",
             "native/nvtx_mock.c",
             "native/gpu_mock.c",
+            "native/gpu_capture.c",
             "-o"
         ])
         .arg(&path)

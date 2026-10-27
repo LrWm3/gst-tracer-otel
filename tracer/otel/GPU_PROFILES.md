@@ -87,6 +87,58 @@ the [property reference](CONFIGURATION.md). `profile-gpu-adapter` is exposed onl
 in Linux builds with `gpu-profiles`. NVTX remains independently controlled by
 `profile-nvtx-adapter` and needs only `profiles` on Linux.
 
+Profiling enables `profile-memory-trim=true` by default: one background trim
+after the first pipeline reaches `PLAYING` returns unused startup heap pages.
+This reduced running RSS by about 450 MiB in the tested processor; the allocator
+operation took roughly 60–70 ms and did not lower the startup peak. Set it to
+`false` to disable this process-wide glibc operation. See the
+[property reference](CONFIGURATION.md#profiles) for timing and platform limits.
+
+## Periodic GPU capture
+
+Continuous capture remains the default. To collect GPU activity for one second
+out of each ten, set these construction properties:
+
+```sh
+GST_TRACERS='mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu",profile-gpu-window-ms=1000,profile-gpu-period-ms=10000)'
+```
+
+`profile-gpu-window-ms=0` means continuous capture; a window equal to its period
+also stays continuous. Otherwise the window must be at least 10 ms and no larger
+than the period. Both properties have a maximum of 3,600,000 ms; the period
+defaults to 10,000 ms. These properties have no environment-variable fallback
+and exist only in Linux `gpu-profiles` builds. Rebuild the native adapter when
+using windows; older v1 adapters continue to work for continuous capture.
+
+The first selected CUDA launch starts the schedule with an active window.
+A native controller toggles concurrent-kernel collection independently of profile
+encoding and uploads. Timing is approximate: scheduling and CUPTI calls can delay
+transitions. CPU profiling, NVTX attribution, traces and metrics continue throughout.
+The launch callbacks remain subscribed while GPU activity collection is off.
+
+Windows reduce collection and processing work, but retain CUPTI initialization
+and memory. They can miss brief or periodic work; a span outside a captured window
+may have no GPU profile. Kernel durations are actual recorded durations and are
+**not** multiplied by the inverse duty cycle. They do not estimate whole-period
+GPU utilization. Kernels crossing a boundary may complete later; their ownership
+is retained until completion or the existing 30-second expiry. An unmatched
+launch at a boundary can therefore remain pending until expiry or shutdown.
+Collection and launch callbacks do not switch atomically: a boundary record
+without an owner remains explicitly unattributed and increments the unmatched
+kernel counter. Explicit flush still requests available activities even when capture is off;
+it does not synchronize the device or wait for the next window.
+
+With `monitoring=core` or `all`, coverage is visible through
+`mars_instrument_gpu_capture_nanoseconds_total{state="active|elapsed"}`,
+`mars_instrument_gpu_capture_launches_total{outcome="captured|skipped"}`,
+`mars_instrument_gpu_capture_windows_total`,
+`mars_instrument_gpu_capture_active`, and
+`mars_instrument_gpu_capture_failures_total`. These describe the host capture
+gate, rather than exact device sampling coverage. They refresh with the profile
+worker's flushes. `mars_instrument_gpu_contexts_expired_total` counts owners
+without a completion before expiry. A controller failure stops GPU processing and
+is reported through the existing profile failure/drain path.
+
 ## Correlation and time semantics
 
 A launch callback snapshots the active element and sampled span. The background

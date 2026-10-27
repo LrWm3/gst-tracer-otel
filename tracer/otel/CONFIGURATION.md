@@ -90,10 +90,43 @@ x86-64 or arm64. See [CPU profiles](PROFILES.md) and [GPU profiles](GPU_PROFILES
 | `profile-hz` | `100` | CPU samples per second per registered thread, 1–1000 | `MARS_PROFILE_HZ` |
 | `profile-timeout-ms` | `10000` | CPU/GPU upload timeout, 1–60000 ms | `MARS_PROFILE_TIMEOUT_MS` |
 | `profile-symbolization` | `full` | `full` or `functions`; CPU symbol detail | `MARS_PROFILE_SYMBOLIZATION` |
+| `profile-memory-trim` | `true` | One background heap trim after the first pipeline reaches `PLAYING`; on by default to return retained startup allocations (about 450 MiB lower running RSS in the tested processor) | None |
 | `profile-elements` | `true` | Element/task-owner roots; required for NVTX attribution | `MARS_PROFILE_ELEMENTS` |
 | `profile-signal` | `SIGRTMIN+6` | Available realtime signal number; CPU only | `MARS_PROFILE_SIGNAL` |
+| `profile-gpu-window-ms` | `0` (continuous) | GPU capture window in ms: `0`, or `10..=profile-gpu-period-ms`; Linux `gpu-profiles` builds only | None |
+| `profile-gpu-period-ms` | `10000` | Window repetition interval in ms, up to `3600000`; `0` inherits the default | None |
 | `profile-gpu-adapter` | `libmars-cupti.so` | CUPTI adapter library; property exists only in Linux `gpu-profiles` builds | `MARS_GPU_ADAPTER` |
 | `profile-nvtx-adapter` | Off | NVTX worker-attribution library; requires only `profiles` on Linux | None |
+
+`profile-memory-trim=true` is enabled by default because freed startup/model-loading
+allocations can remain resident for the lifetime of the process. In the tested
+GPU processor, a single trim reduced running RSS by about **450 MiB**, with a
+**60–70 ms** allocator operation. Results depend on the workload; some savings
+also apply without profiling. **The earlier startup peak is unchanged.**
+
+On Linux/glibc with profiling active, the first top-level pipeline's committed
+`PLAYING` state schedules one `malloc_trim(0)` on a short-lived background thread.
+This handles asynchronous state changes and runs outside GStreamer/CUPTI locks.
+It affects the whole process's glibc heap, and allocator contention can still
+briefly delay other threads. It is not repeated on pause/resume or later pipelines.
+`PLAYING` is a post-preroll boundary, not a guarantee that all application warmup
+has finished; live sources and lazy model loading may allocate later. Reused
+pages may become resident again. Other platforms/allocators do not gain this
+reclamation, and profiling-disabled configurations do not run it.
+
+Set `profile-memory-trim=false` to disable it, for example:
+
+```sh
+GST_TRACERS='mars-instrument(signals="traces,profiles",profile-memory-trim=false)'
+```
+
+The property uses the same `Toggle` enum as other on/off properties; `auto`
+resolves to `true`, with no environment fallback. Shutdown cancels a queued trim
+or waits for a running trim within the existing deadline. Health monitoring
+exposes attempts, released-page responses (not bytes), elapsed nanoseconds and
+pending state through `mars_instrument_profile_memory_trim_*`. A failure to
+start the worker is reported as `memory_trim_worker` in profile failure counters
+and does not disable profiling.
 
 The `GST_OTEL_PROFILE_*` equivalents remain lower-priority fallbacks for the
 `MARS_PROFILE_*` variables in this table. Source selection and NVTX adapter

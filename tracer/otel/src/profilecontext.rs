@@ -429,6 +429,11 @@ pub(crate) fn register(tracer: &impl TracerImpl) {
     if !crate::profiles::active() {
         return;
     }
+    // Share the message hook: memory trimming also needs it when element
+    // attribution is explicitly disabled. Register it only once.
+    if enabled() || crate::profilememory::enabled() {
+        tracer.register_hook(TracerHook::ElementPostMessagePre);
+    }
     // Pull hooks are owned by the tracer (or shared metric collector), which
     // invokes attribution alongside trace capture without duplicate callbacks.
     if !enabled() {
@@ -439,7 +444,6 @@ pub(crate) fn register(tracer: &impl TracerImpl) {
         TracerHook::PadChainPost,
         TracerHook::PadChainListPre,
         TracerHook::PadChainListPost,
-        TracerHook::ElementPostMessagePre,
     ] {
         tracer.register_hook(hook);
     }
@@ -471,6 +475,7 @@ macro_rules! methods {
             crate::profilecontext::end(pad, 1);
         }
         fn element_post_message_pre(&self, _: u64, element: &gst::Element, message: &gst::Message) {
+            crate::profilememory::message(element, message);
             crate::profilecontext::message(element, message);
         }
     };
