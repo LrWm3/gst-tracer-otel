@@ -35,6 +35,7 @@ mod profilesettings;
 #[cfg(feature = "profiles")]
 mod profiletracer;
 mod propagation;
+mod properties;
 mod settings;
 mod shared_metrics;
 mod shared_metrics_wire;
@@ -51,10 +52,11 @@ pub use metrics::MetricStats;
 #[cfg(all(feature = "profiles", target_os = "linux"))]
 pub use nvtxcontext::{nvtx_profile_stats, NvtxProfileStats};
 pub use profiles::{profile_stats, ProfileStats};
-pub use profilesettings::ProfileSources;
+pub use profilesettings::{ProfileSources, ProfileSymbolization};
 #[cfg(feature = "profiles")]
 pub use profiletracer::ProfilesTracer;
 pub use propagation::propagate_input_contexts;
+pub use properties::{MetricsExporter, MonitoringSetting, Toggle};
 pub use tracer::{InstrumentTracer, TelemetryTracer};
 
 /// Drain traces, logs, profiles and snapshot cumulative metrics, bounded by `timeout`.
@@ -114,6 +116,45 @@ gst::plugin_define!(
 mod registration_tests {
     use super::*;
     use gst::prelude::*;
+
+    #[test]
+    fn every_entry_point_owns_its_configuration_properties() {
+        gst::init().unwrap();
+        for ty in [
+            InstrumentTracer::static_type(),
+            TelemetryTracer::static_type(),
+            #[cfg(feature = "profiles")]
+            ProfilesTracer::static_type(),
+        ] {
+            let class = glib::Class::<gst::Tracer>::from_type(ty).unwrap();
+            for name in [
+                "profile-url",
+                "profile-hz",
+                "profile-elements",
+                "profile-symbolization",
+            ] {
+                let property = class.find_property(name).expect(name);
+                assert_eq!(property.owner_type(), ty, "{name}");
+                assert!(property.flags().contains(glib::ParamFlags::CONSTRUCT_ONLY));
+            }
+            assert_eq!(
+                class.find_property("profile-gpu-adapter").is_some(),
+                cfg!(all(feature = "gpu-profiles", target_os = "linux"))
+            );
+            if ty != InstrumentTracer::static_type() {
+                assert!(class.find_property("signals").is_none());
+            }
+            if ty == InstrumentTracer::static_type() || ty == TelemetryTracer::static_type() {
+                for name in [
+                    "trace-queue-capacity",
+                    "trace-batch-size",
+                    "flush-timeout-ms",
+                ] {
+                    assert_eq!(class.find_property(name).unwrap().owner_type(), ty);
+                }
+            }
+        }
+    }
 
     #[test]
     fn registers_mars_entry_points() {

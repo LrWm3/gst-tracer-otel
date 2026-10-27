@@ -347,6 +347,23 @@ fn prometheus_export_and_otlp_use_the_full_collector() {
 }
 
 #[test]
+fn construction_properties_override_environment_and_reach_collectors() {
+    for mode in ["properties", "property-params"] {
+        let (received, _) = run(mode);
+        assert_eq!(received.spans.len(), 302);
+        assert_eq!(count(&received, "gst_element_sync_wall_seconds"), 301);
+        assert!(received
+            .metrics
+            .iter()
+            .any(|m| m.name == "gst_element_buffers_in_total"));
+        assert!(!received
+            .metrics
+            .iter()
+            .any(|m| m.name.starts_with("mars_instrument_")));
+    }
+}
+
+#[test]
 fn collector_failure_and_shutdown_deadline_are_observable() {
     run("slow");
     run("reject");
@@ -375,6 +392,58 @@ fn signals_child() {
     );
     let _tracer: gstoteltracer::InstrumentTracer = if mode == "lists-legacy" {
         glib::Object::new()
+    } else if mode == "properties" || mode == "property-params" {
+        for key in [
+            "MARS_SIGNALS",
+            "MARS_MONITORING",
+            "MARS_METRICS_EXPORTER",
+            "MARS_METRIC_INTERVAL_MS",
+            "MARS_METRIC_SAMPLE_RATE",
+            "MARS_METRIC_INCLUDE",
+            "MARS_METRIC_QUEUE_INTERVAL_MS",
+            "MARS_METRIC_IO_COUNTS",
+            "MARS_METRIC_PTS_AGE",
+            "GST_OTEL_QUEUE_CAPACITY",
+            "GST_OTEL_BATCH_SIZE",
+            "GST_OTEL_EXPORT_INTERVAL_MS",
+            "GST_OTEL_EXPORT_CONCURRENCY",
+            "GST_OTEL_FLUSH_TIMEOUT_MS",
+        ] {
+            std::env::set_var(key, "invalid-overridden-environment");
+        }
+        let mut builder = glib::Object::builder()
+            .property(
+                "signals",
+                if mode == "property-params" {
+                    "profiles"
+                } else {
+                    "metrics,traces"
+                },
+            )
+            .property("monitoring", gstoteltracer::MonitoringSetting::None)
+            .property("metrics-exporter", gstoteltracer::MetricsExporter::Otlp)
+            .property("metrics-interval-ms", 60000u32)
+            .property("metrics-sample-rate", 1u32)
+            .property(
+                "metrics-include",
+                if mode == "property-params" {
+                    "nothing-matches"
+                } else {
+                    "*"
+                },
+            )
+            .property("metrics-queue-interval-ms", 10u32)
+            .property("metrics-io-counts", gstoteltracer::Toggle::On)
+            .property("metrics-pts-age", gstoteltracer::Toggle::Off)
+            .property("trace-queue-capacity", 8192u32)
+            .property("trace-batch-size", 512u32)
+            .property("trace-export-interval-ms", 200u32)
+            .property("trace-export-concurrency", 1u32)
+            .property("flush-timeout-ms", 2000u32);
+        if mode == "property-params" {
+            builder = builder.property("params", "signals=\"metrics,traces\",monitoring=none,metrics-exporter=otlp,metrics-interval-ms=60000,metrics-sample-rate=1,metrics-include=\"*\",metrics-queue-interval-ms=10,metrics-io-counts=true,metrics-pts-age=false,trace-queue-capacity=8192,trace-batch-size=512,trace-export-interval-ms=200,trace-export-concurrency=1,flush-timeout-ms=2000");
+        }
+        builder.build()
     } else {
         glib::Object::builder().property("params", params).build()
     };

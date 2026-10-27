@@ -31,6 +31,8 @@ fn deferred_gpu_profiles_keep_element_and_span_without_cpu_sampling() {
         "params",
         "combined-params",
         "profiles-only",
+        "adapter-property",
+        "adapter-params",
     ] {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "gpu_child", "--ignored", "--nocapture"])
@@ -116,7 +118,26 @@ fn gpu_child() {
     } else {
         gstoteltracer::ProfileSources::Gpu
     };
-    let tracer: gst::Tracer = if mode == "otel" {
+    let adapter_path = std::env::var("MARS_GPU_ADAPTER").unwrap();
+    if mode.starts_with("adapter-") {
+        std::env::set_var("MARS_GPU_ADAPTER", "/invalid-overridden-adapter.so");
+        // GPU-only collection must not validate CPU-only environment settings.
+        std::env::set_var("MARS_PROFILE_HZ", "invalid-unused-cpu-rate");
+        std::env::set_var("MARS_PROFILE_SIGNAL", "invalid-unused-cpu-signal");
+        std::env::set_var("MARS_PROFILE_SYMBOLIZATION", "invalid-unused-cpu-mode");
+    }
+    let tracer: gst::Tracer = if mode == "adapter-property" {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("profile-sources", sources)
+            .property("profile-gpu-adapter", &adapter_path)
+            .build()
+            .upcast()
+    } else if mode == "adapter-params" {
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("profile-gpu-adapter", "/invalid-overridden-property.so")
+            .property("params", format!("signals=\"traces,profiles\",profile-sources=gpu,profile-gpu-adapter=\"{adapter_path}\""))
+            .build().upcast()
+    } else if mode == "otel" {
         glib::Object::builder::<gstoteltracer::TelemetryTracer>()
             .property("profile-sources", sources)
             .build()
@@ -148,7 +169,7 @@ fn gpu_child() {
         sources
     );
     gstoteltracer::stats().expect("tracer initialization failed");
-    let path = std::ffi::CString::new(std::env::var("MARS_GPU_ADAPTER").unwrap()).unwrap();
+    let path = std::ffi::CString::new(adapter_path).unwrap();
     let launch: unsafe extern "C" fn() = unsafe {
         let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW);
         assert!(!handle.is_null());

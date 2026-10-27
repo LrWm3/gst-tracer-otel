@@ -17,6 +17,8 @@
  */
 use gstreamer as gst;
 mod metrics;
+pub use gst_mars_metrics_core::configuration::{MonitoringSetting, Toggle};
+pub use metrics::MetricsTracer;
 
 // ───────────────── plugin boilerplate ──────────────────
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {

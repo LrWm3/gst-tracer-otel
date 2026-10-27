@@ -43,10 +43,10 @@ pub(crate) enum Mode {
 fn initialize(
     mode: Mode,
     settings: Option<crate::settings::Settings>,
-    profile_settings: &crate::profilesettings::Settings,
+    properties: &crate::properties::Settings,
 ) -> Result<Runtime, String> {
     if let Some(settings) = settings {
-        return initialize_explicit(settings, profile_settings);
+        return initialize_explicit(settings, properties);
     }
     let profiles_only = mode == Mode::Profiles;
     let instrument = mode == Mode::Instrument;
@@ -58,12 +58,19 @@ fn initialize(
             ..Config::default()
         }
     } else {
-        Config::from_env()?
+        Config::from_settings(&properties.overrides)?
     };
+    if !profiles_only {
+        config.flush_timeout = properties.flush_timeout()?;
+    }
     let metrics = instrument && enabled("GST_INSTRUMENT_METRICS", true)?;
     crate::health::configure(if metrics {
-        std::env::var("MARS_MONITORING")
-            .unwrap_or_else(|_| "core".into())
+        properties
+            .overrides
+            .read_named(&crate::properties::INSTRUMENT, "monitoring", &|key| {
+                std::env::var(key).ok()
+            })?
+            .unwrap()
             .parse()?
     } else {
         gst_mars_metrics_core::monitoring::Monitoring::None
@@ -94,7 +101,8 @@ fn initialize(
         .map_err(|e| e.to_string())?;
     runtime.metrics = metrics;
     if profiles {
-        if let Err(error) = crate::profiles::initialize(&resource, profiles_only, profile_settings)
+        if let Err(error) =
+            crate::profiles::initialize(&resource, profiles_only, &properties.profiles)
         {
             if profiles_only {
                 return Err(error);
@@ -107,7 +115,7 @@ fn initialize(
 
 fn initialize_explicit(
     settings: crate::settings::Settings,
-    profile_settings: &crate::profilesettings::Settings,
+    properties: &crate::properties::Settings,
 ) -> Result<Runtime, String> {
     crate::health::configure(settings.monitoring);
     #[cfg(not(all(
@@ -121,7 +129,7 @@ fn initialize_explicit(
         );
     }
     let mut config = if settings.traces {
-        Config::from_env()?
+        Config::from_settings(&properties.overrides)?
     } else {
         Config {
             traces: false,
@@ -129,17 +137,7 @@ fn initialize_explicit(
         }
     };
     config.logs = settings.logs;
-    if !settings.traces {
-        if let Ok(value) = std::env::var("GST_OTEL_FLUSH_TIMEOUT_MS") {
-            let ms = value
-                .parse::<u64>()
-                .map_err(|_| "invalid GST_OTEL_FLUSH_TIMEOUT_MS")?;
-            if !(1..=60_000).contains(&ms) {
-                return Err("GST_OTEL_FLUSH_TIMEOUT_MS must be 1..=60000".into());
-            }
-            config.flush_timeout = std::time::Duration::from_millis(ms);
-        }
-    }
+    config.flush_timeout = properties.flush_timeout()?;
     let resource = export::resource();
     let exporter = if settings.traces {
         Some(crate::transport::OtlpExporter::new(&resource)?)
@@ -158,7 +156,7 @@ fn initialize_explicit(
         .map_err(|e| e.to_string())?;
     runtime.shared_metrics = metrics;
     if settings.profiles {
-        crate::profiles::initialize(&resource, true, profile_settings)?;
+        crate::profiles::initialize(&resource, true, &properties.profiles)?;
     }
     if settings.metrics && (settings.traces || settings.profiles) {
         gst_mars_metrics_core::set_capture_hooks(gst_mars_metrics_core::CaptureHooks {
@@ -271,26 +269,21 @@ fn invalidate_metrics() {
 pub(crate) fn activate_with_params(
     mode: Mode,
     params: Option<&str>,
-    profile_settings: &std::sync::Mutex<crate::profilesettings::Settings>,
+    property_settings: &std::sync::Mutex<crate::properties::Settings>,
 ) -> bool {
     let configuration = (|| {
-        let mut parameters = crate::settings::parameters(params)?;
-        if let Some(s) = parameters.as_mut() {
-            profile_settings.lock().unwrap().take_parameters(s)?;
+        let mut properties = property_settings.lock().unwrap();
+        if let Some(mut parameters) = crate::settings::parameters(params)? {
+            properties.take_parameters(mode, &mut parameters)?;
         }
-        let parameters = parameters.as_deref().filter(|s| s.n_fields() != 0);
-        if mode == Mode::Instrument {
-            crate::settings::Settings::from_structure(parameters, |key| std::env::var(key).ok())
+        let signals = if mode == Mode::Instrument {
+            crate::settings::Settings::resolve(&properties.overrides, |key| {
+                std::env::var(key).ok()
+            })?
         } else {
-            if let Some(s) = parameters {
-                if let Some((key, _)) = s.iter().next() {
-                    return Err(format!(
-                        "unknown tracer parameter: {key}; only profiling properties are supported here"
-                    ));
-                }
-            }
-            Ok(None)
-        }
+            None
+        };
+        Ok::<_, String>(signals)
     })();
     let settings = match configuration {
         Ok(settings) => settings,
@@ -308,9 +301,9 @@ pub(crate) fn activate_with_params(
         );
         return false;
     }
-    let profile_settings = profile_settings.lock().unwrap().clone();
+    let properties = property_settings.lock().unwrap().clone();
     if let Err(error) = RUNTIME.get_or_init(|| {
-        let result = initialize(mode, settings, &profile_settings);
+        let result = initialize(mode, settings, &properties);
         if result.is_err() {
             // Initialization can fail after another selected signal started.
             // Do not leave its global log/profile worker running unattended.
@@ -336,7 +329,7 @@ macro_rules! tracer_impl {
 
             #[derive(Default)]
             pub struct OtelTracerImpl {
-                profile_settings: std::sync::Mutex<crate::profilesettings::Settings>,
+                settings: std::sync::Mutex<crate::properties::Settings>,
             }
 
             #[glib::object_subclass]
@@ -354,7 +347,7 @@ macro_rules! tracer_impl {
                 }
                 fn properties() -> &'static [glib::ParamSpec] {
                     static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
-                        let mut properties = crate::profilesettings::Settings::properties();
+                        let mut properties = crate::properties::Settings::properties($mode);
                         properties.extend([
                             glib::ParamSpecBoxed::builder::<gst::Structure>("stats")
                                 .read_only()
@@ -368,10 +361,7 @@ macro_rules! tracer_impl {
                     PROPERTIES.as_ref()
                 }
                 fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-                    self.profile_settings
-                        .lock()
-                        .unwrap()
-                        .set_property(value, pspec);
+                    self.settings.lock().unwrap().set_property(value, pspec);
                 }
                 fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
                     match pspec.name() {
@@ -383,14 +373,14 @@ macro_rules! tracer_impl {
                             .ok()
                             .map(|r| r.metric_stats().to_structure())
                             .to_value(),
-                        _ => self.profile_settings.lock().unwrap().property(pspec),
+                        _ => self.settings.lock().unwrap().property(pspec),
                     }
                 }
 
                 fn constructed(&self) {
                     self.parent_constructed();
                     let params = self.obj().property::<Option<String>>("params");
-                    if !activate_with_params($mode, params.as_deref(), &self.profile_settings) {
+                    if !activate_with_params($mode, params.as_deref(), &self.settings) {
                         return;
                     }
                     let runtime = runtime().unwrap();

@@ -23,8 +23,7 @@ cargo build --release -p gst-otel-tracer --features profiles
 sh tracer/otel/native/build-nvtx-adapter.sh target/libmars-nvtx.so
 export GST_PLUGIN_PATH="$PWD/target/release${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
 export NVTX_INJECTION64_PATH="$PWD/target/libmars-nvtx.so"
-export GST_TRACERS="mars-profiles(profile-sources=cpu,profile-nvtx-adapter=\"$NVTX_INJECTION64_PATH\")"
-export MARS_PROFILE_URL=http://localhost:4040
+export GST_TRACERS="mars-profiles(profile-sources=cpu,profile-nvtx-adapter=\"$NVTX_INJECTION64_PATH\",profile-url=\"http://localhost:4040\")"
 export OTEL_SERVICE_NAME=my-video-pipeline
 # Start the application's nvinfer pipeline here.
 ```
@@ -32,7 +31,8 @@ export OTEL_SERVICE_NAME=my-video-pipeline
 `profile-nvtx-adapter` is an optional, construction-time string property on
 `mars-profiles`, `mars-otel`, and `mars-instrument`. Its default is unset (off).
 Omit it to disable NVTX attribution while keeping ordinary GStreamer element
-attribution. Selecting `profile-sources="cpu"` keeps an explicitly configured
+attribution. Keep `profile-elements=true` (the effective default); NVTX attribution
+requires it. See the [property reference](CONFIGURATION.md) for other controls. Selecting `profile-sources="cpu"` keeps an explicitly configured
 NVTX bridge active with CPU sampling alone.
 
 For correlated telemetry, use the same property in

@@ -8,7 +8,7 @@ mod imp {
 
     #[derive(Default)]
     pub struct ProfilesTracer {
-        profile_settings: std::sync::Mutex<crate::profilesettings::Settings>,
+        settings: std::sync::Mutex<crate::properties::Settings>,
     }
 
     #[glib::object_subclass]
@@ -20,18 +20,16 @@ mod imp {
 
     impl ObjectImpl for ProfilesTracer {
         fn properties() -> &'static [glib::ParamSpec] {
-            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> =
-                LazyLock::new(crate::profilesettings::Settings::properties);
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+                crate::properties::Settings::properties(crate::tracer::Mode::Profiles)
+            });
             &PROPERTIES
         }
         fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-            self.profile_settings
-                .lock()
-                .unwrap()
-                .set_property(value, pspec);
+            self.settings.lock().unwrap().set_property(value, pspec);
         }
         fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
-            self.profile_settings.lock().unwrap().property(pspec)
+            self.settings.lock().unwrap().property(pspec)
         }
         fn signals() -> &'static [glib::subclass::Signal] {
             static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
@@ -44,7 +42,7 @@ mod imp {
             if !crate::tracer::activate_with_params(
                 crate::tracer::Mode::Profiles,
                 params.as_deref(),
-                &self.profile_settings,
+                &self.settings,
             ) {
                 return;
             }

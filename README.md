@@ -114,6 +114,10 @@ Each guide includes its build command, backend requirements, and configuration:
 - [CPU profiles](tracer/otel/PROFILES.md): native stacks grouped by element
   instance or task owner, including frame pointers and debug symbols.
 
+Use [tracer properties](tracer/otel/CONFIGURATION.md) for signal selection,
+sampling, element filters, profile destinations, and exporter tuning. Existing
+environment variables remain available as fallbacks.
+
 Choose one of `mars-instrument`, `mars-otel`, or `mars-profiles` per process;
 they share one configuration. Profiling requires Linux x86-64 or arm64, the
 `profiles` build feature, and GStreamer 1.22 or newer.

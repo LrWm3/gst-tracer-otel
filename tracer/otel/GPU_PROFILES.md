@@ -43,11 +43,9 @@ CUDA_ROOT=/usr/local/cuda-11.4 CUDA_TARGET=aarch64-linux \
   sh tracer/otel/native/build-gpu-adapter.sh target/libmars-cupti.so
 
 export GST_PLUGIN_PATH="$PWD/target/release${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
-export MARS_GPU_ADAPTER="$PWD/target/libmars-cupti.so"
-export MARS_PROFILE_URL=http://localhost:4040
 export OTEL_SERVICE_NAME=my-video-pipeline
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-export GST_TRACERS='mars-instrument(signals="traces,profiles",profile-sources="gpu")'
+export GST_TRACERS="mars-instrument(signals=\"traces,profiles\",profile-sources=gpu,profile-gpu-adapter=\"$PWD/target/libmars-cupti.so\",profile-url=\"http://localhost:4040\")"
 # Run the application's CUDA-backed pipeline here.
 ```
 
@@ -72,7 +70,7 @@ set it directly, for example:
 
 ```rust
 let tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
-    .property("params", "signals=\"traces,profiles\"")
+    .property("signals", "traces,profiles")
     .property("profile-sources", gstoteltracer::ProfileSources::CpuAndGpu)
     .build();
 ```
@@ -81,8 +79,12 @@ When both `params` and the direct property specify sources, `params` takes
 precedence. Selection is fixed for the process lifetime; changing it requires a
 restart. Omit `profiles` from the explicit signal list to disable both sources.
 The earlier experimental `MARS_PROFILE_SOURCES` and `GST_OTEL_PROFILE_SOURCES`
-environment selectors are no longer read. Endpoints, sampling frequency, and
-native adapter paths retain their existing environment configuration.
+environment selectors are no longer read. Configure the destination with
+`profile-url`, CPU sampling with `profile-hz`, and the CUPTI library with
+`profile-gpu-adapter`. These retain their existing environment fallbacks; see
+the [property reference](CONFIGURATION.md). `profile-gpu-adapter` is exposed only
+in Linux builds with `gpu-profiles`. NVTX remains independently controlled by
+`profile-nvtx-adapter` and needs only `profiles` on Linux.
 
 ## Correlation and time semantics
 

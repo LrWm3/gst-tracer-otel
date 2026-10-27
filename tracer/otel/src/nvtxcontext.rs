@@ -77,7 +77,7 @@ pub(crate) fn initialize(adapter: Option<&str>) -> Result<(), String> {
         return Ok(());
     };
     if !crate::profilecontext::enabled() {
-        return Err("NVTX worker attribution requires MARS_PROFILE_ELEMENTS=true".into());
+        return Err("NVTX worker attribution requires profile-elements=true".into());
     }
     let path = std::fs::canonicalize(path).map_err(|e| format!("NVTX adapter: {e}"))?;
     let injected =

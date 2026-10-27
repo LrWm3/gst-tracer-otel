@@ -8,45 +8,26 @@ mod imp {
     use gst::subclass::prelude::*;
     use std::{
         ops::ControlFlow,
-        str::FromStr,
-        sync::{OnceLock, RwLock},
+        sync::{LazyLock, OnceLock, RwLock},
     };
 
-    #[derive(Debug)]
+    use gst_mars_metrics_core::configuration::{MonitoringSetting, Overrides, Spec, Toggle};
+
+    static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(|| {
+        let mut specs = gst_mars_metrics_core::settings::specs::<Toggle, MonitoringSetting>();
+        specs.push(Spec::number(
+            "metrics-port",
+            65535,
+            &["MARS_METRICS_PORT"],
+            "8080",
+            "Prometheus listen port; 0 inherits (default 8080)",
+        ));
+        specs
+    });
+    #[derive(Debug, Default)]
     struct Settings {
-        pub server_port: u16,
-        pub monitoring: Option<String>,
-    }
-
-    impl Default for Settings {
-        fn default() -> Self {
-            Self {
-                server_port: 8080u16,
-                monitoring: None,
-            }
-        }
-    }
-
-    impl Settings {
-        fn update_from_params(&mut self, imp: &MetricsTracer, params: String) {
-            let s = match gst::Structure::from_str(&format!("mars-metrics,{params}")) {
-                Ok(s) => s,
-                Err(err) => {
-                    gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
-                    return;
-                }
-            };
-            if s.has_field("monitoring") {
-                self.monitoring = Some(
-                    s.get::<String>("monitoring")
-                        .unwrap_or_else(|_| "invalid".into()),
-                );
-            }
-            if let Ok(v) = s.get::<i32>("port") {
-                gst::log!(CAT, imp = imp, "setting port to {}", v);
-                self.server_port = v as u16;
-            }
-        }
+        overrides: Overrides,
+        server_port: u16,
     }
 
     #[derive(Default)]
@@ -63,34 +44,75 @@ mod imp {
     }
 
     impl ObjectImpl for MetricsTracer {
+        fn properties() -> &'static [glib::ParamSpec] {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> =
+                LazyLock::new(|| SPECS.iter().map(|s| s.property.clone()).collect());
+            &PROPERTIES
+        }
+        fn set_property(&self, _: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+            self.settings
+                .write()
+                .unwrap()
+                .overrides
+                .set_property(value, pspec);
+        }
+        fn property(&self, _: usize, pspec: &glib::ParamSpec) -> glib::Value {
+            self.settings.read().unwrap().overrides.property(pspec)
+        }
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
             let tracer_obj: &gst::Tracer = obj.upcast_ref();
-
-            // Update settings from parameters if provided
-            if let Some(params) = self.obj().property::<Option<String>>("params") {
+            let configuration = (|| {
                 let mut settings = self.settings.write().unwrap();
-                settings.update_from_params(self, params);
-                gst::debug!(CAT, imp = self, "using settings: {:?}", *settings);
-            }
-
-            let monitoring = self
-                .settings
-                .read()
-                .unwrap()
-                .monitoring
-                .clone()
-                .or_else(|| std::env::var("MARS_MONITORING").ok())
-                .unwrap_or_else(|| "core".into());
-            let monitoring =
-                match monitoring.parse::<gst_mars_metrics_core::monitoring::Monitoring>() {
-                    Ok(level) => level,
-                    Err(error) => {
-                        gst::error!(CAT, "Metrics tracer disabled: {error}");
-                        return;
+                if let Some(params) = self
+                    .obj()
+                    .property::<Option<String>>("params")
+                    .filter(|p| !p.trim().is_empty())
+                {
+                    let mut params = format!("mars-metrics,{params}")
+                        .parse::<gst::Structure>()
+                        .map_err(|e| format!("invalid tracer parameters: {e}"))?;
+                    // Keep the original port parameter as an alias.
+                    if params.has_field("port") {
+                        if !params.has_field("metrics-port") {
+                            let port = params.value("port").unwrap().clone();
+                            params.set_value("metrics-port", port);
+                        }
+                        params.remove_field("port");
                     }
-                };
+                    settings.overrides.take_parameters(&mut params, &SPECS)?;
+                    if let Some((key, _)) = params.iter().next() {
+                        return Err(format!("unknown tracer parameter: {key}"));
+                    }
+                }
+                let env = |key: &str| std::env::var(key).ok();
+                settings.server_port = settings
+                    .overrides
+                    .read_named(&SPECS, "metrics-port", &env)?
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let monitoring = settings
+                    .overrides
+                    .read_named(&SPECS, "monitoring", &env)?
+                    .unwrap()
+                    .parse::<gst_mars_metrics_core::monitoring::Monitoring>()?;
+                let config = gst_mars_metrics_core::settings::Config::resolve(
+                    &settings.overrides,
+                    &SPECS,
+                    env,
+                )?;
+                gst_mars_metrics_core::settings::configure(config)?;
+                Ok::<_, String>(monitoring)
+            })();
+            let monitoring = match configuration {
+                Ok(level) => level,
+                Err(error) => {
+                    gst::error!(CAT, "Metrics tracer disabled: {error}");
+                    return;
+                }
+            };
             gst_mars_metrics_core::monitoring::configure(monitoring);
             if monitoring != gst_mars_metrics_core::monitoring::Monitoring::None {
                 gst_mars_metrics_core::enable_accounting();

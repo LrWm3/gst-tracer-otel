@@ -7,10 +7,9 @@ and GStreamer logs. Choose the signals you need, then choose a metrics exporter.
 cargo build --release -p gst-otel-tracer --features profiles
 
 GST_PLUGIN_PATH="$PWD/target/release" \
-GST_TRACERS='mars-instrument(signals="metrics,traces,profiles")' \
+GST_TRACERS='mars-instrument(signals="metrics,traces,profiles",profile-url="http://localhost:4040")' \
 OTEL_SERVICE_NAME=video-pipeline \
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
-MARS_PROFILE_URL=http://localhost:4040 \
   gst-launch-1.0 videotestsrc num-buffers=300 ! videoconvert ! fakesink
 ```
 
@@ -44,60 +43,12 @@ create their collectors or exporters, and their exporter settings are not valida
 Duplicate or unknown signals and unknown tracer parameters produce an error in
 `GST_DEBUG=mars-otel:3` and leave the tracer disabled.
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `MARS_SIGNALS` | Unset: compatibility behavior | Comma-separated `metrics,traces,profiles,logs` |
-| `MARS_METRICS_EXPORTER` | `otlp` | `otlp` or `prometheus`; parameter `metrics-exporter` |
-| `MARS_METRICS_PORT` | `9188` | Prometheus listen port; parameter `metrics-port` |
-| `MARS_MONITORING` | `core` | Instrumentation health: `none`, `core`, or `all`; parameter `monitoring` |
-| `MARS_METRIC_INTERVAL_MS` | `10000` | OTLP metrics export interval, 1–60000 ms |
-| `MARS_METRIC_SAMPLE_RATE` | `16` | Approximately one in N calls enters timing histograms |
-| `MARS_METRIC_INCLUDE` | `*` | Comma-separated element-name glob filters |
-| `MARS_METRIC_QUEUE_INTERVAL_MS` | `100` | Queue sampling period |
-| `MARS_METRIC_IO_COUNTS` | `false` | Per-pad buffer input/output counters |
-| `MARS_METRIC_PTS_AGE` | `false` | Sample buffer age relative to running time |
-| `MARS_PROFILE_URL` | `http://localhost:4040` when selected | Pyroscope endpoint |
-| `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build. No environment equivalent. |
-| `profile-nvtx-adapter` tracer property | Unset (off) | Optional NVTX attribution library; works with `profiles` on Linux, including CPU-only builds |
-| `MARS_PROFILE_HZ` | `100` | CPU sampling frequency, 1–1000 Hz |
-| `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-profile HTTP timeout, 1–60000 ms |
-| `MARS_PROFILE_ELEMENTS` | `true` | Add element/task-owner roots to profiles |
-| `MARS_PROFILE_SYMBOLIZATION` | `full` | `full` source/inline resolution or `functions` using ELF symbols only |
-| `MARS_PROFILE_SIGNAL` | `SIGRTMIN+6` | Reserved realtime sampling signal |
-
-`MARS_METRIC_*` collector controls also work with `mars-metrics`. Their original
-`GST_PROM_LATENCY_*` names remain fallbacks (including
-`GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE` and
-`GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS`). Profile controls fall back to
-`GST_OTEL_PROFILE_*`. The new namespace takes precedence.
-
-To keep CPU profiles and add experimental GPU profiles, build with
-`--features gpu-profiles` and use
-`mars-instrument(signals="traces,profiles",profile-sources="cpu,gpu")`.
-Set `profile-sources="cpu"` to keep GPU collection off, even in that build;
-`profile-sources="gpu"` collects GPU kernels without CPU sampling. The selector
-does not enable the `profiles` signal by itself. It is fixed when the tracer is
-constructed. See the [GPU guide](GPU_PROFILES.md) for the required native adapter,
-the GObject API, and current experimental limitations.
-
-NVTX worker attribution is separate from GPU collection. Set
-`profile-nvtx-adapter="/absolute/path/libmars-nvtx.so"` to enable it with either
-source; see the [NVTX guide](NVTX.md) for the NVIDIA injection setup. Omitting
-this property leaves the bridge off. Neither the property nor the injection
-environment setting enables the `profiles` signal on its own.
-
-Traces and OTLP metrics retain the standard
-`OTEL_EXPORTER_OTLP_{TRACES,METRICS}_{ENDPOINT,HEADERS,TIMEOUT,PROTOCOL}` settings,
-with fallback to generic OTLP settings. Signal-specific endpoint URLs are used
-literally. Use `http/protobuf`; compression defaults to `none`, with optional
-`OTEL_EXPORTER_OTLP_COMPRESSION=gzip`. Profiles and OTLP signals
-share `OTEL_SERVICE_NAME`; other OTLP resource fields come from
-`OTEL_RESOURCE_ATTRIBUTES`. Trace sampling and queue controls are described in
-the [trace guide](README.md#configuration).
-
-For logs, also select useful `GST_DEBUG` categories. The log bridge preserves
-GStreamer's normal log handler. Profile collection is independent of trace
-sampling; unsampled work still appears in profiles without trace IDs.
+All controls are construction-time GObject properties as well as tracer
+parameters. For example, add `metrics-sample-rate=16`, `metrics-io-counts=true`,
+`profile-hz=100`, or `profile-symbolization=functions` inside `GST_TRACERS`.
+See the [property reference](CONFIGURATION.md) for defaults, ranges, environment
+fallbacks, and application code. Numeric 0 and enum `auto` inherit the environment
+and then the built-in default; explicit values override it.
 
 ## Monitor the instrumentation
 
@@ -206,7 +157,7 @@ you need its final cumulative totals. Failed deliveries retry the next snapshot
 without a growing event queue; totals for retired series are not retained for
 later delivery. Snapshots become exact after streaming stops.
 
-READY→NULL flushes traces and OTLP metrics within `GST_OTEL_FLUSH_TIMEOUT_MS`
+READY→NULL flushes traces and OTLP metrics within `flush-timeout-ms` (fallback `GST_OTEL_FLUSH_TIMEOUT_MS`)
 (default 10000). Rust `flush(timeout)` and `shutdown(timeout)` share their deadline
 across exporters; shutdown also stops queue sampling and maintenance. Stop
 streaming first. A timed-out worker can finish in the background. Prometheus

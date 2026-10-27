@@ -21,11 +21,6 @@ use std::time::Duration;
 
 use crate::{capture::Token, export::FlushError};
 
-pub(crate) fn setting(suffix: &str) -> Option<std::ffi::OsString> {
-    std::env::var_os(format!("MARS_PROFILE_{suffix}"))
-        .or_else(|| std::env::var_os(format!("GST_OTEL_PROFILE_{suffix}")))
-}
-
 /// Sampling and delivery counters. `reported_samples` means queued for upload;
 /// `accepted_samples` counts samples in acknowledged Pyroscope HTTP requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,12 +91,19 @@ pub(crate) mod upload;
 )))]
 mod platform {
     use super::*;
-    pub fn initialize(_: &opentelemetry_sdk::Resource, required: bool) -> Result<(), String> {
-        if required || setting("URL").is_some() {
-            Err("requires the profiles Cargo feature on Linux x86-64 or AArch64".into())
-        } else {
-            Ok(())
-        }
+    pub fn initialize(
+        _: &opentelemetry_sdk::Resource,
+        config: &crate::profilesettings::Config,
+    ) -> Result<(), String> {
+        let _ = (
+            &config.url,
+            config.hz,
+            config.timeout_ms,
+            config.elements,
+            &config.symbolization,
+            config.signal,
+        );
+        Err("requires the profiles Cargo feature on Linux x86-64 or AArch64".into())
     }
     pub fn publish(_: Option<&Token>) -> bool {
         false
@@ -139,26 +141,25 @@ pub(crate) fn initialize(
     required: bool,
     settings: &crate::profilesettings::Settings,
 ) -> Result<(), String> {
-    if !required && setting("URL").is_none() {
+    let Some(config) = settings.resolve(required)? else {
         return Ok(());
-    }
+    };
     #[cfg(all(feature = "profiles", target_os = "linux"))]
     {
-        crate::profilecontext::configure()?;
+        crate::profilecontext::configure(config.elements);
         crate::nvtxcontext::initialize(settings.nvtx_adapter.as_deref())?;
     }
     let sources = settings.sources;
     if sources.gpu() {
         #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
         {
-            crate::profilecontext::configure()?;
-            crate::gpuprofiles::initialize(resource, !sources.cpu())?;
+            crate::gpuprofiles::initialize(resource, !sources.cpu(), &config)?;
         }
         #[cfg(not(all(feature = "gpu-profiles", target_os = "linux")))]
         return Err("GPU profiles require the gpu-profiles Cargo feature on Linux".into());
     }
     if sources.cpu() {
-        let result = platform::initialize(resource, required);
+        let result = platform::initialize(resource, &config);
         #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
         if result.is_err() && sources.gpu() {
             let _ = crate::gpuprofiles::drain(Duration::from_secs(1), true);
@@ -1142,57 +1143,17 @@ mod linux {
 
     pub fn initialize(
         resource: &opentelemetry_sdk::Resource,
-        required: bool,
+        config: &crate::profilesettings::Config,
     ) -> Result<(), String> {
-        let Some(url) = setting("URL").or_else(|| required.then(|| "http://localhost:4040".into()))
-        else {
-            return Ok(());
+        let url = config.url.clone();
+        let rate = config.hz;
+        let timeout = config.timeout_ms;
+        let symbolization = config.symbolization.parse()?;
+        let signal = if config.signal == 0 {
+            libc::SIGRTMIN() + 6
+        } else {
+            config.signal as i32
         };
-        let url = url
-            .into_string()
-            .map_err(|_| "GST_OTEL_PROFILE_URL is not UTF-8")?;
-        let parsed = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
-        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-            return Err("GST_OTEL_PROFILE_URL must be an HTTP(S) URL".into());
-        }
-        let rate = setting("HZ")
-            .map(|v| v.into_string().map_err(|_| "profile HZ is not UTF-8"))
-            .transpose()?
-            .unwrap_or_else(|| "100".into())
-            .parse::<u32>()
-            .map_err(|_| "GST_OTEL_PROFILE_HZ must be 1..=1000")?;
-        if !(1..=1000).contains(&rate) {
-            return Err("GST_OTEL_PROFILE_HZ must be 1..=1000".into());
-        }
-        let timeout = setting("TIMEOUT_MS")
-            .map(|v| {
-                v.into_string()
-                    .map_err(|_| "profile TIMEOUT_MS is not UTF-8")
-            })
-            .transpose()?
-            .unwrap_or_else(|| "10000".into())
-            .parse::<u64>()
-            .map_err(|_| "profile TIMEOUT_MS must be 1..=60000")?;
-        if !(1..=60000).contains(&timeout) {
-            return Err("profile TIMEOUT_MS must be 1..=60000".into());
-        }
-        crate::profilecontext::configure()?;
-        let symbolization = setting("SYMBOLIZATION")
-            .map(|v| {
-                v.into_string()
-                    .map_err(|_| "profile SYMBOLIZATION is not UTF-8")
-            })
-            .transpose()?
-            .as_deref()
-            .unwrap_or("full")
-            .parse()?;
-        let signal = setting("SIGNAL")
-            .map(|v| v.into_string().map_err(|_| "profile SIGNAL is not UTF-8"))
-            .transpose()?
-            .map(|s| s.parse::<i32>())
-            .transpose()
-            .map_err(|_| "invalid GST_OTEL_PROFILE_SIGNAL")?
-            .unwrap_or_else(|| libc::SIGRTMIN() + 6);
         if !(libc::SIGRTMIN()..=libc::SIGRTMAX()).contains(&signal) {
             return Err("profile signal must be a realtime signal".into());
         }
@@ -1428,7 +1389,16 @@ mod linux {
                 }
             });
             gst::init().unwrap();
-            initialize(&opentelemetry_sdk::Resource::builder_empty().build(), false).unwrap();
+            let config = crate::profilesettings::Settings::default()
+                .resolve(false)
+                .unwrap()
+                .unwrap();
+            crate::profilecontext::configure(config.elements);
+            initialize(
+                &opentelemetry_sdk::Resource::builder_empty().build(),
+                &config,
+            )
+            .unwrap();
             let published = || {
                 REGISTRATION.with(|r| {
                     r.borrow()

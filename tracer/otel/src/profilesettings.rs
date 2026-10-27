@@ -1,15 +1,94 @@
 //! Profile sources and optional worker attribution are selected at tracer construction.
+use crate::properties::Toggle;
 use glib::prelude::*;
+use gst_mars_metrics_core::configuration::{Overrides, Spec};
+use std::sync::LazyLock;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, glib::Enum)]
+#[enum_type(name = "MarsProfileSymbolization")]
+#[repr(i32)]
+pub enum ProfileSymbolization {
+    #[default]
+    Auto,
+    Full,
+    Functions,
+}
+
+static SPECS: LazyLock<Vec<Spec>> = LazyLock::new(specs);
+
+fn specs() -> Vec<Spec> {
+    vec![
+        Spec::string(
+            "profile-url",
+            &["MARS_PROFILE_URL", "GST_OTEL_PROFILE_URL"],
+            None,
+            "Pyroscope HTTP(S) URL; unset inherits, default localhost:4040 when profiles are selected",
+        ),
+        Spec::number(
+            "profile-hz",
+            1000,
+            &["MARS_PROFILE_HZ", "GST_OTEL_PROFILE_HZ"],
+            "100",
+            "CPU samples per second, 1..1000; 0 inherits (default 100)",
+        ),
+        Spec::number(
+            "profile-timeout-ms",
+            60000,
+            &["MARS_PROFILE_TIMEOUT_MS", "GST_OTEL_PROFILE_TIMEOUT_MS"],
+            "10000",
+            "Profile upload timeout; 0 inherits (default 10000 ms)",
+        ),
+        Spec::enumeration::<ProfileSymbolization>(
+            "profile-symbolization",
+            &["MARS_PROFILE_SYMBOLIZATION", "GST_OTEL_PROFILE_SYMBOLIZATION"],
+            "full",
+            "CPU symbol detail; auto inherits (default full)",
+        ),
+        Spec::enumeration::<Toggle>(
+            "profile-elements",
+            &["MARS_PROFILE_ELEMENTS", "GST_OTEL_PROFILE_ELEMENTS"],
+            "true",
+            "Element attribution; auto inherits (default true). Required for NVTX attribution",
+        ),
+        Spec::number(
+            "profile-signal",
+            128,
+            &["MARS_PROFILE_SIGNAL", "GST_OTEL_PROFILE_SIGNAL"],
+            "0",
+            "CPU realtime signal number; 0 inherits (default SIGRTMIN+6)",
+        ),
+        #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+        Spec::string(
+            "profile-gpu-adapter",
+            &["MARS_GPU_ADAPTER"],
+            Some("libmars-cupti.so"),
+            "CUPTI adapter library; unset inherits (default libmars-cupti.so)",
+        ),
+    ]
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Config {
+    pub url: String,
+    pub hz: u32,
+    pub timeout_ms: u64,
+    pub elements: bool,
+    pub symbolization: String,
+    pub signal: u32,
+    #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+    pub gpu_adapter: String,
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Settings {
     pub sources: ProfileSources,
     pub nvtx_adapter: Option<String>,
+    pub overrides: Overrides,
 }
 
 impl Settings {
     pub fn properties() -> Vec<glib::ParamSpec> {
-        vec![
+        let mut properties = vec![
             ProfileSources::property(),
             #[cfg(all(feature = "profiles", target_os = "linux"))]
             glib::ParamSpecString::builder("profile-nvtx-adapter")
@@ -17,7 +96,9 @@ impl Settings {
                 .blurb("NVTX worker attribution library; unset or empty disables it. Must match NVTX_INJECTION64_PATH set before startup")
                 .construct_only()
                 .build(),
-        ]
+        ];
+        properties.extend(specs().into_iter().map(|s| s.property));
+        properties
     }
 
     pub fn set_property(&mut self, value: &glib::Value, pspec: &glib::ParamSpec) {
@@ -29,7 +110,7 @@ impl Settings {
                     .unwrap()
                     .filter(|s| !s.is_empty());
             }
-            _ => unreachable!(),
+            _ => self.overrides.set_property(value, pspec),
         }
     }
 
@@ -37,12 +118,20 @@ impl Settings {
         match pspec.name() {
             "profile-sources" => self.sources.to_value(),
             "profile-nvtx-adapter" => self.nvtx_adapter.to_value(),
-            _ => unreachable!(),
+            _ => self.overrides.property(pspec),
         }
     }
 
     /// Consume shared profile parameters before the entry point parses its other settings.
     pub fn take_parameters(&mut self, params: &mut gstreamer::StructureRef) -> Result<(), String> {
+        if params.has_field("profile-gpu-adapter")
+            && !cfg!(all(feature = "gpu-profiles", target_os = "linux"))
+        {
+            return Err(
+                "profile-gpu-adapter requires the gpu-profiles Cargo feature on Linux".into(),
+            );
+        }
+        self.overrides.take_parameters(params, &SPECS)?;
         if params.has_field("profile-sources") {
             self.sources = params
                 .get::<String>("profile-sources")
@@ -65,6 +154,59 @@ impl Settings {
             params.remove_field("profile-nvtx-adapter");
         }
         Ok(())
+    }
+
+    pub fn resolve(&self, required: bool) -> Result<Option<Config>, String> {
+        self.resolve_with(required, |key| std::env::var(key).ok())
+    }
+
+    fn resolve_with(
+        &self,
+        required: bool,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<Config>, String> {
+        let read = |name| {
+            self.overrides.read(
+                SPECS.iter().find(|s| s.property.name() == name).unwrap(),
+                &env,
+            )
+        };
+        let url = read("profile-url")?;
+        if !required && url.is_none() {
+            return Ok(None);
+        }
+        let url = url.unwrap_or_else(|| "http://localhost:4040".into());
+        let parsed = reqwest::Url::parse(&url).map_err(|e| format!("profile-url: {e}"))?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return Err("profile-url must be an HTTP(S) URL".into());
+        }
+        let cpu = self.sources.cpu();
+        Ok(Some(Config {
+            url,
+            hz: if cpu {
+                read("profile-hz")?.unwrap().parse().unwrap()
+            } else {
+                100
+            },
+            timeout_ms: read("profile-timeout-ms")?.unwrap().parse().unwrap(),
+            elements: read("profile-elements")?.unwrap() == "true",
+            symbolization: if cpu {
+                read("profile-symbolization")?.unwrap()
+            } else {
+                "full".into()
+            },
+            signal: if cpu {
+                read("profile-signal")?.unwrap().parse().unwrap()
+            } else {
+                0
+            },
+            #[cfg(all(feature = "gpu-profiles", target_os = "linux"))]
+            gpu_adapter: if self.sources.gpu() {
+                read("profile-gpu-adapter")?.unwrap()
+            } else {
+                String::new()
+            },
+        }))
     }
 }
 

@@ -410,25 +410,11 @@ fn unix_nanos() -> u64 {
 pub(crate) fn initialize(
     resource: &opentelemetry_sdk::Resource,
     owns_retirement: bool,
+    settings: &crate::profilesettings::Config,
 ) -> Result<(), String> {
-    let url = crate::profiles::setting("URL")
-        .unwrap_or_else(|| "http://localhost:4040".into())
-        .into_string()
-        .map_err(|_| "profile URL is not UTF-8")?;
-    let parsed = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        return Err("profile URL must be HTTP(S)".into());
-    }
-    let timeout = crate::profiles::setting("TIMEOUT_MS")
-        .unwrap_or_else(|| "10000".into())
-        .into_string()
-        .map_err(|_| "profile timeout is not UTF-8")?
-        .parse::<u64>()
-        .map_err(|_| "profile TIMEOUT_MS must be 1..=60000")?;
-    if !(1..=60000).contains(&timeout) {
-        return Err("profile TIMEOUT_MS must be 1..=60000".into());
-    }
-    let path = std::env::var("MARS_GPU_ADAPTER").unwrap_or_else(|_| "libmars-cupti.so".into());
+    let url = settings.url.clone();
+    let timeout = settings.timeout_ms;
+    let path = settings.gpu_adapter.clone();
     let name = resource
         .iter()
         .find(|(key, _)| key.as_str() == "service.name")

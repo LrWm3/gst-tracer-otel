@@ -41,7 +41,7 @@ fn main() {
         "this demo requires GPU profiles"
     );
     let _tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
-        .property("params", "signals=\"traces,profiles\"")
+        .property("signals", "traces,profiles")
         .property("profile-sources", sources)
         .build();
     gstoteltracer::stats()

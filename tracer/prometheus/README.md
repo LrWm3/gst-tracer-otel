@@ -7,8 +7,16 @@ The same full collector is available through
 [`mars-instrument(signals="metrics")`](../otel/INSTRUMENT.md), with either
 Prometheus or OTLP export and optional correlated traces and profiles.
 `mars-metrics` keeps its existing launch syntax, text format and metric names.
-New `MARS_METRIC_*` collector settings are aliases for the controls documented
-below; see the unified guide for their names and precedence.
+Configure collection through properties, for example:
+
+```sh
+GST_TRACERS='mars-metrics(metrics-port=8080,metrics-sample-rate=16,metrics-include="*",metrics-io-counts=true,monitoring=core)'
+```
+
+The same properties are exposed through GObject for applications. Existing
+`MARS_METRIC_*` and `GST_PROM_LATENCY_*` settings remain environment fallbacks;
+`port` remains a parameter alias for `metrics-port`. See the
+[property reference](../otel/CONFIGURATION.md) for defaults, inheritance and the API.
 
 The synchronous metrics time `gst_pad_push()` from an upstream source pad until
 the downstream call returns. Direct child pushes are subtracted, including

@@ -13,24 +13,28 @@ Build and run:
 ```sh
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling -p gst-otel-tracer --features profiles
 export GST_PLUGIN_PATH="$PWD/target/profiling"
-export GST_TRACERS=mars-profiles
+export GST_TRACERS='mars-profiles(profile-url="http://localhost:4040",profile-hz=100)'
 export OTEL_SERVICE_NAME=gstreamer-pipeline
-export GST_OTEL_PROFILE_URL=http://localhost:4040
 gst-launch-1.0 videotestsrc ! videoconvert ! video/x-raw,format=RGB ! fakesink sync=false
 ```
 
-| Setting | Default | Meaning |
+| Property | Effective default | Meaning |
 | --- | --- | --- |
-| `profile-sources` tracer property | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build |
-| `profile-nvtx-adapter` tracer property | Unset (off) | Path to the optional NVTX worker-attribution adapter; requires only `profiles` on Linux |
-| `GST_OTEL_PROFILE_URL` | `http://localhost:4040` | Pyroscope base URL |
-| `GST_OTEL_PROFILE_HZ` | `100` | CPU samples per second per registered thread; 1–1000 |
-| `MARS_PROFILE_TIMEOUT_MS` | `10000` | Per-upload HTTP timeout, 1–60000 ms; fallback `GST_OTEL_PROFILE_TIMEOUT_MS` |
-| `GST_OTEL_PROFILE_ELEMENTS` | `true` | Group native stacks by element execution context or task owner |
-| `GST_OTEL_PROFILE_SIGNAL` | `SIGRTMIN()+6` | Reserved realtime signal |
-| `OTEL_SERVICE_NAME` | SDK-detected service name | Pyroscope `service_name` |
+| `profile-sources` | `cpu` | `cpu`, `gpu`, or `cpu,gpu`; GPU values require a Linux `gpu-profiles` build |
+| `profile-nvtx-adapter` | Unset (off) | Optional NVTX worker-attribution adapter; requires only `profiles` on Linux |
+| `profile-url` | `http://localhost:4040` | Pyroscope base URL |
+| `profile-hz` | `100` | CPU samples per second per registered thread; 1–1000 |
+| `profile-timeout-ms` | `10000` | Upload HTTP timeout, 1–60000 ms |
+| `profile-elements` | `true` | Group native stacks by element or task owner |
+| `profile-symbolization` | `full` | `full` source/inline resolution or `functions` using ELF symbols |
+| `profile-signal` | `SIGRTMIN()+6` | Reserved realtime sampling signal |
 
-The `MARS_PROFILE_*` equivalents take precedence over the environment names above.
+These are construction-time GObject properties. Numeric 0 and enum `auto`
+inherit existing `MARS_PROFILE_*` variables, then `GST_OTEL_PROFILE_*` aliases,
+then defaults. Unset `profile-url` inherits its environment fallback.
+`OTEL_SERVICE_NAME` still sets profile service identity. See the
+[property reference](CONFIGURATION.md) for precedence and the application API.
+
 `mars-instrument(signals="profiles")` selects the same sampler through the
 [unified interface](INSTRUMENT.md), without enabling metrics, traces or logs.
 
@@ -53,7 +57,7 @@ Select one of `mars-profiles`, `mars-otel`, or `mars-instrument`. They share one
 process-wide configuration; the first constructed instance selects the signals
 and installs hooks. Later instances log a warning and install no hooks. For
 profiles correlated with traces, select `mars-otel` or `mars-instrument` and set
-`GST_OTEL_PROFILE_URL`. Then configure the
+`profile-url`. Then configure the
 [Grafana trace-to-profile link](CORRELATION.md); IDs alone do not configure data-source navigation.
 
 ## Finding the element that used CPU
@@ -84,7 +88,7 @@ These are pprof frames, not new series labels or duplicated samples. In Grafana
 Explore, expand frame groups to see the names, or sort the top table by **Total**.
 Synthetic frames have zero **Self** time; their **Total** is the grouped CPU.
 See the [screenshots and validated example](../../reports/otel/PROFILE_ELEMENT_REVIEW.md).
-Set `GST_OTEL_PROFILE_ELEMENTS=false` for native stacks without these roots.
+Set `profile-elements=false` in the tracer parameters for native stacks without these roots.
 
 The optional [NVTX worker bridge](NVTX.md)
 attributes supported `nvinfer` worker ranges and registers those threads for CPU
@@ -159,13 +163,13 @@ signal handler reads only an atomic integer; all name lookup and synthetic frame
 construction happen outside signals. No GStreamer objects are retained by the
 description registry.
 
-`MARS_PROFILE_SYMBOLIZATION=full` is the default: native function names, source
+`profile-symbolization=full` is the default: native function names, source
 locations and inline frames when debug information is available. Use
-`MARS_PROFILE_SYMBOLIZATION=functions` to read ELF symbol tables without loading
+`profile-symbolization=functions` to read ELF symbol tables without loading
 DWARF or separate debug files. This reduces resolver work and temporary memory
 at the cost of source locations and inline detail; stripped private functions
 may appear only under their library name. Element roots and trace IDs are
-unchanged. `GST_OTEL_PROFILE_SYMBOLIZATION` is the fallback name.
+unchanged. `MARS_PROFILE_SYMBOLIZATION` and `GST_OTEL_PROFILE_SYMBOLIZATION` remain environment fallbacks.
 
 The worker keeps up to 4096 resolved addresses and 4 MiB of frame/string data.
 Loading an unrelated library preserves existing cached symbols; replacing or
@@ -264,8 +268,8 @@ Replace the old tracer parameters with the shared profiler configuration:
 
 | Old parameter | Replacement |
 | --- | --- |
-| `server-url` | `GST_OTEL_PROFILE_URL` |
-| `sample-rate` | `GST_OTEL_PROFILE_HZ` |
+| `server-url` | `profile-url` |
+| `sample-rate` | `profile-hz` |
 | `tracer-name` | `OTEL_SERVICE_NAME` |
 | `stop-agent-on-dispose` | Explicit `gstoteltracer::shutdown(timeout)` |
 | `tags` | No equivalent arbitrary series tags in the embedded backend |

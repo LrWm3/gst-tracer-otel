@@ -88,11 +88,6 @@ static BUFFER_PTS_AGE_HISTOGRAM: LazyLock<HistogramVec> = LazyLock::new(|| {
     )
     .unwrap()
 });
-static IO_COUNTS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    crate::setting("MARS_METRIC_IO_COUNTS", "GST_PROM_LATENCY_IO_COUNTS")
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-});
 static BUFFERS_IN: LazyLock<IntCounterVec> = LazyLock::new(|| {
     register_int_counter_vec!(
         "gst_element_buffers_in_total",
@@ -161,31 +156,6 @@ static PULL_BLOCKED: LazyLock<HistogramVec> = LazyLock::new(|| {
     .unwrap()
 });
 
-static HISTOGRAM_SAMPLE_RATE: LazyLock<u64> = LazyLock::new(|| {
-    crate::setting(
-        "MARS_METRIC_SAMPLE_RATE",
-        "GST_PROM_LATENCY_HISTOGRAM_SAMPLE_RATE",
-    )
-    .ok()
-    .and_then(|v| v.parse::<u64>().ok())
-    .filter(|v| *v > 0)
-    .unwrap_or(16)
-});
-static ELEMENT_INCLUDE_PATTERNS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    crate::setting("MARS_METRIC_INCLUDE", "GST_PROM_LATENCY_INCLUDE")
-        .unwrap_or_else(|_| "*".to_string())
-        .split(',')
-        .map(str::trim)
-        .filter(|pattern| !pattern.is_empty())
-        .map(str::to_owned)
-        .collect()
-});
-static PTS_AGE_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    crate::setting("MARS_METRIC_PTS_AGE", "GST_PROM_LATENCY_PTS_AGE")
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-});
-
 struct ThreadState {
     spans: RefCell<Vec<SpanFrame>>,
     // Bounded direct-mapped cache. Entries own metric snapshots, never pads.
@@ -204,7 +174,7 @@ thread_local! {
         snapshots: RefCell::new([const { PadSnapshot { pad: 0, cache: None } }; 64]),
         cache_pool: RefCell::new(HashMap::new()),
         sample_sequence: Cell::new(0),
-        sample_rate: *HISTOGRAM_SAMPLE_RATE,
+        sample_rate: crate::settings::current().sample_rate,
     };
 }
 
@@ -251,17 +221,6 @@ static QUEUE_UNDERRUNS: LazyLock<IntCounterVec> = LazyLock::new(|| {
 static QUEUE_REGISTRATIONS: LazyLock<Mutex<Vec<QueueRegistration>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 static QUEUE_SAMPLER_ONCE: OnceLock<()> = OnceLock::new();
-static QUEUE_SAMPLE_INTERVAL_MS: LazyLock<u64> = LazyLock::new(|| {
-    crate::setting(
-        "MARS_METRIC_QUEUE_INTERVAL_MS",
-        "GST_PROM_LATENCY_QUEUE_SAMPLE_INTERVAL_MS",
-    )
-    .ok()
-    .and_then(|v| v.parse::<u64>().ok())
-    .filter(|v| *v > 0)
-    .unwrap_or(100)
-});
-
 fn latency_buckets() -> Vec<f64> {
     vec![
         0.000_001,
@@ -539,7 +498,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-push-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_push_buffer_pre::<true> as *const ()
                     } else {
                         do_push_buffer_pre::<false> as *const ()
@@ -550,7 +509,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-push-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_push_buffer_post::<true> as *const ()
                     } else {
                         do_push_buffer_post::<false> as *const ()
@@ -561,7 +520,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-push-list-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_push_list_pre::<true> as *const ()
                     } else {
                         do_push_list_pre::<false> as *const ()
@@ -572,7 +531,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-push-list-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_push_list_post::<true> as *const ()
                     } else {
                         do_push_list_post::<false> as *const ()
@@ -584,7 +543,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-pull-range-pre".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_pull_range_pre::<true> as *const ()
                     } else {
                         do_pull_range_pre::<false> as *const ()
@@ -595,7 +554,7 @@ impl MetricsTracerImp {
                 tracer_obj.to_glib_none().0,
                 c"pad-pull-range-post".as_ptr(),
                 std::mem::transmute::<*const (), Option<unsafe extern "C" fn()>>(
-                    if *IO_COUNTS_ENABLED {
+                    if crate::settings::current().io_counts {
                         do_pull_range_post::<true> as *const ()
                     } else {
                         do_pull_range_post::<false> as *const ()
@@ -833,7 +792,7 @@ impl MetricsTracerImp {
         } else {
             (Some(pad), peer)
         };
-        let io = (*IO_COUNTS_ENABLED)
+        let io = (crate::settings::current().io_counts)
             .then(|| IoMetrics {
                 incoming: sink.and_then(|pad| Self::io_counter(pad, true)),
                 outgoing: source.and_then(|pad| Self::io_counter(pad, false)),
@@ -907,7 +866,7 @@ impl MetricsTracerImp {
                     } else {
                         SYNC_BLOCKED_HISTOGRAM.with_label_values(&labels)
                     },
-                    pts_age_histogram: (!pull && *PTS_AGE_ENABLED)
+                    pts_age_histogram: (!pull && crate::settings::current().pts_age)
                         .then(|| BUFFER_PTS_AGE_HISTOGRAM.with_label_values(&labels)),
                     sink_element: element.downgrade(),
                 },
@@ -987,7 +946,7 @@ impl MetricsTracerImp {
         let _ = SYNC_WALL_HISTOGRAM.remove_label_values(labels);
         let _ = SYNC_CPU_HISTOGRAM.remove_label_values(labels);
         let _ = SYNC_BLOCKED_HISTOGRAM.remove_label_values(labels);
-        if *PTS_AGE_ENABLED {
+        if crate::settings::current().pts_age {
             let _ = BUFFER_PTS_AGE_HISTOGRAM.remove_label_values(labels);
         }
     }
@@ -1220,7 +1179,8 @@ impl MetricsTracerImp {
     }
 
     fn element_selected(element: &str) -> bool {
-        ELEMENT_INCLUDE_PATTERNS
+        crate::settings::current()
+            .include
             .iter()
             .any(|pattern| Self::glob_matches(pattern, element))
     }
@@ -1312,7 +1272,9 @@ impl MetricsTracerImp {
 
     fn start_queue_sampler() {
         crate::background::spawn(|| loop {
-            if crate::background::wait(Duration::from_millis(*QUEUE_SAMPLE_INTERVAL_MS)) {
+            if crate::background::wait(Duration::from_millis(
+                crate::settings::current().queue_interval_ms,
+            )) {
                 break;
             }
             // Property reads and GObject destruction can reenter tracing. Keep

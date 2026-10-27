@@ -1,9 +1,11 @@
 //! Shared metric collection for the standalone and combined Mars tracers.
 pub mod background;
+pub mod configuration;
 pub mod exemplars;
 mod metric_lifecycle;
 mod metricsimp;
 pub mod monitoring;
+pub mod settings;
 
 pub use metricsimp::{MetricsTracerImp, CAT};
 pub use prometheus::proto;
@@ -19,31 +21,6 @@ pub struct CaptureHooks {
     pub pull_begin: fn(u64, &gstreamer::Pad),
     pub pull_end:
         fn(u64, &gstreamer::Pad, i32, Option<&gstreamer::Buffer>) -> Option<exemplars::Exemplar>,
-}
-
-/// Validate the new namespace without changing permissive legacy defaults.
-pub fn validate_settings() -> Result<(), String> {
-    for (name, max) in [
-        ("MARS_METRIC_SAMPLE_RATE", 1_048_576),
-        ("MARS_METRIC_QUEUE_INTERVAL_MS", 60_000),
-    ] {
-        if let Ok(value) = std::env::var(name) {
-            if !value.parse::<u64>().is_ok_and(|n| n > 0 && n <= max) {
-                return Err(format!("{name} must be 1..={max}"));
-            }
-        }
-    }
-    for name in ["MARS_METRIC_IO_COUNTS", "MARS_METRIC_PTS_AGE"] {
-        if let Ok(value) = std::env::var(name) {
-            if !matches!(
-                value.to_ascii_lowercase().as_str(),
-                "true" | "false" | "1" | "0" | "yes" | "no"
-            ) {
-                return Err(format!("{name} must be true or false"));
-            }
-        }
-    }
-    Ok(())
 }
 
 static CAPTURE: std::sync::OnceLock<CaptureHooks> = std::sync::OnceLock::new();
@@ -81,11 +58,6 @@ pub fn set_capture_hooks(hooks: CaptureHooks) -> Result<(), &'static str> {
     CAPTURE
         .set(hooks)
         .map_err(|_| "metric capture hooks already configured")
-}
-
-/// Mars settings take precedence over their original environment aliases.
-pub(crate) fn setting(name: &str, legacy: &str) -> Result<String, std::env::VarError> {
-    std::env::var(name).or_else(|_| std::env::var(legacy))
 }
 
 /// Snapshot the same measurements for either export protocol.

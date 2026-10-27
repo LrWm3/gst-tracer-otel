@@ -51,7 +51,7 @@ pub(crate) struct Metrics {
 
 impl Metrics {
     pub fn new(settings: &Settings, resource: &Resource) -> Result<Self, String> {
-        core::validate_settings()?;
+        core::settings::configure(settings.collector.clone())?;
         let exporter = if settings.exporter == MetricExporter::Otlp {
             Some(crate::transport::HttpExporter::new("METRICS")?)
         } else {

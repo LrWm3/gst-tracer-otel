@@ -257,7 +257,7 @@ The SDK conversion remains a test oracle for decoded message equivalence.
 
 The worker reuses its encoding buffers and sends reference-counted `Bytes`
 bodies, without cloning the encoded payload. One request is in flight by default;
-`GST_OTEL_EXPORT_CONCURRENCY` permits up to four. Both blocking and worker-owned asynchronous reqwest adapters are available;
+`trace-export-concurrency` (fallback `GST_OTEL_EXPORT_CONCURRENCY`) permits up to four. Both blocking and worker-owned asynchronous reqwest adapters are available;
 neither depends on an application Tokio runtime. Logs use a separate bounded
 worker with the same HTTP transport. Producer handoffs remain individual records: a measured batching
 experiment increased streaming CPU and was removed.
@@ -283,6 +283,13 @@ is the inclusive push call, including synchronous downstream work; it is not
 exclusive element processing time or end-to-end buffer latency.
 
 ## Configuration
+
+Prefer [construction-time tracer properties](CONFIGURATION.md) for collection
+and export tuning. `trace-queue-capacity`, `trace-batch-size`,
+`trace-export-concurrency`, `trace-export-interval-ms`, and `flush-timeout-ms`
+override the corresponding environment settings below. Profiling settings also
+have properties; see the [profiles guide](PROFILES.md). Existing environment
+configuration remains supported.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

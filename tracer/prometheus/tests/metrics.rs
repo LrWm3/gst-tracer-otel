@@ -57,6 +57,20 @@ fn setup() -> u16 {
                 "false"
             },
         );
+        if case == "properties" {
+            for key in [
+                "MARS_METRICS_PORT",
+                "MARS_MONITORING",
+                "MARS_METRIC_SAMPLE_RATE",
+                "MARS_METRIC_INCLUDE",
+                "MARS_METRIC_QUEUE_INTERVAL_MS",
+                "MARS_METRIC_IO_COUNTS",
+                "MARS_METRIC_PTS_AGE",
+            ] {
+                env::set_var(key, "invalid-overridden-environment");
+            }
+            env::set_var("GST_TRACERS", format!("mars-metrics(metrics-port={port},monitoring=none,metrics-sample-rate=1,metrics-include=\"selected*\",metrics-queue-interval-ms=10,metrics-io-counts=true,metrics-pts-age=false)"));
+        }
         drop(listener);
         gst::init().unwrap();
         let factory = gst::TracerFactory::factories()
@@ -520,6 +534,7 @@ fn configuration_variants() {
         "monitoring-none",
         "monitoring-core",
         "monitoring-all",
+        "properties",
     ] {
         let mut child = std::process::Command::new(env::current_exe().unwrap())
             .args(["--exact", "configuration_child", "--nocapture"])
@@ -559,6 +574,27 @@ fn configuration_child() {
             text.contains("mars_instrument_work_duration_seconds"),
             level == "all"
         );
+        return;
+    }
+    if case == "properties" {
+        let graph = pipeline("configured", "fakesrc num-buffers=10 ! identity name=selected_work ! identity name=excluded_work ! fakesink");
+        run(&graph);
+        let text = metrics();
+        let selected = graph.by_name("selected_work").unwrap();
+        count(&text, &selected, 10);
+        assert_eq!(
+            pad_value(
+                &text,
+                "gst_element_sync_wall_seconds_count",
+                &selected,
+                "src"
+            ),
+            10.0
+        );
+        assert!(text.contains("gst_element_buffers_in_total"));
+        assert!(!text.contains("excluded_work"));
+        assert!(!text.contains("gst_buffer_pts_age_seconds"));
+        assert!(!text.contains("mars_instrument_"));
         return;
     }
     match case.as_str() {

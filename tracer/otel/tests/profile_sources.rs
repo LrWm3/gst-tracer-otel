@@ -11,7 +11,14 @@ use std::{process::Command, time::Duration};
 #[test]
 fn profile_properties_work_on_every_entry_point() {
     for entry in ["instrument", "otel", "profiles"] {
-        for mode in ["default", "property", "params", "invalid"] {
+        for mode in [
+            "default",
+            "property",
+            "params",
+            "invalid",
+            "settings",
+            "settings-params",
+        ] {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "sources_child", "--ignored", "--nocapture"])
                 .env_clear()
@@ -101,6 +108,53 @@ fn sources_child() {
             builder = builder.property("profile-sources", ProfileSources::Gpu);
         }
     }
+    if mode.starts_with("settings") {
+        for key in [
+            "MARS_PROFILE_URL",
+            "MARS_PROFILE_HZ",
+            "MARS_PROFILE_SYMBOLIZATION",
+            "MARS_PROFILE_ELEMENTS",
+            "MARS_PROFILE_TIMEOUT_MS",
+            "MARS_PROFILE_SIGNAL",
+        ] {
+            std::env::set_var(key, "invalid-overridden-environment");
+        }
+        // Use explicit built-in defaults too: they must override bad environment values.
+        builder = builder
+            .property(
+                "profile-url",
+                if mode == "settings-params" {
+                    "invalid-direct-property"
+                } else {
+                    &url
+                },
+            )
+            .property(
+                "profile-hz",
+                if mode == "settings-params" {
+                    1u32
+                } else {
+                    100u32
+                },
+            )
+            .property("profile-timeout-ms", 10000u32)
+            .property(
+                "profile-symbolization",
+                gstoteltracer::ProfileSymbolization::Functions,
+            )
+            .property(
+                "profile-elements",
+                if mode == "settings-params" {
+                    gstoteltracer::Toggle::On
+                } else {
+                    gstoteltracer::Toggle::Off
+                },
+            )
+            .property("profile-signal", (libc::SIGRTMIN() + 6) as u32);
+        if mode == "settings-params" {
+            builder = builder.property("params", format!("profile-url=\"{url}\",profile-hz=100,profile-timeout-ms=10000,profile-symbolization=functions,profile-elements=false,profile-signal={}", libc::SIGRTMIN() + 6));
+        }
+    }
     let tracer = builder.build();
     assert_eq!(
         tracer.property::<ProfileSources>("profile-sources"),
@@ -154,6 +208,9 @@ fn sources_child() {
     gstoteltracer::shutdown(Duration::from_secs(5)).unwrap();
     let cpu = gstoteltracer::profile_stats();
     assert!(cpu.accepted_samples > 0);
+    if mode.starts_with("settings") {
+        assert_eq!(cpu.element_samples + cpu.task_samples, 0);
+    }
     assert_eq!(
         cpu.active_threads + cpu.pending_samples + cpu.failed_samples,
         0

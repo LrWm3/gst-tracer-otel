@@ -122,7 +122,9 @@ impl Default for Config {
     }
 }
 impl Config {
-    pub fn from_env() -> Result<Self, String> {
+    pub fn from_settings(
+        overrides: &gst_mars_metrics_core::configuration::Overrides,
+    ) -> Result<Self, String> {
         fn number(
             name: &str,
             default: usize,
@@ -138,8 +140,7 @@ impl Config {
             }
             Ok(value)
         }
-        let mut c = Self::default();
-        c.ratio = match std::env::var("OTEL_TRACES_SAMPLER").as_deref() {
+        let ratio = match std::env::var("OTEL_TRACES_SAMPLER").as_deref() {
             Err(_) | Ok("parentbased_always_on") => 1.0,
             Ok("parentbased_always_off") => 0.0,
             Ok("parentbased_traceidratio") => {
@@ -158,29 +159,30 @@ impl Config {
                 ))
             }
         };
-        c.queue_capacity = number(
-            "GST_OTEL_QUEUE_CAPACITY",
-            c.queue_capacity,
-            1_048_576,
-            false,
-        )?;
-        c.batch_size = number(
-            "GST_OTEL_BATCH_SIZE",
-            c.batch_size.min(c.queue_capacity),
-            c.queue_capacity,
-            false,
-        )?;
-        c.concurrency = number("GST_OTEL_EXPORT_CONCURRENCY", 1, 4, false)?;
-        c.interval = Duration::from_millis(number(
-            "GST_OTEL_EXPORT_INTERVAL_MS",
-            200,
-            60_000,
-            false,
-        )? as u64);
-        c.flush_timeout =
-            Duration::from_millis(
-                number("GST_OTEL_FLUSH_TIMEOUT_MS", 10_000, 60_000, false)? as u64
-            );
+        let mut c = Self {
+            ratio,
+            ..Self::default()
+        };
+        let env = |key: &str| std::env::var(key).ok();
+        let read = |name| -> Result<usize, String> {
+            Ok(overrides
+                .read_named(&crate::properties::EXPORT, name, &env)?
+                .unwrap()
+                .parse()
+                .unwrap())
+        };
+        c.queue_capacity = read("trace-queue-capacity")?;
+        c.batch_size =
+            if !overrides.contains("trace-batch-size") && env("GST_OTEL_BATCH_SIZE").is_none() {
+                c.batch_size.min(c.queue_capacity)
+            } else {
+                read("trace-batch-size")?
+            };
+        if c.batch_size > c.queue_capacity {
+            return Err("trace-batch-size must not exceed trace-queue-capacity".into());
+        }
+        c.concurrency = read("trace-export-concurrency")?;
+        c.interval = Duration::from_millis(read("trace-export-interval-ms")? as u64);
         c.attribute_limit = number("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", 128, 4096, true)?;
         c.value_length_limit = number(
             "OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT",
