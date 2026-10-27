@@ -454,3 +454,47 @@ passed. The suite has 17 unit tests, 16 integration tests and six isolated
 configuration runs. Added coverage checks unsampled descendants, failed child
 clocks, CPU/blocked sample counts in deep and filtered push chains, and pull
 sample counts through ghost pads with successful, EOS and error returns.
+
+## Targeted graph invalidation — 2026-10-27
+
+The shared collector used by `mars-metrics` and explicit `mars-instrument`
+metrics now invalidates snapshots through weak object dependencies. Creating,
+linking and unlinking an unrelated pipeline no longer rebuilds a stable graph's
+pad labels. Pad destruction also invalidates snapshots retained in thread-local
+caches; in-flight calls keep their captured data.
+
+The release microbenchmark warms 16, 96 or 256 stable pads, then performs 100
+unrelated graph creation/link/unlink rounds, with 100 passes over the stable pads
+between changes. Timings include that graph work, normalized by the number of
+stable cache lookups. Before/after executables ran in ABBA order on CPU 4;
+medians below exclude each executable's first internal round (ten measured
+observations per cell).
+
+| Stable pads | Churn workload, ns per lookup before → after | Rebuilds per 100 changes before → after |
+| --- | ---: | ---: |
+| 16 | 108.76 → 34.10 | 1,600 → 0 |
+| 96 | 96.43 → 28.03 | 9,600 → 0 |
+| 256 | 104.21 → 30.01 | 25,600 → 0 |
+
+This reduces the measured churn workload by **69–71%**, not whole-pipeline
+execution time. With no churn, the 256-pad case increased from **26.74 to
+27.70 ns** per lookup, about **0.96 ns / 3.6%**. Smaller stable cases varied
+with pad-address collisions in the direct-mapped TLS cache; their apparent gains
+are not evidence of an improved stable fast path. Cold dependency registration
+adds allocations and linear watcher-list scans, which this warm benchmark does
+not quantify.
+
+Baseline: `d49ee02`, with the same benchmark, a test-only rebuild counter and an
+`invalidate_object` shim delegating to the old global invalidation. Build the
+ignored `metricsimp::tests::unrelated_graph_churn_cache_benchmark` test with
+`cargo test --release -p gst-mars-metrics-core --lib --no-run`, then invoke its
+executable using `taskset -c 4`, `--exact --ignored --nocapture --test-threads=1`.
+The before/after executable SHA-256 values are
+`c5f785dc85792a907b6ea503e21982395a21f42091284006ad840eecc3ad366e` and
+`cea2a2c27c3dbe552cda16f1b62e6566272c877951282069caec2e493c22cde4`.
+See the [raw observations](../otel/processing/2026-10-27/cache-churn.csv).
+
+Focused validation passed 29 core unit tests and 16 standalone integration
+tests, including reparenting, pipeline renaming, proxy targets, relinks, queue
+retirement, retained snapshots and changes during cache construction. Explicit
+global invalidation remains as a compatibility fallback.

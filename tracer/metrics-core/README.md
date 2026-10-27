@@ -9,6 +9,15 @@ queue sampling, cache invalidation and weak-owner retirement rules. The standalo
 wrapper retains its text endpoint and action signal. The combined wrapper takes
 snapshots for OTLP or OpenMetrics encoding on its export worker.
 
+Metric snapshots subscribe weakly to their pads, peers, proxy targets and
+ancestor objects through `cache_invalidation.rs`. Ordinary topology hooks
+invalidate those dependencies; unrelated pipelines keep their warmed caches.
+Cache hits check an atomic validity flag, and destroyed objects invalidate any
+snapshots retained by thread-local caches. Rebuilds check a construction revision
+to detect graph changes during dependency registration. Explicit global
+invalidation remains available as a compatibility fallback. These subscriptions
+retain no GStreamer objects and do not add per-buffer signal handlers.
+
 Optional callbacks surround ordinary push measurement in a defined order: trace
 capture starts before timing and finishes after timing. Only a locally admitted
 span supplies exemplar IDs. No callbacks run while a metric TLS borrow is held.

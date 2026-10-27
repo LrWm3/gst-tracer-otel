@@ -24,7 +24,10 @@ use prometheus::{
 };
 use tiny_http::{Header, Response, Server};
 
-use crate::metric_lifecycle;
+use crate::{
+    cache_invalidation::{self, Validity},
+    metric_lifecycle,
+};
 
 // Legacy names remain for dashboard compatibility. Values are exclusive
 // synchronous gst_pad_push wall time in nanoseconds.
@@ -283,6 +286,7 @@ struct QueueRegistration {
 struct QueueMetrics {
     labels: (String, String),
     generation: u64,
+    validity: Arc<Validity>,
     level_buffers: IntGauge,
     level_bytes: IntGauge,
     level_time: Gauge,
@@ -302,9 +306,21 @@ pub static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-// Changes to links, parenting or activation invalidate labels. Streaming only
-// reads this atomic; graph traversal and metric lookup happen on cache misses.
+// Explicit compatibility fallback. Ordinary graph hooks invalidate only the
+// cached snapshots that depend on the affected objects.
 static TOPOLOGY_GENERATION: AtomicU64 = AtomicU64::new(1);
+// A construction-only check catches concurrent changes before all dependencies
+// have been registered. Unrelated changes do not invalidate warmed snapshots.
+static TOPOLOGY_REVISION: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+type CacheBuildHook = Box<dyn FnOnce(&PadCacheData)>;
+
+#[cfg(test)]
+thread_local! {
+    static CACHE_REBUILDS: Cell<usize> = const { Cell::new(0) };
+    static CACHE_BUILD_HOOK: RefCell<Option<CacheBuildHook>> = const { RefCell::new(None) };
+}
 
 /// Data structure to hold cached pad information used for latency measurement.
 #[derive(Clone)]
@@ -312,6 +328,7 @@ struct PadCacheData {
     /// Pointer to the peer pad, used during unlink to verify the pad pair.
     peer: usize,
     generation: u64,
+    validity: Arc<Validity>,
 
     metrics: Option<PadMetrics>,
     io: Option<Box<IoMetrics>>,
@@ -458,11 +475,12 @@ impl MetricsTracerImp {
             _tracer: *mut gst::Tracer,
             _ts: u64,
             src_pad: *mut gst::ffi::GstPad,
-            _sink_pad: *mut gst::ffi::GstPad,
+            sink_pad: *mut gst::ffi::GstPad,
             res: gst::ffi::GstPadLinkReturn,
         ) {
             if res == ffi::GST_PAD_LINK_OK {
-                MetricsTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_object(&*gst::Pad::from_glib_borrow(src_pad));
+                MetricsTracerImp::invalidate_object(&*gst::Pad::from_glib_borrow(sink_pad));
                 // Defer label creation until data flows, after graph assembly.
                 glib::gobject_ffi::g_object_set_qdata_full(
                     src_pad.cast(),
@@ -481,7 +499,8 @@ impl MetricsTracerImp {
             res: gboolean,
         ) {
             if res == GTRUE {
-                MetricsTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_object(&*gst::Pad::from_glib_borrow(src_pad));
+                MetricsTracerImp::invalidate_object(&*gst::Pad::from_glib_borrow(sink_pad));
                 if let Some(cache) = MetricsTracerImp::pad_cache(src_pad) {
                     if cache.peer == sink_pad as usize {
                         // A concurrent relink may already have installed a new
@@ -588,7 +607,7 @@ impl MetricsTracerImp {
             // Watching every element disables GLib's no-handler signal fast
             // path (notably identity's per-buffer handoff). Only root pipeline
             // names can change while parented elements are streaming.
-            element.connect_notify(Some("name"), |_, _| Self::invalidate_topology());
+            element.connect_notify(Some("name"), |element, _| Self::invalidate_object(element));
         }
         if element.is::<gst::Pipeline>() && port > 0 {
             METRICS_SERVER_ONCE.get_or_init(|| Self::maybe_start_metrics_server(port));
@@ -613,7 +632,7 @@ impl MetricsTracerImp {
     }
 
     /// Resolve proxy pads using owned wrappers; each temporary reference drops.
-    fn resolve_pad(pad: *mut ffi::GstPad) -> Option<gst::Pad> {
+    fn resolve_pad(pad: *mut ffi::GstPad, validity: Option<&Arc<Validity>>) -> Option<gst::Pad> {
         // from_glib_none sinks floating GObjects. Dynamic RTSP pads can still
         // be floating here: consuming that reference would free the caller's
         // pad when our wrapper drops. Borrow, then clone with g_object_ref.
@@ -621,6 +640,9 @@ impl MetricsTracerImp {
         let mut pad = (*borrowed).clone();
         // A malformed or changing topology must not recurse indefinitely.
         for _ in 0..64 {
+            if let Some(validity) = validity {
+                cache_invalidation::watch_path(pad.upcast_ref(), validity);
+            }
             if let Some(ghost) = pad.downcast_ref::<gst::GhostPad>() {
                 pad = ghost.target()?;
             } else if pad.is::<gst::ProxyPad>() {
@@ -634,7 +656,9 @@ impl MetricsTracerImp {
 
     /// Release qdata's ownership. In-flight spans retain their own reference.
     unsafe extern "C" fn drop_pad_cache(ptr: *mut c_void) {
-        drop(Arc::from_raw(ptr.cast::<PadCacheData>()));
+        let cache = Arc::from_raw(ptr.cast::<PadCacheData>());
+        cache.validity.invalidate();
+        drop(cache);
     }
 
     /// GLib holds the qdata lock while duplicating, so unlink cannot free the
@@ -657,6 +681,12 @@ impl MetricsTracerImp {
 
     pub fn invalidate_topology() {
         TOPOLOGY_GENERATION.fetch_add(1, Ordering::Release);
+        TOPOLOGY_REVISION.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn invalidate_object(object: &impl IsA<gst::Object>) {
+        TOPOLOGY_REVISION.fetch_add(1, Ordering::Release);
+        cache_invalidation::invalidate(object.as_ref());
     }
 
     /// Atomically replace qdata while retaining in-flight snapshots. On success
@@ -704,7 +734,9 @@ impl MetricsTracerImp {
             let slot = &slots[index];
             slot.cache
                 .as_ref()
-                .filter(|cache| slot.pad == key && cache.generation == generation)
+                .filter(|cache| {
+                    slot.pad == key && cache.generation == generation && cache.validity.is_valid()
+                })
                 .cloned()
         };
         if let Some(cache) = cached {
@@ -730,7 +762,7 @@ impl MetricsTracerImp {
             .cache_pool
             .borrow()
             .get(&key)
-            .filter(|cache| cache.generation == generation)
+            .filter(|cache| cache.generation == generation && cache.validity.is_valid())
             .cloned();
         if let Some(cache) = cached {
             return cache;
@@ -749,15 +781,26 @@ impl MetricsTracerImp {
     unsafe fn refresh_pad_cache(pad: *mut ffi::GstPad) -> Arc<PadCacheData> {
         loop {
             let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
+            let revision = TOPOLOGY_REVISION.load(Ordering::Acquire);
             let previous = Self::pad_cache(pad);
             if let Some(cache) = &previous {
-                if cache.generation == generation {
+                if cache.generation == generation && cache.validity.is_valid() {
                     return previous.unwrap();
                 }
             }
             let borrowed = gst::Pad::from_glib_borrow(pad);
+            let validity = Arc::new(Validity::default());
+            cache_invalidation::watch_path(borrowed.upcast_ref(), &validity);
             let peer = borrowed.peer();
-            let cache = Self::create_pad_cache(&borrowed, peer.as_ref(), generation);
+            let cache = Self::create_pad_cache(&borrowed, peer.as_ref(), generation, validity);
+            #[cfg(test)]
+            if let Some(hook) = CACHE_BUILD_HOOK.with(|hook| hook.borrow_mut().take()) {
+                hook(&cache);
+            }
+            if TOPOLOGY_REVISION.load(Ordering::Acquire) != revision || !cache.validity.is_valid() {
+                cache.validity.invalidate();
+                continue;
+            }
             if Self::replace_pad_cache(pad, previous.as_ref(), Some(&cache)) {
                 return cache;
             }
@@ -777,14 +820,27 @@ impl MetricsTracerImp {
         }
         let pad = unsafe { gst::Pad::from_glib_borrow(pad) };
         let peer = unsafe { gst::Pad::from_glib_borrow(peer) };
-        Some(Self::create_pad_cache(&pad, Some(&peer), generation))
+        let validity = Arc::new(Validity::default());
+        cache_invalidation::watch_path(pad.upcast_ref(), &validity);
+        Some(Self::create_pad_cache(
+            &pad,
+            Some(&peer),
+            generation,
+            validity,
+        ))
     }
 
     fn create_pad_cache(
         pad: &gst::Pad,
         peer: Option<&gst::Pad>,
         generation: u64,
+        validity: Arc<Validity>,
     ) -> Arc<PadCacheData> {
+        #[cfg(test)]
+        CACHE_REBUILDS.with(|count| count.set(count.get() + 1));
+        if let Some(peer) = peer {
+            cache_invalidation::watch_path(peer.upcast_ref(), &validity);
+        }
         // Pull hooks arrive on sink pads; push hooks arrive on source pads.
         let pull = pad.direction() == gst::PadDirection::Sink;
         let (source, sink) = if pull {
@@ -805,7 +861,7 @@ impl MetricsTracerImp {
             if peer.is::<gst::ProxyPad>() {
                 return None;
             }
-            let caller = Self::resolve_pad(pad.as_ptr())?;
+            let caller = Self::resolve_pad(pad.as_ptr(), Some(&validity))?;
             let element = peer.parent_element()?;
             if !Self::element_selected(element.name().as_str()) {
                 return None;
@@ -875,6 +931,7 @@ impl MetricsTracerImp {
         Arc::new(PadCacheData {
             peer: peer.map_or(0, |peer| peer.as_ptr() as usize),
             generation,
+            validity,
             metrics,
             io,
         })
@@ -1238,7 +1295,7 @@ impl MetricsTracerImp {
     }
 
     fn register_queue(element: &gst::Element) {
-        element.connect_notify(Some("name"), |_, _| Self::invalidate_topology());
+        element.connect_notify(Some("name"), |element, _| Self::invalidate_object(element));
         // queue2 exposes levels but has neither of queue's pressure signals.
         // Keep streaming-thread callbacks allocation-free; export on sampler.
         let overruns = Arc::new(AtomicU64::new(0));
@@ -1268,6 +1325,38 @@ impl MetricsTracerImp {
             element.name().to_string(),
             element.path_string().to_string(),
         )
+    }
+
+    fn queue_metrics(element: &gst::Element) -> QueueMetrics {
+        loop {
+            let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
+            let revision = TOPOLOGY_REVISION.load(Ordering::Acquire);
+            let validity = Arc::new(Validity::default());
+            cache_invalidation::watch_path(element.upcast_ref(), &validity);
+            let current_labels = Self::queue_labels(element);
+            let labels = [current_labels.0.as_str(), current_labels.1.as_str()];
+            let metrics = metric_lifecycle::with_series(
+                "queue",
+                &labels,
+                &[element.upcast_ref()],
+                Self::remove_queue_series,
+                || QueueMetrics {
+                    labels: current_labels.clone(),
+                    generation,
+                    validity,
+                    level_buffers: QUEUE_LEVEL_BUFFERS.with_label_values(&labels),
+                    level_bytes: QUEUE_LEVEL_BYTES.with_label_values(&labels),
+                    level_time: QUEUE_LEVEL_TIME.with_label_values(&labels),
+                    overruns: QUEUE_OVERRUNS.with_label_values(&labels),
+                    underruns: QUEUE_UNDERRUNS.with_label_values(&labels),
+                },
+            );
+            if TOPOLOGY_REVISION.load(Ordering::Acquire) == revision && metrics.validity.is_valid()
+            {
+                return metrics;
+            }
+            metrics.validity.invalidate();
+        }
     }
 
     fn start_queue_sampler() {
@@ -1303,28 +1392,15 @@ impl MetricsTracerImp {
                 let current_labels = Self::queue_labels(&element);
                 let generation = TOPOLOGY_GENERATION.load(Ordering::Acquire);
                 if registration.metrics.as_ref().is_some_and(|metrics| {
-                    metrics.labels != current_labels || metrics.generation != generation
+                    metrics.labels != current_labels
+                        || metrics.generation != generation
+                        || !metrics.validity.is_valid()
                 }) {
                     registration.metrics = None;
                 }
-                let metrics = registration.metrics.get_or_insert_with(|| {
-                    let labels = [current_labels.0.as_str(), current_labels.1.as_str()];
-                    metric_lifecycle::with_series(
-                        "queue",
-                        &labels,
-                        &[element.upcast_ref()],
-                        Self::remove_queue_series,
-                        || QueueMetrics {
-                            labels: current_labels.clone(),
-                            generation,
-                            level_buffers: QUEUE_LEVEL_BUFFERS.with_label_values(&labels),
-                            level_bytes: QUEUE_LEVEL_BYTES.with_label_values(&labels),
-                            level_time: QUEUE_LEVEL_TIME.with_label_values(&labels),
-                            overruns: QUEUE_OVERRUNS.with_label_values(&labels),
-                            underruns: QUEUE_UNDERRUNS.with_label_values(&labels),
-                        },
-                    )
-                });
+                let metrics = registration
+                    .metrics
+                    .get_or_insert_with(|| Self::queue_metrics(&element));
 
                 let buffers = element
                     .property_value("current-level-buffers")
@@ -1401,16 +1477,293 @@ mod tests {
     use gstreamer as gst;
     use std::sync::Arc;
 
-    // These two cache tests explicitly change the process-wide generation.
+    // Serialize cache identity assertions with the global fallback tests.
     static TOPOLOGY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn empty_cache(generation: u64) -> Arc<super::PadCacheData> {
         Arc::new(super::PadCacheData {
             peer: 0,
             generation,
+            validity: Arc::default(),
             metrics: None,
             io: None,
         })
+    }
+
+    #[test]
+    #[ignore = "manual release benchmark; reports timings without timing assertions"]
+    fn unrelated_graph_churn_cache_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        println!("pads,churn,round,ns_per_lookup,rebuilds");
+        for size in [16, 96, 256] {
+            let graph = gst::Pipeline::with_name("stable_cache_benchmark");
+            let elements: Vec<_> = (0..=size)
+                .map(|i| {
+                    gst::ElementFactory::make("identity")
+                        .name(format!("stage_{i}"))
+                        .build()
+                        .unwrap()
+                })
+                .collect();
+            graph.add_many(&elements).unwrap();
+            gst::Element::link_many(&elements).unwrap();
+            let pads: Vec<_> = elements[..size]
+                .iter()
+                .map(|element| element.static_pad("src").unwrap())
+                .collect();
+            for round in 0..6 {
+                for churn in if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    super::THREAD_STATE.with(|state| unsafe {
+                        for pad in &pads {
+                            black_box(MetricsTracerImp::current_pad_cache(state, pad.as_ptr()));
+                        }
+                        super::CACHE_REBUILDS.with(|count| count.set(0));
+                        let started = Instant::now();
+                        for change in 0..100 {
+                            if churn {
+                                let unrelated =
+                                    gst::Pipeline::with_name(&format!("churn_{change}"));
+                                let first = gst::ElementFactory::make("identity").build().unwrap();
+                                let second = gst::ElementFactory::make("identity").build().unwrap();
+                                unrelated.add_many([&first, &second]).unwrap();
+                                first.link(&second).unwrap();
+                                // Exercise the invalidation entry point used by
+                                // graph hooks without installing a process-global tracer.
+                                MetricsTracerImp::invalidate_object(&unrelated);
+                                first.unlink(&second);
+                                MetricsTracerImp::invalidate_object(&unrelated);
+                            }
+                            for _ in 0..100 {
+                                for pad in &pads {
+                                    black_box(MetricsTracerImp::current_pad_cache(
+                                        state,
+                                        pad.as_ptr(),
+                                    ));
+                                }
+                            }
+                        }
+                        println!(
+                            "{size},{churn},{round},{:.2},{}",
+                            started.elapsed().as_nanos() as f64 / (size * 10_000) as f64,
+                            super::CACHE_REBUILDS.with(|count| count.get()),
+                        );
+                    });
+                }
+            }
+        }
+    }
+
+    fn linked_graph(name: &str) -> (gst::Pipeline, gst::Pad) {
+        let graph = gst::Pipeline::with_name(name);
+        let source = gst::ElementFactory::make("identity")
+            .name("source")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("identity")
+            .name("sink")
+            .build()
+            .unwrap();
+        graph.add_many([&source, &sink]).unwrap();
+        source.link(&sink).unwrap();
+        (graph, source.static_pad("src").unwrap())
+    }
+
+    fn cached_path(cache: &super::PadCacheData) -> String {
+        use prometheus::core::Collector;
+        cache.metrics.as_ref().unwrap().count_counter.collect()[0].get_metric()[0]
+            .get_label()
+            .iter()
+            .find(|label| label.name() == "path")
+            .unwrap()
+            .value()
+            .to_owned()
+    }
+
+    #[test]
+    fn unrelated_graph_changes_preserve_warm_snapshots_and_targeted_changes_rebuild() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let (first_graph, first_pad) = linked_graph("cache_first_graph");
+        let (second_graph, second_pad) = linked_graph("cache_second_graph");
+        super::THREAD_STATE.with(|state| unsafe {
+            let first = MetricsTracerImp::current_pad_cache(state, first_pad.as_ptr());
+            let second = MetricsTracerImp::current_pad_cache(state, second_pad.as_ptr());
+            super::CACHE_REBUILDS.with(|count| count.set(0));
+            for _ in 0..100 {
+                let unrelated = gst::Bin::new();
+                MetricsTracerImp::invalidate_object(&unrelated);
+                assert!(std::rc::Rc::ptr_eq(
+                    &first,
+                    &MetricsTracerImp::current_pad_cache(state, first_pad.as_ptr())
+                ));
+                assert!(std::rc::Rc::ptr_eq(
+                    &second,
+                    &MetricsTracerImp::current_pad_cache(state, second_pad.as_ptr())
+                ));
+            }
+            assert_eq!(super::CACHE_REBUILDS.with(|count| count.get()), 0);
+            MetricsTracerImp::invalidate_object(&first_graph);
+            assert!(!first.validity.is_valid());
+            assert!(second.validity.is_valid());
+            let refreshed = MetricsTracerImp::current_pad_cache(state, first_pad.as_ptr());
+            assert!(!std::rc::Rc::ptr_eq(&first, &refreshed));
+            assert!(std::rc::Rc::ptr_eq(
+                &second,
+                &MetricsTracerImp::current_pad_cache(state, second_pad.as_ptr())
+            ));
+            assert_eq!(super::CACHE_REBUILDS.with(|count| count.get()), 1);
+            // A peer belongs to the snapshot even when only the source has qdata.
+            MetricsTracerImp::invalidate_object(&first_pad.peer().unwrap());
+            assert!(!refreshed.validity.is_valid());
+            MetricsTracerImp::invalidate_object(&second_graph);
+            assert!(!second.validity.is_valid());
+        });
+    }
+
+    #[test]
+    fn construction_revision_retries_changes_outside_registered_dependencies() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let (_graph, pad) = linked_graph("cache_construction_revision");
+        let unrelated = gst::Bin::new();
+        let discarded = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let captured = discarded.clone();
+        super::CACHE_BUILD_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |candidate| {
+                assert!(candidate.validity.is_valid());
+                // Reproduce a topology notification before its object became
+                // a watched dependency: no validity flag can observe it yet.
+                MetricsTracerImp::invalidate_object(&unrelated);
+                assert!(candidate.validity.is_valid());
+                *captured.borrow_mut() = Some(candidate.validity.clone());
+            }));
+        });
+        super::CACHE_REBUILDS.with(|count| count.set(0));
+        super::THREAD_STATE.with(|state| unsafe {
+            let current = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            assert!(current.validity.is_valid());
+        });
+        assert_eq!(super::CACHE_REBUILDS.with(|count| count.get()), 2);
+        // Retained discarded candidates must not accumulate live watchers.
+        assert!(!discarded.borrow().as_ref().unwrap().is_valid());
+    }
+
+    #[test]
+    fn finalized_pad_invalidates_retained_tls_snapshot_before_address_reuse() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        let weak = pad.downgrade();
+        super::THREAD_STATE.with(|state| unsafe {
+            let retained = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            drop(pad);
+            assert!(weak.upgrade().is_none());
+            assert!(!retained.validity.is_valid());
+            let replacement = gst::Pad::builder(gst::PadDirection::Src).build();
+            // Force the stale TLS identity an allocator reusing the address
+            // would produce, without depending on its allocation strategy.
+            let key = replacement.as_ptr() as usize;
+            let index = ((key >> 4) ^ (key >> 12)) & 63;
+            state.snapshots.borrow_mut()[index] = super::PadSnapshot {
+                pad: key,
+                cache: Some(retained.clone()),
+            };
+            state.cache_pool.borrow_mut().insert(key, retained.clone());
+            let current = MetricsTracerImp::current_pad_cache(state, replacement.as_ptr());
+            assert!(!std::rc::Rc::ptr_eq(&retained, &current));
+            assert!(current.validity.is_valid());
+        });
+    }
+
+    #[test]
+    fn ancestor_rename_and_reparent_refresh_labels_and_retire_old_series() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let graph = gst::Pipeline::with_name("cache_old_ancestor");
+        MetricsTracerImp.element_new(0, graph.upcast_ref(), 0);
+        let bin = gst::Bin::with_name("inner");
+        let source = gst::ElementFactory::make("identity")
+            .name("source")
+            .build()
+            .unwrap();
+        let sink = gst::ElementFactory::make("identity")
+            .name("sink")
+            .build()
+            .unwrap();
+        bin.add_many([&source, &sink]).unwrap();
+        source.link(&sink).unwrap();
+        graph.add(&bin).unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let next_graph = gst::Pipeline::with_name("cache_new_parent");
+        super::THREAD_STATE.with(|state| unsafe {
+            let original = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            original.metrics.as_ref().unwrap().count_counter.inc();
+            assert!(cached_path(&original).contains("cache_old_ancestor"));
+            graph.set_property("name", "cache_renamed_ancestor");
+            assert!(!original.validity.is_valid());
+            let renamed = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            assert!(cached_path(&renamed).contains("cache_renamed_ancestor"));
+            graph.remove(&bin).unwrap();
+            // These are the same object targets used by bin-remove/add hooks.
+            MetricsTracerImp::invalidate_object(&graph);
+            bin.set_property("name", "renamed_inner");
+            next_graph.add(&bin).unwrap();
+            MetricsTracerImp::invalidate_object(&bin);
+            let moved = MetricsTracerImp::current_pad_cache(state, pad.as_ptr());
+            assert!(!renamed.validity.is_valid());
+            assert!(cached_path(&moved).contains("cache_new_parent"));
+            assert!(cached_path(&moved).contains("renamed_inner"));
+            moved.metrics.as_ref().unwrap().count_counter.inc();
+            // An in-flight call may finish against its old immutable handles.
+            original.metrics.as_ref().unwrap().count_counter.inc();
+            assert_eq!(original.metrics.as_ref().unwrap().count_counter.get(), 2);
+            let exported = MetricsTracerImp::request_metrics();
+            assert!(!exported.contains("cache_old_ancestor"));
+            assert!(!exported.contains("cache_renamed_ancestor"));
+            assert!(exported.contains("cache_new_parent"));
+        });
+    }
+
+    #[test]
+    fn ghost_retarget_replaces_target_dependencies() {
+        let _guard = TOPOLOGY_TEST_LOCK.lock().unwrap();
+        gst::init().unwrap();
+        let graph = gst::Pipeline::with_name("cache_ghost_retarget");
+        let bin = gst::Bin::with_name("inner");
+        let first = gst::ElementFactory::make("identity").build().unwrap();
+        let second = gst::ElementFactory::make("identity").build().unwrap();
+        let sink = gst::ElementFactory::make("identity").build().unwrap();
+        bin.add_many([&first, &second]).unwrap();
+        graph.add_many([bin.upcast_ref(), &sink]).unwrap();
+        let first_pad = first.static_pad("src").unwrap();
+        let second_pad = second.static_pad("src").unwrap();
+        let ghost = gst::GhostPad::builder_with_target(&first_pad)
+            .unwrap()
+            .name("out")
+            .build();
+        bin.add_pad(&ghost).unwrap();
+        bin.link(&sink).unwrap();
+        super::THREAD_STATE.with(|state| unsafe {
+            let first =
+                MetricsTracerImp::current_pad_cache(state, ghost.upcast_ref::<gst::Pad>().as_ptr());
+            assert!(first.metrics.is_some());
+            ghost.set_target(Some(&second_pad)).unwrap();
+            MetricsTracerImp::invalidate_object(&first_pad);
+            assert!(!first.validity.is_valid());
+            let second =
+                MetricsTracerImp::current_pad_cache(state, ghost.upcast_ref::<gst::Pad>().as_ptr());
+            assert!(second.validity.is_valid());
+            MetricsTracerImp::invalidate_object(&first_pad);
+            assert!(second.validity.is_valid());
+            MetricsTracerImp::invalidate_object(&second_pad);
+            assert!(!second.validity.is_valid());
+        });
     }
 
     #[test]
@@ -1567,7 +1920,7 @@ mod tests {
         let refs = pad.ref_count();
         let floating = || unsafe { glib::gobject_ffi::g_object_is_floating(pad.as_ptr().cast()) };
         assert_eq!(floating(), glib::ffi::GTRUE);
-        assert!(MetricsTracerImp::resolve_pad(pad.to_glib_none().0)
+        assert!(MetricsTracerImp::resolve_pad(pad.to_glib_none().0, None)
             .unwrap()
             .parent_element()
             .is_none());

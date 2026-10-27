@@ -163,35 +163,37 @@ mod imp {
     impl GstObjectImpl for MetricsTracer {}
 
     impl TracerImpl for MetricsTracer {
-        fn element_add_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
-            MetricsTracerImp::invalidate_topology();
+        fn element_add_pad(&self, _ts: u64, element: &gst::Element, pad: &gst::Pad) {
+            MetricsTracerImp::invalidate_object(element);
+            MetricsTracerImp::invalidate_object(pad);
         }
 
-        fn element_remove_pad(&self, _ts: u64, _element: &gst::Element, _pad: &gst::Pad) {
-            MetricsTracerImp::invalidate_topology();
+        fn element_remove_pad(&self, _ts: u64, element: &gst::Element, pad: &gst::Pad) {
+            MetricsTracerImp::invalidate_object(element);
+            MetricsTracerImp::invalidate_object(pad);
         }
 
-        fn bin_add_post(&self, _ts: u64, _bin: &gst::Bin, _element: &gst::Element, success: bool) {
+        fn bin_add_post(&self, _ts: u64, _bin: &gst::Bin, element: &gst::Element, success: bool) {
             if success {
-                MetricsTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_object(element);
             }
         }
 
-        fn bin_remove_post(&self, _ts: u64, _bin: &gst::Bin, success: bool) {
+        fn bin_remove_post(&self, _ts: u64, bin: &gst::Bin, success: bool) {
             if success {
-                MetricsTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_object(bin);
             }
         }
 
         fn element_change_state_pre(
             &self,
             _ts: u64,
-            _element: &gst::Element,
+            element: &gst::Element,
             change: gst::StateChange,
         ) {
             if change == gst::StateChange::ReadyToPaused {
                 // Also pick up names changed while the pipeline was stopped.
-                MetricsTracerImp::invalidate_topology();
+                MetricsTracerImp::invalidate_object(element);
             }
         }
 

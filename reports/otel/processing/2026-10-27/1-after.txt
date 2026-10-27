@@ -1,0 +1,43 @@
+
+running 1 test
+test metricsimp::tests::unrelated_graph_churn_cache_benchmark ... pads,churn,round,ns_per_lookup,rebuilds
+16,false,0,4.00,0
+16,true,0,34.84,0
+16,true,1,34.31,0
+16,false,1,3.96,0
+16,false,2,3.84,0
+16,true,2,34.15,0
+16,true,3,34.37,0
+16,false,3,3.76,0
+16,false,4,3.76,0
+16,true,4,33.42,0
+16,true,5,33.73,0
+16,false,5,3.73,0
+96,false,0,22.90,0
+96,true,0,27.88,0
+96,true,1,28.04,0
+96,false,1,22.56,0
+96,false,2,22.85,0
+96,true,2,29.37,0
+96,true,3,28.99,0
+96,false,3,22.49,0
+96,false,4,21.76,0
+96,true,4,27.80,0
+96,true,5,27.80,0
+96,false,5,22.55,0
+256,false,0,27.63,0
+256,true,0,29.64,0
+256,true,1,30.04,0
+256,false,1,28.34,0
+256,false,2,27.63,0
+256,true,2,31.26,0
+256,true,3,29.66,0
+256,false,3,27.52,0
+256,false,4,29.23,0
+256,true,4,29.97,0
+256,true,5,29.38,0
+256,false,5,27.26,0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 1.29s
+

@@ -1,5 +1,6 @@
 //! Shared metric collection for the standalone and combined Mars tracers.
 pub mod background;
+mod cache_invalidation;
 pub mod configuration;
 pub mod exemplars;
 mod metric_lifecycle;

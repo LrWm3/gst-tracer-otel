@@ -260,9 +260,9 @@ fn capture_pull_end(
 
 static REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn invalidate_metrics() {
+fn invalidate_metrics(object: &impl IsA<gst::Object>) {
     if runtime().is_ok_and(|r| r.shared_metrics.is_some()) {
-        gst_mars_metrics_core::MetricsTracerImp::invalidate_topology();
+        gst_mars_metrics_core::MetricsTracerImp::invalidate_object(object);
     }
 }
 
@@ -475,7 +475,7 @@ macro_rules! tracer_impl {
                     #[cfg(all(feature = "profiles", target_os = "linux"))]
                     crate::nvtxcontext::state_pre(element, change);
                     if change == gst::StateChange::ReadyToPaused {
-                        invalidate_metrics();
+                        invalidate_metrics(element);
                     }
                 }
                 fn pad_push_post(
@@ -499,31 +499,35 @@ macro_rules! tracer_impl {
                     sink: &gst::Pad,
                     _: Result<gst::PadLinkSuccess, gst::PadLinkError>,
                 ) {
-                    invalidate_metrics();
+                    invalidate_metrics(src);
+                    invalidate_metrics(sink);
                     metadata::invalidate(src);
                     metadata::invalidate(sink);
                 }
                 fn pad_unlink_post(&self, _: u64, src: &gst::Pad, sink: &gst::Pad, _: bool) {
-                    invalidate_metrics();
+                    invalidate_metrics(src);
+                    invalidate_metrics(sink);
                     metadata::invalidate(src);
                     metadata::invalidate(sink);
                 }
                 fn element_add_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
-                    invalidate_metrics();
+                    invalidate_metrics(element);
+                    invalidate_metrics(pad);
                     metadata::invalidate(element);
                     metadata::invalidate(pad);
                 }
                 fn element_remove_pad(&self, _: u64, element: &gst::Element, pad: &gst::Pad) {
-                    invalidate_metrics();
+                    invalidate_metrics(element);
+                    invalidate_metrics(pad);
                     metadata::invalidate(element);
                     metadata::invalidate(pad);
                 }
                 fn bin_add_post(&self, _: u64, _: &gst::Bin, element: &gst::Element, _: bool) {
-                    invalidate_metrics();
+                    invalidate_metrics(element);
                     metadata::invalidate(element);
                 }
                 fn bin_remove_post(&self, _: u64, bin: &gst::Bin, _: bool) {
-                    invalidate_metrics();
+                    invalidate_metrics(bin);
                     // Old weak subscriptions also cover the subtree just removed.
                     metadata::invalidate(bin);
                 }
