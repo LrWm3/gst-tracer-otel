@@ -371,7 +371,7 @@ metric exemplars. `throttled_roots` in the trace stats and
 local candidates rejected by the period limit.
 
 Each admitted journey also shares an age and span-count budget. Defaults are
-`trace-max-age-ms=128` and `trace-max-spans=64`, including the root. Both
+`trace-max-age-ms=5000` and `trace-max-spans=64`, including the root. Both
 properties accept `0` to disable that limit. For example:
 
 ```sh

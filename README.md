@@ -53,7 +53,7 @@ variation; these are not limits or FPS-loss estimates.
 Those trace measurements predate the default 16 ms minimum between local trace
 roots per pad. Set `trace-root-min-period-us=0` to disable that limit; see
 [trace sampling](tracer/otel/README.md#sampling) for its effect on correlation.
-Local journeys also default to a 128 ms admission window and a shared
+Local journeys also default to a 5-second admission window and a shared
 64-span budget, configurable with `trace-max-age-ms` and `trace-max-spans`.
 These admission limits were not used in the measurements above.
 

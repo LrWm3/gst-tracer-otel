@@ -82,8 +82,8 @@ fn export_specs() -> Vec<Spec> {
         Spec::number_with_default(
             "trace-max-age-ms",
             u32::MAX,
-            "128",
-            "Stop starting spans when a local journey reaches this age; 0 disables (default 128 ms)",
+            "5000",
+            "Stop starting spans when a local journey reaches this age; 0 disables (default 5000 ms)",
         ),
         Spec::number_with_default(
             "trace-max-spans",
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn journey_limits_have_defaults_and_zero_is_an_explicit_opt_out() {
         gstreamer::init().unwrap();
-        for (name, default) in [("trace-max-age-ms", 128u32), ("trace-max-spans", 64u32)] {
+        for (name, default) in [("trace-max-age-ms", 5000u32), ("trace-max-spans", 64u32)] {
             let spec = EXPORT.iter().find(|s| s.property.name() == name).unwrap();
             assert_eq!(spec.property.default_value().get::<u32>().unwrap(), default);
             let mut settings = Settings::default();

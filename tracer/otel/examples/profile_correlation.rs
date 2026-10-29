@@ -39,7 +39,7 @@ fn main() {
     gst::init().unwrap();
     let showcase = std::env::var("MARS_DEMO_SHOWCASE").as_deref() == Ok("1");
     let buffers = if showcase { 48 } else { 4 };
-    // Deliberately slow CPU phases and queue waits exceed the normal age limit.
+    // Keep deliberately slow CPU phases and queue waits fully correlated.
     let _tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
         .property("trace-max-age-ms", 0u32)
         .build();

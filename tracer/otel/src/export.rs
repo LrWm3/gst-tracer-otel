@@ -113,7 +113,7 @@ impl Default for Config {
         Self {
             ratio: 1.0,
             root_min_period_ns: 16_000_000,
-            max_trace_age_ns: 128_000_000,
+            max_trace_age_ns: 5_000_000_000,
             max_trace_spans: 64,
             traces: true,
             queue_capacity: 8192,
