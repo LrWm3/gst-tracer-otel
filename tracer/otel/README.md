@@ -371,11 +371,11 @@ metric exemplars. `throttled_roots` in the trace stats and
 local candidates rejected by the period limit.
 
 Each admitted journey also shares an age and span-count budget. Defaults are
-`trace-max-age-ms=5000` and `trace-max-spans=1024`, including the root. Both
+`trace-max-age-ms=128` and `trace-max-spans=64`, including the root. Both
 properties accept `0` to disable that limit. For example:
 
 ```sh
-GST_TRACERS='mars-instrument(signals="metrics,traces",trace-max-age-ms=2000,trace-max-spans=256)'
+GST_TRACERS='mars-instrument(signals="metrics,traces",trace-max-age-ms=64,trace-max-spans=32)'
 ```
 
 Copies, synchronous descendants, queue continuations, buffer-list members and

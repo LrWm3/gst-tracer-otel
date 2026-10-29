@@ -1546,6 +1546,7 @@ mod linux {
             let runtime = runtime(
                 Config {
                     root_min_period_ns: 0,
+                    max_trace_spans: 0,
                     ..Config::default()
                 },
                 collector.clone(),

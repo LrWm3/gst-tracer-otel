@@ -158,7 +158,9 @@ and a warning log. The source briefly waits before sending the next frame so
 the slow observation stays in the bounded recent-exemplar slot for an export
 interval; not every observation is guaranteed to survive as an exemplar.
 The artificial CPU work gives spans enough samples to inspect; this is not an
-overhead benchmark. Omit `--showcase` for the shorter four-buffer check.
+overhead benchmark. The example disables `trace-max-age-ms` explicitly because
+its slow phases and queue waits exceed the normal 128 ms journey window.
+Omit `--showcase` for the shorter four-buffer check.
 It prints a selected exemplar/span and Grafana Explore URLs, and saves the results
 and workload log under `target/correlation/`.
 

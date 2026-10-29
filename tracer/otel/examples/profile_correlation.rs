@@ -39,7 +39,10 @@ fn main() {
     gst::init().unwrap();
     let showcase = std::env::var("MARS_DEMO_SHOWCASE").as_deref() == Ok("1");
     let buffers = if showcase { 48 } else { 4 };
-    let _tracer = glib::Object::new::<gstoteltracer::InstrumentTracer>();
+    // Deliberately slow CPU phases and queue waits exceed the normal age limit.
+    let _tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+        .property("trace-max-age-ms", 0u32)
+        .build();
     gst::info!(LOG, "demo started outside a sampled span");
     let pipeline = gst::parse::launch(&format!(
         "fakesrc num-buffers={buffers} ! identity name=light ! queue name=handoff ! \
