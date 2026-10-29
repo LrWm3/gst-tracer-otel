@@ -1543,7 +1543,13 @@ mod linux {
             let other = gst::Pad::builder(gst::PadDirection::Src).build();
             let buffer = gst::Buffer::new();
             let collector = Collector::default();
-            let runtime = runtime(Config::default(), collector.clone());
+            let runtime = runtime(
+                Config {
+                    root_min_period_ns: 0,
+                    ..Config::default()
+                },
+                collector.clone(),
+            );
             capture::begin(&runtime, 100, &pad, &buffer);
             let outer = published();
             assert_ne!(outer, [0; 3]);

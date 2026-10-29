@@ -269,6 +269,48 @@ fn exports_complete_traces_and_keeps_pad_references_stable() {
     let spans = collect(LINEAR, "parentbased_always_on", "1", "normal");
     assert_eq!(complete_traces(&spans, 5), 100);
 }
+
+#[test]
+fn default_period_limits_real_source_pushes() {
+    let pipeline = "fakesrc num-buffers=10000 ! identity ! fakesink sync=false";
+    let spans = collect(pipeline, "parentbased_always_on", "1", "period-default");
+    let count = complete_traces(&spans, 2);
+    assert!((1..10000).contains(&count), "captured {count} roots");
+    let mut starts: Vec<_> = spans
+        .iter()
+        .filter(|s| s.parent_span_id.is_empty())
+        .map(|s| s.start_time_unix_nano)
+        .collect();
+    starts.sort_unstable();
+    assert!(starts
+        .windows(2)
+        .all(|pair| pair[1] - pair[0] >= 16_000_000));
+}
+
+#[test]
+fn journey_budgets_bound_real_children_across_a_queue() {
+    let spans = collect(
+        "fakesrc num-buffers=100 ! identity ! queue ! identity ! fakesink sync=false",
+        "parentbased_always_on",
+        "1",
+        "budget-spans",
+    );
+    assert_eq!(complete_traces(&spans, 2), 100);
+    let spans = collect(
+        "fakesrc num-buffers=10 ! identity sleep-time=10000 ! queue ! identity ! fakesink sync=false",
+        "parentbased_always_on", "1", "budget-age",
+    );
+    assert_eq!(complete_traces(&spans, 1), 10);
+    assert!(spans
+        .iter()
+        .all(|s| s.end_time_unix_nano - s.start_time_unix_nano >= 1_000_000));
+}
+
+#[test]
+fn tracer_parameters_can_disable_root_period() {
+    let spans = collect(LINEAR, "parentbased_always_on", "1", "period-params");
+    assert_eq!(complete_traces(&spans, 5), 100);
+}
 #[test]
 fn nested_pull_pipeline_exports_reads_including_normal_eos() {
     let pipeline = "fakesrc num-buffers=3 sizetype=fixed sizemax=64 can-activate-push=false ! identity ! fakesink can-activate-pull=true can-activate-push=false sync=false";
@@ -418,8 +460,26 @@ fn gzip_with_parallel_requests_preserves_complete_traces() {
 #[ignore = "spawned by collector tests with a fresh process and explicit environment"]
 fn pipeline_child() {
     gst::init().unwrap();
-    let _tracer: gstoteltracer::TelemetryTracer = glib::Object::new();
     let mode = std::env::var("OTEL_TEST_MODE").unwrap();
+    let mut builder = glib::Object::builder::<gstoteltracer::TelemetryTracer>();
+    if mode == "period-params" {
+        builder = builder.property(
+            "params",
+            "trace-root-min-period-us=0,trace-max-age-ms=0,trace-max-spans=0",
+        );
+    } else if mode != "period-default" {
+        builder = builder
+            .property("trace-root-min-period-us", 0u32)
+            .property(
+                "trace-max-age-ms",
+                if mode == "budget-age" { 1u32 } else { 0u32 },
+            )
+            .property(
+                "trace-max-spans",
+                if mode == "budget-spans" { 2u32 } else { 0u32 },
+            );
+    }
+    let _tracer = builder.build();
     let pipeline = gst::parse::launch(&std::env::var("OTEL_TEST_PIPELINE").unwrap())
         .unwrap()
         .downcast::<gst::Pipeline>()
@@ -480,6 +540,9 @@ fn pipeline_child() {
     assert_eq!(stats.mismatched_hooks, 0);
     assert_eq!(stats.propagation_misses, 0, "{stats:?}");
     match response_mode(&mode) {
+        "budget-spans" => assert!(stats.trace_span_rejections >= 100),
+        "budget-age" => assert!(stats.trace_age_rejections >= 10),
+        "period-default" => assert!(stats.throttled_roots > 0),
         "unsampled" => {
             assert_eq!(stats.started_spans, 0);
             assert_eq!(stats.unsampled_pushes, 2000);

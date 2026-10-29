@@ -79,6 +79,24 @@ pub(crate) static EXPORT: LazyLock<Vec<Spec>> = LazyLock::new(export_specs);
 
 fn export_specs() -> Vec<Spec> {
     vec![
+        Spec::number_with_default(
+            "trace-max-age-ms",
+            u32::MAX,
+            "5000",
+            "Stop starting spans when a local journey reaches this age; 0 disables (default 5000 ms)",
+        ),
+        Spec::number_with_default(
+            "trace-max-spans",
+            u32::MAX,
+            "1024",
+            "Maximum spans admitted per local journey across branches, including root; 0 disables (default 1024)",
+        ),
+        Spec::number_with_default(
+            "trace-root-min-period-us",
+            u32::MAX,
+            "16000",
+            "Minimum interval between sampled local roots per pad, in microseconds; 0 disables (default 16000)",
+        ),
         Spec::number(
             "trace-queue-capacity",
             1_048_576,
@@ -180,5 +198,104 @@ impl Settings {
             .parse::<u64>()
             .unwrap();
         Ok(std::time::Duration::from_millis(ms))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glib::prelude::*;
+
+    #[test]
+    fn journey_limits_have_defaults_and_zero_is_an_explicit_opt_out() {
+        gstreamer::init().unwrap();
+        for (name, default) in [("trace-max-age-ms", 5000u32), ("trace-max-spans", 1024u32)] {
+            let spec = EXPORT.iter().find(|s| s.property.name() == name).unwrap();
+            assert_eq!(spec.property.default_value().get::<u32>().unwrap(), default);
+            let mut settings = Settings::default();
+            assert_eq!(
+                settings.overrides.read(spec, &|_| None).unwrap().unwrap(),
+                default.to_string()
+            );
+            settings.set_property(&0u32.to_value(), &spec.property);
+            assert_eq!(settings.property(&spec.property).get::<u32>().unwrap(), 0);
+            assert_eq!(
+                settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+                Some("0")
+            );
+            let mut params = format!("mars-instrument,{name}=3")
+                .parse::<gstreamer::Structure>()
+                .unwrap();
+            settings
+                .take_parameters(Mode::Instrument, &mut params)
+                .unwrap();
+            assert_eq!(
+                settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+                Some("3")
+            );
+            let mut params = format!("mars-instrument,{name}=0")
+                .parse::<gstreamer::Structure>()
+                .unwrap();
+            settings
+                .take_parameters(Mode::Instrument, &mut params)
+                .unwrap();
+            assert_eq!(
+                settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+                Some("0")
+            );
+            let mut params = format!("mars-instrument,{name}=-1")
+                .parse::<gstreamer::Structure>()
+                .unwrap();
+            assert!(settings
+                .take_parameters(Mode::Instrument, &mut params)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn root_period_defaults_to_16ms_and_accepts_explicit_zero() {
+        gstreamer::init().unwrap();
+        let spec = EXPORT
+            .iter()
+            .find(|s| s.property.name() == "trace-root-min-period-us")
+            .unwrap();
+        assert_eq!(spec.property.default_value().get::<u32>().unwrap(), 16_000);
+        let mut settings = Settings::default();
+        assert_eq!(
+            settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+            Some("16000")
+        );
+        settings.set_property(&0u32.to_value(), &spec.property);
+        assert_eq!(settings.property(&spec.property).get::<u32>().unwrap(), 0);
+        assert_eq!(
+            settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+            Some("0")
+        );
+        let mut params = "mars-instrument,trace-root-min-period-us=23000"
+            .parse::<gstreamer::Structure>()
+            .unwrap();
+        settings
+            .take_parameters(Mode::Instrument, &mut params)
+            .unwrap();
+        assert_eq!(
+            settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+            Some("23000")
+        );
+        let mut params = "mars-instrument,trace-root-min-period-us=0"
+            .parse::<gstreamer::Structure>()
+            .unwrap();
+        settings
+            .take_parameters(Mode::Instrument, &mut params)
+            .unwrap();
+        assert_eq!(
+            settings.overrides.read(spec, &|_| None).unwrap().as_deref(),
+            Some("0")
+        );
+        let mut params = "mars-instrument,trace-root-min-period-us=-1"
+            .parse::<gstreamer::Structure>()
+            .unwrap();
+        assert!(settings
+            .take_parameters(Mode::Instrument, &mut params)
+            .is_err());
     }
 }

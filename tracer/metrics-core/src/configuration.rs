@@ -1,7 +1,9 @@
 //! Construction-time overrides shared by the tracer entry points.
 //!
 //! GObject calls construct-only setters even for omitted properties. Nullable
-//! strings, numeric zero and enum `auto` therefore mean inherit. Explicit values
+//! strings, numeric zero and enum `auto` therefore normally mean inherit. A
+//! numeric property with a nonzero actual default instead accepts zero as a
+//! value and has no environment fallback. Explicit values
 //! (including false and values equal to the built-in default) always win over
 //! the environment. No collector writes to the process environment.
 use glib::prelude::*;
@@ -39,6 +41,22 @@ pub struct Spec {
 }
 
 impl Spec {
+    /// A numeric property with an actual default and no environment fallback.
+    /// Unlike inherited numeric properties, zero is an explicit value.
+    pub fn number_with_default(name: &str, max: u32, default: &'static str, blurb: &str) -> Self {
+        let parsed: u32 = default.parse().expect("numeric default");
+        assert!(parsed != 0 && parsed <= max);
+        Self {
+            property: glib::ParamSpecUInt::builder(name)
+                .maximum(max)
+                .default_value(parsed)
+                .blurb(blurb)
+                .construct_only()
+                .build(),
+            environment: &[],
+            fallback: Some(default),
+        }
+    }
     pub fn number(
         name: &str,
         max: u32,
@@ -95,6 +113,15 @@ impl Spec {
     fn normalize(&self, text: &str, inherit: bool) -> Result<Option<String>, String> {
         let name = self.property.name();
         if let Some(spec) = self.property.downcast_ref::<glib::ParamSpecUInt>() {
+            if spec.default_value() != 0 {
+                let number = text
+                    .parse::<u32>()
+                    .map_err(|_| format!("{name} must be 0..={}", spec.maximum()))?;
+                if number > spec.maximum() {
+                    return Err(format!("{name} must be 0..={}", spec.maximum()));
+                }
+                return Ok(Some(number.to_string()));
+            }
             let number = text
                 .parse::<u32>()
                 .map_err(|_| format!("{name} must be 1..={} (0 inherits)", spec.maximum()))?;
@@ -137,7 +164,7 @@ impl Overrides {
             value.get::<Option<String>>().unwrap()
         } else if pspec.value_type() == u32::static_type() {
             let n = value.get::<u32>().unwrap();
-            (n != 0).then(|| n.to_string())
+            (n != 0 || pspec.default_value().get::<u32>().unwrap() != 0).then(|| n.to_string())
         } else {
             let (_, v) = glib::EnumValue::from_value(value).unwrap();
             (v.nick() != "auto").then(|| v.nick().to_owned())

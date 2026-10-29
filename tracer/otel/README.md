@@ -223,7 +223,8 @@ records the concrete hazards removed and the remaining limits.
 
 ## Capture and export
 
-A source starts a trace for each buffer journey. Synchronous nested pushes use a
+A source can start a trace for each buffer journey, subject to root throttling
+and sampling. Synchronous nested pushes use a
 bounded thread-local stack. Buffer metadata carries an owned correlation token
 across queues and clones ownership when buffers are copied or transformed. A
 recycled source buffer starts a fresh journey. An external valid OTel context at
@@ -351,20 +352,80 @@ before changing these defaults.
 
 ## Sampling
 
-Sampling is decided once for each new root buffer journey. For example, to
-record approximately 10% of roots:
+By default, `trace-root-min-period-us=16000` admits at most one new local
+root every 16 ms per root pad. A source push or buffer-list push uses its
+source pad; a top-level pull uses the requesting sink pad. Nested operations
+continue the existing journey. Set the property to `0` to disable the period
+limit, for example `mars-instrument(signals=traces,trace-root-min-period-us=0)`.
+The period uses elapsed time, not media timestamps, so fast offline processing
+may capture far fewer than one trace per video frame.
+
+The interval is measured using the monotonic hook timestamp, from the last
+locally admitted root on that pad. It is independent for each pad and applies
+before asynchronous export; an admitted trace may still be dropped on export.
+The limit bounds roots, not spans or bytes: a single journey can contain many
+spans. It does not filter individual elements or eliminate GStreamer hook
+dispatch, and may reduce the number of trace-linked profiles, log records and
+metric exemplars. `throttled_roots` in the trace stats and
+`mars_instrument_trace_throttled_roots_total` in instrumentation health count
+local candidates rejected by the period limit.
+
+Each admitted journey also shares an age and span-count budget. Defaults are
+`trace-max-age-ms=5000` and `trace-max-spans=1024`, including the root. Both
+properties accept `0` to disable that limit. For example:
+
+```sh
+GST_TRACERS='mars-instrument(signals="metrics,traces",trace-max-age-ms=2000,trace-max-spans=256)'
+```
+
+Copies, synchronous descendants, queue continuations, buffer-list members and
+the primary input of a fan-in share the same budget. Fan-out does not grant each
+branch a fresh allowance. Admission uses the monotonic hook timestamp and a
+shared atomic count before constructing the span. Once expired or exhausted,
+the journey remains suppressed even if an older sampled buffer is replayed in
+an asynchronous feedback loop. Discarding metadata still loses correlation;
+it does not create another root downstream.
+
+The age limit stops **new span starts**; recorded calls finish normally and may
+end beyond the deadline. The count is an admission limit: spans dropped during
+export still consume it. Suppression does not fabricate replacement span IDs.
+Metric observations and aggregate CPU/GPU profiling continue independently,
+while suppressed calls receive no new span correlation. Logs retain their
+independent collection policy. Budget rejections are intentional truncation,
+not exporter failures; traces can therefore omit later work. Inspect
+`trace_age_rejections`, `trace_span_rejections`, or the health counter
+`mars_instrument_trace_budget_rejections_total{reason=~"age|spans"}`. These
+count sampled candidates directly rejected at admission; downstream calls that
+inherit rejection are covered by the existing unsampled counters.
+
+Budgets belong to local **journeys**, not a process-wide trace-ID registry. A
+genuine source emission or top-level pull starts a fresh journey (including
+recycled source buffers). External sampled parents bypass root throttling but
+their local journeys still receive these budgets. Separate local entries under
+one external trace ID have separate budgets, so these controls are not a total
+process rate cap or a global cap on externally owned traces. Budget storage is
+released with its last buffer, active call, link or pending export reference.
+Enabling either limit adds one shared budget allocation per sampled local
+journey; disabling both avoids that allocation. Suppressed descendants retain
+their rejection without keeping the budget alive unnecessarily.
+
+Sampling is also decided once for each new root buffer journey. For example, to
+sample approximately 10% of eligible roots:
 
 ```sh
 export OTEL_TRACES_SAMPLER=parentbased_traceidratio
 export OTEL_TRACES_SAMPLER_ARG=0.1
 ```
 
-Every descendant inherits that decision, including across queue boundaries and
-buffer copies that preserve metadata. This samples whole trace journeys, not
-individual pushes. If an external valid parent is present, its sampled flag
-wins over the root ratio: even at 0%, a sampled external parent is recorded.
+The ratio and period both apply: the period slot is consumed only when a local
+root is sampled and admitted. Descendants inherit that sampling decision across
+queue boundaries and buffer copies that preserve metadata, subject to the
+shared journey budgets above. The ratio selects journeys rather than individual
+pushes; the budgets can truncate a selected journey. If an external valid parent is present, its sampled flag
+wins over the root ratio and period: even at 0%, or within the minimum period,
+a sampled external parent is recorded and does not consume the local period slot.
 `parentbased_always_off` rejects new roots with the same parent-preserving behavior;
-the default `parentbased_always_on` samples all new roots.
+the default `parentbased_always_on` samples all roots eligible under the period limit.
 
 At 0%, rejected roots avoid random IDs, descriptive metadata, record creation,
 serialization, and export. GStreamer still dispatches the registered hooks, and
@@ -619,7 +680,8 @@ The same cumulative trace counters are available through the Rust API:
   responses are decoded; rejected batches are not retried. Malformed responses
   fail the batch, while warning-only responses preserve successful accounting.
 - `pending_spans`, including queued, batched, and currently exporting records.
-- `unsampled_pushes`, `unsampled_pulls`, `skipped_closed` (sampled calls begun after shutdown),
+- `unsampled_pushes`, `unsampled_pulls`, `throttled_roots`, `trace_age_rejections`,
+  `trace_span_rejections`, `skipped_closed` (sampled calls begun after shutdown),
   `propagation_misses`, `propagation_fallbacks`,
   `dropped_depth`, `mismatched_hooks`.
 

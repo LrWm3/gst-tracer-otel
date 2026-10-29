@@ -144,6 +144,9 @@ These properties are on `mars-instrument` and `mars-otel`. Dedicated
 
 | Property | Default | Range / purpose | Environment fallback |
 | --- | --- | --- | --- |
+| `trace-root-min-period-us` | `16000` | Minimum interval between admitted local trace roots per pad, 0–4294967295 µs; `0` disables throttling | None |
+| `trace-max-age-ms` | `5000` | Stop admitting spans when a local journey reaches this elapsed age, 0–4294967295 ms; `0` disables the age limit | None |
+| `trace-max-spans` | `1024` | Maximum admitted spans per local journey, including its root and all branches, 0–4294967295; `0` disables the count limit | None |
 | `trace-queue-capacity` | `8192` | Pending records, 1–1048576 | `GST_OTEL_QUEUE_CAPACITY` |
 | `trace-batch-size` | `min(512, queue capacity)` | Must not exceed queue capacity | `GST_OTEL_BATCH_SIZE` |
 | `trace-export-interval-ms` | `200` | Partial batch interval, 1–60000 ms | `GST_OTEL_EXPORT_INTERVAL_MS` |

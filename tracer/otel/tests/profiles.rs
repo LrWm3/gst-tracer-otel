@@ -523,9 +523,19 @@ fn profile_child() {
             glib::Object::new::<gstoteltracer::ProfilesTracer>().upcast()
         }
     } else if matches!(mode.as_str(), "instrument" | "signals") {
-        glib::Object::new::<gstoteltracer::InstrumentTracer>().upcast()
+        glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
+            .build()
+            .upcast()
     } else {
-        glib::Object::new::<gstoteltracer::TelemetryTracer>().upcast()
+        glib::Object::builder::<gstoteltracer::TelemetryTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
+            .build()
+            .upcast()
     };
     if profiles_only
         && (mode.ends_with("invalid-rate")

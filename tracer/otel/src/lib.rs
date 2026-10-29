@@ -41,6 +41,7 @@ mod properties;
 mod settings;
 mod shared_metrics;
 mod shared_metrics_wire;
+mod tracebudget;
 mod tracer;
 mod transport;
 mod wire;
@@ -161,6 +162,9 @@ mod registration_tests {
             if ty == InstrumentTracer::static_type() || ty == TelemetryTracer::static_type() {
                 for name in [
                     "trace-queue-capacity",
+                    "trace-root-min-period-us",
+                    "trace-max-age-ms",
+                    "trace-max-spans",
                     "trace-batch-size",
                     "flush-timeout-ms",
                 ] {

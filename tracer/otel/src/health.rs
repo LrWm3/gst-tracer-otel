@@ -39,6 +39,27 @@ fn snapshot() -> Vec<proto::MetricFamily> {
     let metrics = runtime.metric_stats();
     let logs = crate::log_stats();
     let profiles = crate::profile_stats();
+    for (reason, count) in [
+        ("age", traces.trace_age_rejections),
+        ("spans", traces.trace_span_rejections),
+    ] {
+        sample(
+            &mut families,
+            "mars_instrument_trace_budget_rejections_total",
+            "Sampled span candidates rejected by a shared journey budget",
+            false,
+            count,
+            &[("reason", reason)],
+        );
+    }
+    sample(
+        &mut families,
+        "mars_instrument_trace_throttled_roots_total",
+        "Local trace roots rejected by the minimum-period limit",
+        false,
+        traces.throttled_roots,
+        &[],
+    );
     sample(
         &mut families,
         "mars_instrument_profile_descriptions",

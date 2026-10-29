@@ -83,7 +83,7 @@ fn api() -> glib::ffi::GType {
     static API: OnceLock<glib::ffi::GType> = OnceLock::new();
     *API.get_or_init(|| unsafe {
         let mut tags = [std::ptr::null()];
-        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV4API".as_ptr(), tags.as_mut_ptr())
+        gst::ffi::gst_meta_api_type_register(c"GstOtelContextV5API".as_ptr(), tags.as_mut_ptr())
     })
 }
 fn info() -> *const gst::ffi::GstMetaInfo {
@@ -92,7 +92,7 @@ fn info() -> *const gst::ffi::GstMetaInfo {
     *INFO.get_or_init(|| unsafe {
         gst::ffi::gst_meta_register(
             api(),
-            c"GstOtelContextV4".as_ptr(),
+            c"GstOtelContextV5".as_ptr(),
             std::mem::size_of::<ContextMeta>(),
             Some(init),
             Some(free),
@@ -158,7 +158,7 @@ unsafe extern "C" fn transform(
 // remain stable until buffer destruction. INSTALL_LOCK covers first installation;
 // GStreamer's qdata getter also takes its own global lock on every lookup.
 static FALLBACK_QUARK: LazyLock<glib::Quark> =
-    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v4"));
+    LazyLock::new(|| glib::Quark::from_str("gst.otel.fallback.v5"));
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 struct Fallback {
     token: RwLock<Option<Token>>,
@@ -355,7 +355,39 @@ mod tests {
             trace_state: Some(Arc::new(
                 TraceState::from_key_value([("vendor", "state")]).unwrap(),
             )),
+            budget: None,
         }
+    }
+
+    #[test]
+    fn copies_and_fan_in_keep_the_primary_journeys_shared_budget() {
+        gst::init().unwrap();
+        let counters = Counters::default();
+        let first = gst::Buffer::new();
+        let second = gst::Buffer::new();
+        let budget = Arc::new(crate::tracebudget::Budget::new(0, 0, 2));
+        budget.admit(0).unwrap();
+        let mut first_token = token(1);
+        first_token.budget = Some(budget.clone());
+        let mut second_token = token(2);
+        second_token.budget = Some(Arc::new(crate::tracebudget::Budget::new(0, 0, 100)));
+        write(&first, &first_token, true, &counters);
+        write(&second, &second_token, true, &counters);
+        let copied = first.copy();
+        let mut merged = gst::Buffer::new();
+        propagate_input_contexts(merged.get_mut().unwrap(), &[&copied, &second]);
+        let merged_token = read(&merged).unwrap();
+        let merged_budget = merged_token.budget.unwrap();
+        assert!(Arc::ptr_eq(&merged_budget, &budget));
+        merged_budget.admit(1).unwrap();
+        assert_eq!(
+            read(&copied).unwrap().budget.unwrap().admit(2),
+            Err(crate::tracebudget::Reason::Spans)
+        );
+        assert_eq!(
+            merged_budget.admit(3),
+            Err(crate::tracebudget::Reason::Spans)
+        );
     }
 
     #[test]

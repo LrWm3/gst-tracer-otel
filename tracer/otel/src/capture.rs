@@ -19,6 +19,7 @@ pub(crate) struct Token {
     pub flags: TraceFlags,
     pub is_remote: bool,
     pub trace_state: Option<Arc<TraceState>>,
+    pub budget: Option<Arc<crate::tracebudget::Budget>>,
 }
 impl Token {
     pub fn rejected() -> Self {
@@ -28,6 +29,7 @@ impl Token {
             flags: TraceFlags::default(),
             is_remote: false,
             trace_state: None,
+            budget: None,
         }
     }
     pub fn from_context(context: &SpanContext) -> Self {
@@ -38,6 +40,7 @@ impl Token {
             is_remote: context.is_remote(),
             trace_state: (context.trace_state() != &TraceState::default())
                 .then(|| Arc::new(context.trace_state().clone())),
+            budget: None,
         }
     }
     pub fn sampled(&self) -> bool {
@@ -129,16 +132,17 @@ thread_local! {
     }) };
 }
 
-fn root(ratio: f64) -> Token {
+fn external_parent() -> Option<Token> {
     // External unsampled contexts must remain unsampled, including at sources.
-    if let Some(parent) = opentelemetry::Context::map_current(|cx| {
+    opentelemetry::Context::map_current(|cx| {
         let span = cx.span();
         span.span_context()
             .is_valid()
             .then(|| Token::from_context(span.span_context()))
-    }) {
-        return parent;
-    }
+    })
+}
+
+fn local_root(ratio: f64) -> Token {
     if ratio == 0.0 {
         return Token::rejected();
     }
@@ -152,6 +156,35 @@ fn root(ratio: f64) -> Token {
         flags: TraceFlags::default().with_sampled(sampled),
         is_remote: false,
         trace_state: None,
+        budget: None,
+    }
+}
+
+#[cfg(test)]
+fn root(ratio: f64) -> Token {
+    external_parent().unwrap_or_else(|| local_root(ratio))
+}
+
+fn root_for_pad(runtime: &Runtime, pad: &gst::Pad, ts: u64) -> Token {
+    if let Some(parent) = external_parent() {
+        return parent;
+    }
+    let ratio = runtime.config.ratio;
+    let period = runtime.config.root_min_period_ns;
+    if period == 0 || ratio == 0.0 {
+        return local_root(ratio);
+    }
+    let gate = crate::metadata::root_gate(pad, &runtime.root_gate_owner);
+    if !gate.ready(ts) {
+        runtime.stats.local().throttled_roots.fetch_add(1, Relaxed);
+        return Token::rejected();
+    }
+    let token = local_root(ratio);
+    if token.sampled() && !gate.admit(ts, period) {
+        runtime.stats.local().throttled_roots.fetch_add(1, Relaxed);
+        Token::rejected()
+    } else {
+        token
     }
 }
 
@@ -226,12 +259,12 @@ fn begin_local(
     let is_root = runtime.config.traces
         && inherited.is_none()
         && (operation == Operation::Pull || crate::metadata::is_source(pad));
-    let parent_token = if !runtime.config.traces {
+    let mut parent_token = if !runtime.config.traces {
         Token::rejected()
     } else {
         inherited.unwrap_or_else(|| {
             if is_root {
-                root(runtime.config.ratio)
+                root_for_pad(runtime, pad, ts)
             } else {
                 buffer
                     .and_then(crate::propagation::read)
@@ -246,6 +279,35 @@ fn begin_local(
             }
         })
     };
+    if is_root
+        && parent_token.sampled()
+        && runtime.accepting()
+        && (runtime.config.max_trace_age_ns != 0 || runtime.config.max_trace_spans != 0)
+    {
+        parent_token.budget = Some(Arc::new(crate::tracebudget::Budget::new(
+            ts,
+            runtime.config.max_trace_age_ns,
+            runtime.config.max_trace_spans,
+        )));
+    }
+    // Admission precedes descriptions, links, span IDs and record allocation.
+    // Old sampled copies retain the terminal shared budget. New descendants
+    // inherit rejection without retaining its allocation or updating counters.
+    // Already recorded ancestors still finish normally.
+    if parent_token.sampled() && runtime.accepting() {
+        if let Some(budget) = &parent_token.budget {
+            if let Err(reason) = budget.admit(ts) {
+                let stats = runtime.stats.local();
+                match reason {
+                    crate::tracebudget::Reason::Age => &stats.trace_age_rejections,
+                    crate::tracebudget::Reason::Spans => &stats.trace_span_rejections,
+                }
+                .fetch_add(1, Relaxed);
+                parent_token.flags = parent_token.flags.with_sampled(false);
+                parent_token.budget = None;
+            }
+        }
+    }
     // Read fan-in evidence before replacing the input metadata with this span.
     // Sources can recycle buffers; stale metadata must not become input links.
     let recording = parent_token.sampled() && runtime.accepting();
@@ -517,6 +579,319 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn nested_budget_rejection_preserves_open_ancestors_and_blocks_later_siblings() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let source_pad = source.static_pad("src").unwrap();
+        let middle = gst::ElementFactory::make("identity").build().unwrap();
+        let pad = middle.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(
+            Config {
+                max_trace_age_ns: 0,
+                max_trace_spans: 2,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
+        let buffer = gst::Buffer::new();
+        begin(&runtime, 1, &source_pad, &buffer);
+        let root = current_context().unwrap();
+        begin(&runtime, 2, &pad, &buffer);
+        let child = current_context().unwrap();
+        begin(&runtime, 3, &pad, &buffer);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 4, &pad, 0);
+        assert_eq!(current_context().unwrap(), child);
+        end(&runtime, 5, &pad, 0);
+        assert_eq!(current_context().unwrap(), root);
+        begin(&runtime, 6, &pad, &buffer);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 7, &pad, 0);
+        end(&runtime, 8, &source_pad, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 2);
+        assert_eq!(stats.trace_span_rejections, 2);
+        assert_eq!(stats.mismatched_hooks, 0);
+        let spans = collector.0.lock().unwrap();
+        assert_eq!(spans[0].parent_span_id, root.span_id());
+        assert_eq!(spans[1].span_context, root);
+    }
+
+    #[test]
+    fn span_budget_is_shared_across_copied_branches_and_async_feedback() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let source_pad = source.static_pad("src").unwrap();
+        let middle = gst::ElementFactory::make("identity").build().unwrap();
+        let pad = middle.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                max_trace_age_ns: 0,
+                max_trace_spans: 7,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
+        let seed = gst::Buffer::new();
+        begin(&runtime, 0, &source_pad, &seed);
+        end(&runtime, 1, &source_pad, 0);
+        let weak_budget = Arc::downgrade(
+            crate::propagation::read(&seed)
+                .unwrap()
+                .budget
+                .as_ref()
+                .unwrap(),
+        );
+        let branches: Vec<_> = (0..4).map(|_| seed.copy()).collect();
+        std::thread::scope(|scope| {
+            for buffer in branches {
+                let (runtime, pad) = (&runtime, &pad);
+                scope.spawn(move || {
+                    for ts in 10..50 {
+                        begin(runtime, ts, pad, &buffer);
+                        end(runtime, ts, pad, 0);
+                    }
+                    assert!(!crate::propagation::read(&buffer).unwrap().sampled());
+                });
+            }
+        });
+        assert_eq!(runtime.stats.snapshot().started_spans, 7);
+        // An old sampled copy can re-enter after all synchronous calls ended.
+        // It must retain the exhausted shared budget instead of resampling.
+        let replay = seed.copy();
+        begin(&runtime, 60, &pad, &replay);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 61, &pad, 0);
+        assert_eq!(runtime.stats.snapshot().started_spans, 7);
+        assert!(runtime.stats.snapshot().trace_span_rejections >= 1);
+        drop(replay);
+        drop(seed);
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(collector.0.lock().unwrap().len(), 7);
+        assert!(
+            weak_budget.upgrade().is_none(),
+            "completed journeys must be reclaimed"
+        );
+    }
+
+    #[test]
+    fn age_budget_blocks_late_copies_but_open_spans_finish_normally() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let source_pad = source.static_pad("src").unwrap();
+        let middle = gst::ElementFactory::make("identity").build().unwrap();
+        let pad = middle.static_pad("src").unwrap();
+        let other = gst::ElementFactory::make("identity").build().unwrap();
+        let other_pad = other.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                max_trace_age_ns: 100,
+                max_trace_spans: 0,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
+        let seed = gst::Buffer::new();
+        begin(&runtime, 1000, &source_pad, &seed);
+        end(&runtime, 1001, &source_pad, 0);
+        let old_copy = seed.copy();
+        begin(&runtime, 1099, &pad, &seed);
+        assert!(current_context().unwrap().is_sampled());
+        // The recorded call may finish after the deadline.
+        end(&runtime, 1105, &pad, 0);
+        begin(&runtime, 1100, &other_pad, &old_copy);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 1101, &other_pad, 0);
+        assert!(!crate::metadata::has_description(&other_pad));
+        // Another still-sampled copy cannot revive an expired budget.
+        begin(&runtime, 1050, &pad, &seed);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 1051, &pad, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 2);
+        assert_eq!(stats.trace_age_rejections, 2);
+        assert_eq!(stats.mismatched_hooks, 0);
+    }
+
+    #[test]
+    fn pull_and_list_members_share_one_budget_under_an_external_parent() {
+        gst::init().unwrap();
+        let middle = gst::ElementFactory::make("identity").build().unwrap();
+        let input = middle.static_pad("sink").unwrap();
+        let output = middle.static_pad("src").unwrap();
+        let runtime = runtime(
+            Config {
+                max_trace_age_ns: 0,
+                max_trace_spans: 2,
+                ..Config::default()
+            },
+            Collector::default(),
+        );
+        let parent = SpanContext::new(
+            TraceId::from(42),
+            SpanId::from(9),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let buffer = gst::Buffer::new();
+        {
+            let _guard = opentelemetry::Context::new()
+                .with_remote_span_context(parent)
+                .attach();
+            begin_pull(&runtime, 1, &input);
+            end_pull(&runtime, 2, &input, 0, Some(&buffer));
+        }
+        let copy = buffer.copy();
+        let mut list = gst::BufferList::new();
+        list.get_mut().unwrap().add(buffer);
+        list.get_mut().unwrap().add(copy.clone());
+        begin_list(&runtime, 3, &output, &list);
+        assert!(current_context().unwrap().is_sampled());
+        end_list(&runtime, 4, &output, 0);
+        begin(&runtime, 5, &output, &copy);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 6, &output, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.exported_spans, 2);
+        assert_eq!(stats.trace_span_rejections, 1);
+    }
+
+    #[test]
+    fn root_period_is_per_pad_and_rejected_context_propagates() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let other = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let other_pad = other.static_pad("src").unwrap();
+        let downstream = gst::ElementFactory::make("identity").build().unwrap();
+        let downstream_pad = downstream.static_pad("src").unwrap();
+        let collector = Collector::default();
+        let runtime = runtime(Config::default(), collector.clone());
+        let buffer = gst::Buffer::new();
+
+        begin(&runtime, 0, &pad, &buffer);
+        assert!(current_context().unwrap().is_sampled());
+        end(&runtime, 1, &pad, 0);
+        begin(&runtime, 15_999_999, &pad, &buffer);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 15_999_999, &pad, 0);
+        begin(&runtime, 15_999_999, &downstream_pad, &buffer);
+        assert!(!current_context().unwrap().is_sampled());
+        end(&runtime, 15_999_999, &downstream_pad, 0);
+        begin(&runtime, 15_999_999, &other_pad, &gst::Buffer::new());
+        assert!(current_context().unwrap().is_sampled());
+        end(&runtime, 15_999_999, &other_pad, 0);
+        begin(&runtime, 16_000_000, &pad, &buffer);
+        assert!(current_context().unwrap().is_sampled());
+        end(&runtime, 16_000_001, &pad, 0);
+        let stats = runtime.shutdown(Duration::from_secs(2)).unwrap();
+        assert_eq!(stats.throttled_roots, 1);
+        assert_eq!(stats.exported_spans, 3);
+        assert_eq!(stats.propagation_misses, 0);
+    }
+
+    #[test]
+    fn root_period_applies_to_lists_and_pulls_but_external_parent_wins() {
+        gst::init().unwrap();
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let pad = source.static_pad("src").unwrap();
+        let runtime = runtime(Config::default(), Collector::default());
+        let list = gst::BufferList::new();
+        begin_list(&runtime, 1, &pad, &list);
+        assert!(current_context().unwrap().is_sampled());
+        end_list(&runtime, 2, &pad, 0);
+        begin_pull(&runtime, 3, &pad);
+        assert!(!current_context().unwrap().is_sampled());
+        end_pull(&runtime, 4, &pad, 0, None);
+        let parent = SpanContext::new(
+            TraceId::from(42),
+            SpanId::from(9),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        {
+            let _guard = opentelemetry::Context::new()
+                .with_remote_span_context(parent.clone())
+                .attach();
+            begin_pull(&runtime, 5, &pad);
+            assert_eq!(current_context().unwrap().trace_id(), parent.trace_id());
+            assert!(current_context().unwrap().is_sampled());
+            end_pull(&runtime, 6, &pad, 0, None);
+        }
+        begin_pull(&runtime, 16_000_001, &pad);
+        assert!(current_context().unwrap().is_sampled());
+        end_pull(&runtime, 16_000_002, &pad, 0, None);
+        assert_eq!(
+            runtime
+                .shutdown(Duration::from_secs(2))
+                .unwrap()
+                .throttled_roots,
+            1
+        );
+    }
+
+    #[test]
+    fn concurrent_roots_on_one_pad_admit_only_one_and_runtime_state_is_fresh() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        let runtime = runtime(Config::default(), Collector::default());
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root_for_pad(&runtime, &pad, 1).sampled()
+                    })
+                })
+                .collect();
+            assert_eq!(
+                threads
+                    .into_iter()
+                    .map(|t| t.join().unwrap())
+                    .filter(|sampled| *sampled)
+                    .count(),
+                1
+            );
+        });
+        assert_eq!(runtime.stats.snapshot().throttled_roots, 15);
+        let other = crate::export::tests::runtime(Config::default(), Collector::default());
+        assert!(root_for_pad(&other, &pad, 1).sampled());
+        runtime.shutdown(Duration::from_secs(2)).unwrap();
+        other.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn zero_period_disables_throttling() {
+        gst::init().unwrap();
+        let pad = gst::Pad::builder(gst::PadDirection::Src).build();
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                ..Config::default()
+            },
+            Collector::default(),
+        );
+        for _ in 0..10 {
+            assert!(root_for_pad(&runtime, &pad, 0).sampled());
+        }
+        assert_eq!(
+            runtime
+                .shutdown(Duration::from_secs(2))
+                .unwrap()
+                .throttled_roots,
+            0
+        );
+    }
+
+    #[test]
     fn mixed_input_lists_and_aggregated_metadata_export_links_without_resampling() {
         gst::init().unwrap();
         let identity = gst::ElementFactory::make("identity").build().unwrap();
@@ -534,6 +909,7 @@ mod tests {
                     flags: TraceFlags::SAMPLED,
                     is_remote: false,
                     trace_state: None,
+                    budget: None,
                 };
                 crate::propagation::write(&buffer, &token, true, &runtime.stats);
                 buffer
@@ -584,7 +960,13 @@ mod tests {
         source.link(&sink).unwrap();
         let pad = source.static_pad("src").unwrap();
         let collector = Collector::default();
-        let runtime = runtime(Config::default(), collector.clone());
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
         let buffer = gst::Buffer::with_size(4).unwrap();
         let mut list = gst::BufferList::new();
         list.get_mut().unwrap().add(buffer.clone());
@@ -738,7 +1120,13 @@ mod tests {
         let sink = gst::ElementFactory::make("fakesink").build().unwrap();
         let pad = sink.static_pad("sink").unwrap();
         let collector = Collector::default();
-        let runtime = runtime(Config::default(), collector.clone());
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
         for flow in [gst::ffi::GST_FLOW_EOS, gst::ffi::GST_FLOW_ERROR] {
             begin_pull(&runtime, 1, &pad);
             end_pull(&runtime, 2, &pad, flow, None);
@@ -839,7 +1227,13 @@ mod tests {
         let source_pad = source.static_pad("src").unwrap();
         let downstream_pad = downstream.static_pad("src").unwrap();
         let collector = Collector::default();
-        let runtime = runtime(Config::default(), collector.clone());
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                ..Config::default()
+            },
+            collector.clone(),
+        );
         let buffer = gst::Buffer::new();
         begin(&runtime, 100, &downstream_pad, &buffer);
         assert!(!current_context().unwrap().is_sampled());
@@ -894,7 +1288,13 @@ mod tests {
         let source = gst::ElementFactory::make("fakesrc").build().unwrap();
         let pad = source.static_pad("src").unwrap();
         let buffer = gst::Buffer::new();
-        let runtime = runtime(Config::default(), Collector::default());
+        let runtime = runtime(
+            Config {
+                root_min_period_ns: 0,
+                ..Config::default()
+            },
+            Collector::default(),
+        );
         for ts in 0..MAX_DEPTH + 3 {
             begin(&runtime, ts as u64, &pad, &buffer);
         }

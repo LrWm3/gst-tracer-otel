@@ -32,9 +32,37 @@ struct PadState {
     epoch: AtomicU64,
     // Generation in the high bits, source classification in bit zero.
     source: AtomicU64,
+    root_gate: ArcSwapOption<RootGate>,
     site: ArcSwapOption<Site>,
     #[cfg(feature = "profiles")]
     profile: ArcSwapOption<ProfileSite>,
+}
+pub(crate) struct RootGate {
+    owner: Weak<()>,
+    next_ns: AtomicU64,
+}
+impl RootGate {
+    pub fn ready(&self, ts: u64) -> bool {
+        ts >= self.next_ns.load(Relaxed)
+    }
+
+    pub fn admit(&self, ts: u64, period_ns: u64) -> bool {
+        let mut next = self.next_ns.load(Relaxed);
+        loop {
+            if ts < next {
+                return false;
+            }
+            match self.next_ns.compare_exchange_weak(
+                next,
+                ts.saturating_add(period_ns),
+                Relaxed,
+                Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => next = actual,
+            }
+        }
+    }
 }
 #[cfg(feature = "profiles")]
 struct ProfileSite {
@@ -91,6 +119,7 @@ fn state(object: &impl IsA<gst::Object>) -> &Arc<PadState> {
             let candidate = Box::into_raw(Box::new(Arc::new(PadState {
                 epoch: AtomicU64::new(1),
                 source: AtomicU64::new(0),
+                root_gate: ArcSwapOption::empty(),
                 site: ArcSwapOption::empty(),
                 #[cfg(feature = "profiles")]
                 profile: ArcSwapOption::empty(),
@@ -111,6 +140,32 @@ fn state(object: &impl IsA<gst::Object>) -> &Arc<PadState> {
             }
         }
         &*ptr
+    }
+}
+
+/// Gate state is owned by the pad and scoped to a runtime; it never retains
+/// the pad or runtime. Atomic installation handles concurrent first use.
+pub(crate) fn root_gate(pad: &gst::Pad, owner: &Arc<()>) -> Arc<RootGate> {
+    let slot = &state(pad).root_gate;
+    loop {
+        let current = slot.load_full();
+        if let Some(gate) = &current {
+            if std::ptr::eq(gate.owner.as_ptr(), Arc::as_ptr(owner)) {
+                return gate.clone();
+            }
+        }
+        let gate = Arc::new(RootGate {
+            owner: Arc::downgrade(owner),
+            next_ns: AtomicU64::new(0),
+        });
+        let previous = slot.compare_and_swap(&current, Some(gate.clone()));
+        if match (&current, &*previous) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        } {
+            return gate;
+        }
     }
 }
 

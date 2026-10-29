@@ -383,7 +383,11 @@ fn topology_refresh_and_series_cap_are_visible() {
 fn instrument_child() {
     gst::init().unwrap();
     let mode = std::env::var("INSTRUMENT_TEST_MODE").unwrap();
-    let _tracer: gstoteltracer::InstrumentTracer = glib::Object::new();
+    let _tracer: gstoteltracer::InstrumentTracer = glib::Object::builder()
+        .property("trace-root-min-period-us", 0u32)
+        .property("trace-max-age-ms", 0u32)
+        .property("trace-max-spans", 0u32)
+        .build();
     let _duplicate =
         (mode == "duplicate").then(glib::Object::new::<gstoteltracer::TelemetryTracer>);
     let pipeline = gst::parse::launch(&std::env::var("INSTRUMENT_TEST_PIPELINE").unwrap())

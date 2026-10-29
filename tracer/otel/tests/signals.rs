@@ -319,6 +319,26 @@ fn disabled_signals_ignore_exporters_and_other_signal_settings() {
 }
 
 #[test]
+fn exhausted_trace_budgets_preserve_metrics_and_valid_exemplars() {
+    let (received, _) = run("budget");
+    assert_eq!(count(&received, "gst_element_sync_wall_seconds"), 301);
+    assert_eq!(received.spans.len(), 102);
+    assert_eq!(
+        count(&received, "mars_instrument_trace_budget_rejections_total"),
+        100
+    );
+    for metric in &received.metrics {
+        if let Some(Data::Histogram(histogram)) = &metric.data {
+            for example in histogram.data_points.iter().flat_map(|p| &p.exemplars) {
+                assert!(received.spans.iter().any(
+                    |span| span.trace_id == example.trace_id && span.span_id == example.span_id
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn prometheus_export_and_otlp_use_the_full_collector() {
     let (received, text) = run("prometheus");
     assert!(received.metrics.is_empty() && received.spans.is_empty());
@@ -386,12 +406,21 @@ fn signals_child() {
         "traces" | "lists-traces" => "traces",
         _ => "metrics,traces",
     };
-    let params = format!(
-        "signals=\"{signals}\",metrics-exporter={},metrics-port={port}",
+    let mut params = format!(
+        "signals=\"{signals}\",metrics-exporter={},metrics-port={port},trace-root-min-period-us=0,trace-max-age-ms=0",
         if prometheus { "prometheus" } else { "otlp" }
     );
+    if mode == "budget" {
+        params.push_str(",trace-max-spans=1");
+    } else {
+        params.push_str(",trace-max-spans=0");
+    }
     let _tracer: gstoteltracer::InstrumentTracer = if mode == "lists-legacy" {
-        glib::Object::new()
+        glib::Object::builder()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
+            .build()
     } else if mode == "properties" || mode == "property-params" {
         for key in [
             "MARS_SIGNALS",
@@ -435,6 +464,9 @@ fn signals_child() {
             .property("metrics-queue-interval-ms", 10u32)
             .property("metrics-io-counts", gstoteltracer::Toggle::On)
             .property("metrics-pts-age", gstoteltracer::Toggle::Off)
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("trace-queue-capacity", 8192u32)
             .property("trace-batch-size", 512u32)
             .property("trace-export-interval-ms", 200u32)

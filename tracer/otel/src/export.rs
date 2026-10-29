@@ -75,7 +75,7 @@ counters! {
     dropped_queue_full, dropped_closed, failed_export_spans, failed_exports,
     rejected_spans, export_warnings,
     unsampled_pushes, unsampled_pulls, unsampled_lists, skipped_closed, propagation_misses, propagation_fallbacks,
-    dropped_depth, mismatched_hooks,
+    dropped_depth, mismatched_hooks, throttled_roots, trace_age_rejections, trace_span_rejections,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +95,9 @@ impl std::error::Error for FlushError {}
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
     pub ratio: f64,
+    pub root_min_period_ns: u64,
+    pub max_trace_age_ns: u64,
+    pub max_trace_spans: u64,
     pub traces: bool,
     pub queue_capacity: usize,
     pub batch_size: usize,
@@ -109,6 +112,9 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ratio: 1.0,
+            root_min_period_ns: 16_000_000,
+            max_trace_age_ns: 5_000_000_000,
+            max_trace_spans: 1024,
             traces: true,
             queue_capacity: 8192,
             batch_size: 512,
@@ -172,6 +178,9 @@ impl Config {
                 .unwrap())
         };
         c.queue_capacity = read("trace-queue-capacity")?;
+        c.root_min_period_ns = (read("trace-root-min-period-us")? as u64) * 1_000;
+        c.max_trace_age_ns = (read("trace-max-age-ms")? as u64) * 1_000_000;
+        c.max_trace_spans = read("trace-max-spans")? as u64;
         c.batch_size =
             if !overrides.contains("trace-batch-size") && env("GST_OTEL_BATCH_SIZE").is_none() {
                 c.batch_size.min(c.queue_capacity)
@@ -290,6 +299,7 @@ enum Message {
 
 pub(crate) struct Runtime {
     pub config: Config,
+    pub root_gate_owner: Arc<()>,
     pub stats: Arc<Counters>,
     pub metrics: Option<crate::metrics::Metrics>,
     pub shared_metrics: Option<crate::shared_metrics::Metrics>,
@@ -353,6 +363,7 @@ impl Runtime {
         };
         Ok(Self {
             config,
+            root_gate_owner: Arc::new(()),
             stats,
             metrics: None,
             shared_metrics: None,
@@ -559,6 +570,7 @@ pub(crate) fn span_data(
         flags,
         trace_state,
         is_remote,
+        ..
     } = record.token;
     let mut attributes = Vec::with_capacity(record.site.attributes.len() + 9);
     attributes.push(KeyValue::new(
@@ -800,6 +812,7 @@ pub(crate) mod tests {
                 trace_state: Some(Arc::new(
                     TraceState::from_key_value([("vendor", "value")]).unwrap(),
                 )),
+                budget: None,
             },
             parent: SpanId::from(7),
             parent_is_remote: true,

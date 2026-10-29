@@ -229,6 +229,9 @@ fn gpu_child() {
     }
     let tracer: gst::Tracer = if window && mode != "window-params" {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("profile-sources", sources)
             .property("profile-gpu-window-ms", 300u32)
             .property("profile-gpu-period-ms", 1000u32)
@@ -236,26 +239,41 @@ fn gpu_child() {
             .upcast()
     } else if mode == "window-params" {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("params", "signals=\"traces,profiles\",profile-sources=gpu,profile-gpu-window-ms=300,profile-gpu-period-ms=1000")
             .build().upcast()
     } else if mode == "adapter-property" {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("profile-sources", sources)
             .property("profile-gpu-adapter", &adapter_path)
             .build()
             .upcast()
     } else if mode == "adapter-params" {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("profile-gpu-adapter", "/invalid-overridden-property.so")
             .property("params", format!("signals=\"traces,profiles\",profile-sources=gpu,profile-gpu-adapter=\"{adapter_path}\""))
             .build().upcast()
     } else if mode == "otel" {
         glib::Object::builder::<gstoteltracer::TelemetryTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("profile-sources", sources)
             .build()
             .upcast()
     } else if mode.ends_with("params") {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property(
                 "params",
                 format!(
@@ -272,6 +290,9 @@ fn gpu_child() {
             .upcast()
     } else {
         glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+            .property("trace-root-min-period-us", 0u32)
+            .property("trace-max-age-ms", 0u32)
+            .property("trace-max-spans", 0u32)
             .property("profile-sources", sources)
             .build()
             .upcast()

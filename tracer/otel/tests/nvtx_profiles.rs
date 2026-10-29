@@ -383,9 +383,9 @@ fn nvtx_child() {
         assert_eq!(gstoteltracer::nvtx_profile_stats().active_domains, 0);
     }
     let start = Instant::now();
-    assert!(gstoteltracer::shutdown_report(Duration::from_secs(5))
-        .result()
-        .is_ok());
+    let report = gstoteltracer::shutdown_report(Duration::from_secs(5));
+    let detail = report.to_structure();
+    assert!(report.result().is_ok(), "{detail:?}");
     assert!(start.elapsed() < Duration::from_secs(5));
     let stats = gstoteltracer::profile_stats();
     assert_eq!(stats.samples > 0, cpu);
