@@ -64,14 +64,17 @@ then runs independent 30-minute native lifecycle soaks on x86-64 and ARM64.
 The soaks recreate pipelines and threads, exercise loader locks and collector
 outages/recovery, and verify delivery accounting and repeated shutdown. Failed
 profile uploads must match decoded receiver totals, rather than only reaching a
-local queue.
+local queue. The lifecycle fixture disables root throttling and journey limits
+(`trace-root-min-period-us=0`, `trace-max-age-ms=0`, `trace-max-spans=0`) so it can
+check exact span totals. Separate integration tests cover admission limits.
 
 Use **Actions → Correlation and lifecycle validation → Run workflow** to select
-a 2-, 30-, or 60-minute soak. Workflow edits run a two-minute smoke check. Logs,
-counter snapshots, backend responses and browser screenshots are retained as CI
-artifacts for 14 days; browser profiles are excluded. These checks use disposable
-local backends and do not contact private application environments. A finite
-soak does not establish production memory stability or eliminate every deadlock.
+a 2-, 30-, or 60-minute soak. Workflow and lifecycle fixture edits run a
+two-minute smoke check. Logs, counter snapshots, backend responses and browser
+screenshots are retained as CI artifacts for 14 days; browser profiles are
+excluded. These checks use disposable local backends and do not contact private
+application environments. A finite soak does not establish production memory
+stability or eliminate every deadlock.
 
 To reproduce the lifecycle check locally:
 

@@ -162,7 +162,14 @@ fn main() {
     let duration = Duration::from_secs(args[1].parse().unwrap());
     let module = CString::new(args[2].as_bytes()).unwrap();
     gst::init().unwrap();
-    let _tracer: gstoteltracer::InstrumentTracer = glib::Object::new();
+    // Delivery accounting expects all 12 spans per cycle, including rapid
+    // source pushes and queue continuations. Disable admission limits here;
+    // dedicated integration tests exercise throttling and journey budgets.
+    let _tracer = glib::Object::builder::<gstoteltracer::InstrumentTracer>()
+        .property("trace-root-min-period-us", 0u32)
+        .property("trace-max-age-ms", 0u32)
+        .property("trace-max-spans", 0u32)
+        .build();
     let start = Instant::now();
     let mut cycles = 0;
     let mut next = Duration::ZERO;

@@ -10,12 +10,21 @@ on:
         type: choice
         options: ['120', '1800', '3600']
         default: '1800'
-  # Exercise workflow edits promptly; ordinary source changes use the daily run.
+  # Exercise workflow and lifecycle fixture edits promptly; other source changes
+  # use the daily run.
   push:
     branches: [main]
-    paths: ['.github/workflows/validation.yaml']
+    paths:
+      - '.github/workflows/validation.yaml'
+      - 'tracer/otel/examples/lifecycle_soak.rs'
+      - 'tracer/otel/bench/lifecycle_soak.py'
+      - 'tracer/otel/bench/soak_module.c'
   pull_request:
-    paths: ['.github/workflows/validation.yaml']
+    paths:
+      - '.github/workflows/validation.yaml'
+      - 'tracer/otel/examples/lifecycle_soak.rs'
+      - 'tracer/otel/bench/lifecycle_soak.py'
+      - 'tracer/otel/bench/soak_module.c'
 
 permissions:
   contents: read

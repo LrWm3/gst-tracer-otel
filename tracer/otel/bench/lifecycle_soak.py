@@ -1,6 +1,7 @@
 """Exercise recreation, native thread retirement, loader locks, and failed delivery.
 
 Build lifecycle_soak with --release --features profiles and frame pointers.
+The fixture disables trace admission limits to check every span across cycles.
 The receiver stores bounded counters, never the complete stream of payloads.
 """
 import argparse
@@ -150,7 +151,8 @@ def main():
         pending = 'pending_spans' if kind=='trace' else 'pending'
         assert stats[pending]==0
     trace = final['trace']
-    assert trace['started_spans']==trace['completed_spans']==final['cycles']*12
+    assert trace['throttled_roots']==trace['trace_age_rejections']==trace['trace_span_rejections']==0, trace
+    assert trace['started_spans']==trace['completed_spans']==final['cycles']*12, (final['cycles'], trace)
     assert trace['completed_spans']==sum(trace[key] for key in ('exported_spans','failed_export_spans','dropped_queue_full','dropped_closed'))
     assert final['log']['exported']+final['log']['failed']+final['log']['dropped_queue_full']+final['log']['dropped_closed']==final['cycles']*4
     assert final['profile']['context_descriptions']==0
